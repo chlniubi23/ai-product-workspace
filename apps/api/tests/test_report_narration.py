@@ -12,7 +12,8 @@ import pandas as pd
 from conftest import auth, data_of, error_of
 
 from app.ai_context import build_ai_context
-from app.main import _analysis_artifacts, _reduce_artifact_payload_for_ai
+from app.services.ai_stages import _reduce_artifact_payload_for_ai
+from app.services.analysis_pipeline import _analysis_artifacts
 
 
 class _Version:
