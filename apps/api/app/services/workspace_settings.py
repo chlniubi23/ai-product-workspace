@@ -4,13 +4,13 @@ from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..common import error
+from ..common import error, model_dict, serialize
 from ..config import settings
 from ..infrastructure.llm.deepseek import DeepSeekSettings
-from ..models import AIRun, User, Workspace
+from ..models import AIRun, MetricDefinition, User, Workspace
 from ..schemas import WorkspaceSettings, WorkspaceSettingsPatch
 from ..services.audit import audit
 
@@ -154,3 +154,83 @@ def _reject_ai_budget(
     audit(db, workspace.id, user.id, "copilot.budget_exceeded", "ai_run", ai_run.id, details)
     db.commit()
     raise error("AI_BUDGET_EXCEEDED", reason, 429, details)
+
+
+
+
+def _workspace_payload(workspace: Workspace, role: str | None = None) -> dict[str, Any]:
+    payload = model_dict(workspace)
+    payload["settings_json"] = _workspace_settings(workspace)
+    if role is not None:
+        payload["role"] = role
+    return payload
+
+
+
+
+def _metric_payload(metric: MetricDefinition) -> dict[str, Any]:
+    return {
+        "id": metric.id,
+        "workspace_id": metric.workspace_id,
+        "name": metric.name,
+        "definition": metric.definition,
+        "category": metric.category,
+        "numerator": metric.numerator,
+        "denominator": metric.denominator,
+        "unit": metric.unit,
+        "aggregation_period": metric.aggregation_period,
+        "field_mapping": metric.field_mapping_json or {},
+        "display_format": metric.display_format,
+        "maintainer_id": metric.updated_by,
+        "created_at": serialize(metric.created_at),
+        "updated_at": serialize(metric.updated_at),
+    }
+
+
+def _migrate_legacy_metric_dictionary(db: Session, workspace: Workspace) -> None:
+    active_count = db.scalar(
+        select(func.count()).select_from(MetricDefinition).where(
+            MetricDefinition.workspace_id == workspace.id,
+            MetricDefinition.deleted_at.is_(None),
+        )
+    ) or 0
+    source = workspace.settings_json if isinstance(workspace.settings_json, dict) else {}
+    legacy_metrics = source.get("metric_dictionary")
+    if active_count or not isinstance(legacy_metrics, list):
+        return
+
+    migrated = 0
+    period_map = {"日": "day", "周": "week", "月": "month", "daily": "day", "weekly": "week", "monthly": "month"}
+    for item in legacy_metrics:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        definition = str(item.get("definition") or "").strip()
+        if not name or not definition:
+            continue
+        unit = str(item.get("unit") or "").strip()
+        display_format = str(item.get("display_format") or ("percentage" if "百分比" in unit or unit == "%" else "number"))
+        if display_format not in {"number", "percentage", "duration", "currency"}:
+            display_format = "number"
+        db.add(
+            MetricDefinition(
+                workspace_id=workspace.id,
+                name=name[:255],
+                definition=definition[:4000],
+                category=str(item.get("category") or "other") if item.get("category") in {"active", "retention", "conversion", "quality", "cost", "feedback", "other"} else "other",
+                numerator=str(item.get("numerator") or "")[:4000],
+                denominator=str(item.get("denominator") or "")[:4000],
+                unit=unit[:80],
+                aggregation_period=period_map.get(str(item.get("aggregation_period") or item.get("period") or ""), "day"),
+                field_mapping_json=item.get("field_mapping") if isinstance(item.get("field_mapping"), dict) else {},
+                display_format=display_format,
+                created_by=workspace.owner_id,
+                updated_by=workspace.owner_id,
+            )
+        )
+        migrated += 1
+    if not migrated:
+        return
+    workspace.settings_json = _workspace_settings(workspace)
+    audit(db, workspace.id, None, "metric_dictionary.migrated", "workspace", workspace.id, {"count": migrated}, "system")
+    db.commit()
