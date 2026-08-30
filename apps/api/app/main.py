@@ -29,20 +29,19 @@ from fastapi import (
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from sqlalchemy import delete, func, or_, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session
 
 from . import db as database
 from .ai_context import (
     AI_OUTPUT_SCHEMA,
-    AIOutputValidationError,
     PROBLEM_DRAFT_SCHEMA,
     REPORT_OUTPUT_SCHEMA,
     SOLUTION_DRAFTS_SCHEMA,
+    AIOutputValidationError,
     assert_safe_ai_context,
     build_ai_context,
     empty_ai_output,
-    empty_report_output,
     extract_ai_insights,
     validate_ai_output,
     validate_problem_draft,
@@ -53,6 +52,18 @@ from .analytics.engine import AnalysisEngine
 from .analytics.quality import apply_cleaning as apply_quality_cleaning
 from .analytics.quality import assess_quality, infer_column_type
 from .auth import create_access_token, get_current_user, hash_password, password_needs_rehash, verify_password
+from .common import (
+    _redact_validation_details,
+    _request_id,
+    _require_pandas,
+    error,
+    model_dict,
+    ok,
+    page_params,
+    paged,
+    pd,
+    serialize,
+)
 from .config import settings
 from .db import SessionLocal, get_db, init_db
 from .infrastructure.jobs import JobContext, JobExecutionError, JobExecutor, JobResult
@@ -147,10 +158,16 @@ from .schemas import (
     WorkspaceSettings,
     WorkspaceSettingsPatch,
 )
-
-# pandas is imported lazily by _require_pandas() to keep API startup fast; this
-# sentinel holds the cached module once that first import succeeds.
-pd = None  # type: ignore[assignment]
+from .services.access import (
+    _check_assignee,
+    _dataset_version_for,
+    _problem_for,
+    _task_for_project,
+    membership,
+    project_for,
+    workspace_for_user,
+)
+from .services.audit import audit, audit_user_workspaces
 
 job_executor = JobExecutor(SessionLocal)
 app = FastAPI(title="AI Product Workspace API", version="1.0.0")
@@ -184,31 +201,6 @@ async def mark_legacy_api_surfaces(request: Request, call_next):
     return response
 
 
-def _redact_validation_details(value: Any) -> Any:
-    sensitive_names = {"apikey", "deepseekapikey", "password", "secret", "accesstoken", "refreshtoken", "authorization"}
-    if isinstance(value, dict):
-        redacted = {}
-        for key, item in value.items():
-            normalized_key = re.sub(r"[^a-z0-9]", "", str(key).lower())
-            if normalized_key in sensitive_names:
-                redacted[key] = "[REDACTED]"
-            else:
-                redacted[key] = _redact_validation_details(item)
-        error_location = tuple(redacted.get("loc") or ())
-        if error_location:
-            last_field = re.sub(r"[^a-z0-9]", "", str(error_location[-1]).lower())
-            if last_field in sensitive_names:
-                if "input" in redacted:
-                    redacted["input"] = "[REDACTED]"
-                if "msg" in redacted:
-                    for name in sensitive_names:
-                        if name in redacted["msg"].lower():
-                            redacted["msg"] = re.sub(name, "[REDACTED]", redacted["msg"], flags=re.IGNORECASE)
-        return redacted
-    if isinstance(value, list):
-        return [_redact_validation_details(item) for item in value]
-    return value
-
 
 @app.exception_handler(HTTPException)
 async def http_error_handler(_request: Request, exc: HTTPException) -> JSONResponse:
@@ -236,123 +228,16 @@ async def startup() -> None:
     await job_executor.recover_pending()
 
 
-def _request_id() -> str:
-    return f"req_{uuid4().hex}"
 
 
-def _require_pandas():
-    global pd
-    if pd is None:
-        try:
-            import importlib
-
-            pd = importlib.import_module("pandas")
-        except Exception:
-            pd = None
-    if pd is None:
-        raise error("DEPENDENCY_ERROR", "Pandas is unavailable; install API dependencies before using data endpoints", 503)
-    return pd
 
 
-def ok(data: Any, **meta: Any) -> dict[str, Any]:
-    return {"data": data, "meta": {"request_id": _request_id(), **meta}}
 
 
-def error(code: str, message: str, status_code: int = 400, details: Any = None) -> HTTPException:
-    detail: dict[str, Any] = {"code": code, "message": message}
-    if details is not None:
-        detail["details"] = details
-    return HTTPException(status_code=status_code, detail=detail)
 
 
-# Credential material must never leave the API, regardless of which endpoint
-# serializes the model (BUG-013).
-SENSITIVE_MODEL_FIELDS = {"password_hash"}
 
 
-def serialize(value: Any) -> Any:
-    if isinstance(value, datetime):
-        return value.replace(tzinfo=UTC).isoformat().replace("+00:00", "Z")
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, dict):
-        return {str(k): serialize(v) for k, v in value.items() if str(k) not in SENSITIVE_MODEL_FIELDS}
-    if isinstance(value, (list, tuple)):
-        return [serialize(v) for v in value]
-    if hasattr(value, "item"):
-        try:
-            return value.item()
-        except Exception:
-            pass
-    if hasattr(value, "__table__"):
-        return {k: serialize(v) for k, v in vars(value).items() if not k.startswith("_") and k not in SENSITIVE_MODEL_FIELDS}
-    return value
-
-
-def model_dict(obj: Any, extra: dict[str, Any] | None = None) -> dict[str, Any]:
-    if hasattr(obj, "__table__"):
-        result = {column.name: serialize(getattr(obj, column.name)) for column in obj.__table__.columns if column.name not in SENSITIVE_MODEL_FIELDS}
-    else:
-        result = {k: serialize(v) for k, v in vars(obj).items() if not k.startswith("_") and k not in SENSITIVE_MODEL_FIELDS}
-    if extra:
-        result.update(serialize(extra))
-    return result
-
-
-def page_params(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)) -> tuple[int, int]:
-    return page, page_size
-
-
-def paged(items: list[Any], page: int, page_size: int, total: int | None = None) -> dict[str, Any]:
-    total = len(items) if total is None else total
-    start = (page - 1) * page_size
-    return ok(items[start : start + page_size], page=page, page_size=page_size, total=total)
-
-
-def audit(
-    db: Session,
-    workspace_id: str,
-    actor_id: str | None,
-    action: str,
-    target_type: str = "",
-    target_id: str | None = None,
-    detail: dict[str, Any] | None = None,
-    actor_type: str = "user",
-) -> None:
-    db.add(AuditLog(workspace_id=workspace_id, actor_type=actor_type, actor_id=actor_id, action=action, target_type=target_type, target_id=target_id, detail_json=detail or {}))
-
-
-def audit_user_workspaces(
-    db: Session,
-    user_id: str,
-    action: str,
-    target_type: str = "user",
-    target_id: str | None = None,
-    detail: dict[str, Any] | None = None,
-    actor_type: str = "user",
-) -> None:
-    """Write an authentication event to every workspace the user belongs to.
-
-    ``audit_logs`` is intentionally workspace-scoped, so a known user's auth
-    event is copied to each of their workspaces. An unknown email has no safe
-    workspace to associate with and is therefore not persisted; the caller
-    still returns the same generic authentication error in either case.
-    """
-
-    workspace_ids = db.scalars(select(WorkspaceMember.workspace_id).where(WorkspaceMember.user_id == user_id)).all()
-    for workspace_id in workspace_ids:
-        actor_id = user_id if actor_type == "user" else None
-        audit(db, workspace_id, actor_id, action, target_type, target_id or user_id, detail, actor_type)
-
-
-def membership(db: Session, user: User, workspace_id: str, minimum: str = "viewer") -> WorkspaceMember:
-    member = db.scalar(select(WorkspaceMember).where(WorkspaceMember.workspace_id == workspace_id, WorkspaceMember.user_id == user.id))
-    if member is None:
-        raise error("FORBIDDEN", "Workspace access denied", 403)
-    ranks = {"viewer": 1, "editor": 2, "owner": 3}
-    if ranks.get(member.role, 0) < ranks.get(minimum, 1):
-        raise error("FORBIDDEN", f"{minimum} role required", 403)
-    return member
 
 
 def _workspace_settings(workspace: Workspace) -> dict[str, Any]:
@@ -572,26 +457,7 @@ def _migrate_legacy_metric_dictionary(db: Session, workspace: Workspace) -> None
     db.commit()
 
 
-def project_for(db: Session, user: User, project_id: str, minimum: str = "viewer") -> Project:
-    project = db.get(Project, project_id)
-    if project is None:
-        raise error("NOT_FOUND", "Project not found", 404)
-    membership(db, user, project.workspace_id, minimum)
-    return project
 
-
-def _task_for_project(db: Session, project: Project, task_id: str | None) -> Task | None:
-    if not task_id:
-        return None
-    task = db.get(Task, task_id)
-    if task is None or task.workspace_id != project.workspace_id or task.project_id != project.id:
-        raise error("FORBIDDEN", "Task is outside the selected project", 403)
-    return task
-
-
-def _check_assignee(db: Session, workspace_id: str, assignee_id: str | None) -> None:
-    if assignee_id and db.scalar(select(WorkspaceMember).where(WorkspaceMember.workspace_id == workspace_id, WorkspaceMember.user_id == assignee_id)) is None:
-        raise error("VALIDATION_ERROR", "Assignee is not a member of this workspace", 400)
 
 
 def _check_evidence_scope(db: Session, workspace_id: str, evidence: list[dict[str, Any]], project_id: str | None = None) -> None:
@@ -788,16 +654,6 @@ def _linked_resource_scope(db: Session, link_type: str, target_id: str) -> tuple
     return workspace_id, project_id
 
 
-def workspace_for_user(db: Session, user: User, workspace_id: str | None = None) -> Workspace:
-    if workspace_id:
-        membership(db, user, workspace_id)
-        workspace = db.get(Workspace, workspace_id)
-    else:
-        workspace = db.scalar(select(Workspace).join(WorkspaceMember).where(WorkspaceMember.user_id == user.id).order_by(Workspace.created_at).limit(1))
-    if workspace is None:
-        raise error("NOT_FOUND", "Workspace not found", 404)
-    return workspace
-
 
 def _job(db: Session, workspace_id: str, job_type: str, input_json: dict[str, Any] | None = None, status_value: str = "queued", result_type: str | None = None, result_id: str | None = None) -> Job:
     payload = {"_retryable": True, **(input_json or {})}
@@ -846,6 +702,7 @@ def _reject_unsupported_upload(filename: str) -> None:
 
 
 def _read_dataframe(path: str | Path, file_name: str, worksheet_name: str | None = None) -> pd.DataFrame:
+    pd = _require_pandas()
     _require_pandas()
     suffix = Path(file_name).suffix.lower()
     if suffix == ".csv":
@@ -872,6 +729,7 @@ def _type_name(series: pd.Series) -> str:
     The data dictionary exposes string/integer/float/boolean/datetime/category
     (BUG-014); internal analytics names such as "numeric" must not leak out.
     """
+    pd = _require_pandas()
     if pd.api.types.is_bool_dtype(series):
         return "boolean"
     if pd.api.types.is_integer_dtype(series):
@@ -894,6 +752,7 @@ _IDENTIFIER_NAME = re.compile(r"(?:^|[_-])(id|uuid|guid)$", re.IGNORECASE)
 
 
 def _column_schema(df: pd.DataFrame) -> list[dict[str, Any]]:
+    pd = _require_pandas()
     _require_pandas()
     result: list[dict[str, Any]] = []
     role_names = {
@@ -952,6 +811,7 @@ def _quality_summary(df: pd.DataFrame) -> tuple[float, str, dict[str, Any]]:
 
 
 def _json_records(df: pd.DataFrame) -> list[dict[str, Any]]:
+    pd = _require_pandas()
     _require_pandas()
     clean = df.astype(object).where(pd.notna(df), None)
     return [serialize(row) for row in clean.to_dict(orient="records")]
@@ -1976,16 +1836,6 @@ async def upload_dataset_batch(
     return ok({"project_id": project.id, "uploads": results, "failures": failures})
 
 
-def _dataset_version_for(db: Session, user: User, version_id: str, minimum: str = "viewer") -> tuple[DatasetVersion, Dataset, Project]:
-    version = db.get(DatasetVersion, version_id)
-    if version is None:
-        raise error("NOT_FOUND", "Dataset version not found", 404)
-    dataset = db.get(Dataset, version.dataset_id)
-    if dataset is None or dataset.deleted_at is not None:
-        raise error("NOT_FOUND", "Dataset not found", 404)
-    project = project_for(db, user, dataset.project_id, minimum)
-    return version, dataset, project
-
 
 @app.get("/api/v1/datasets/{dataset_id}")
 def get_dataset(dataset_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
@@ -2194,6 +2044,7 @@ def delete_dataset(
 
 
 def _analysis_artifacts(frame: pd.DataFrame, version: DatasetVersion, analysis_type: str, config: dict[str, Any]) -> list[dict[str, Any]]:
+    pd = _require_pandas()
     _require_pandas()
     artifacts: list[dict[str, Any]] = []
     numeric_columns = [str(c) for c in frame.select_dtypes(include="number").columns]
@@ -2635,6 +2486,7 @@ def _feedback_column(frame: pd.DataFrame, candidates: tuple[str, ...]) -> str | 
 
 
 def _handle_feedback_import(context: JobContext) -> JobResult:
+    pd = _require_pandas()
     db = context.db
     payload = context.input
     project = db.get(Project, payload.get("project_id"))
@@ -3507,13 +3359,6 @@ def patch_insight(insight_id: str, body: InsightPatch, user: User = Depends(get_
     db.commit()
     return ok(model_dict(insight))
 
-
-def _problem_for(db: Session, user: User, problem_id: str, minimum: str = "viewer") -> ProductProblem:
-    problem = db.get(ProductProblem, problem_id)
-    if problem is None:
-        raise error("NOT_FOUND", "Product problem not found", 404)
-    membership(db, user, problem.workspace_id, minimum)
-    return problem
 
 
 def _validate_source_insights(db: Session, project: Project, insight_ids: list[str]) -> list[str]:
@@ -5194,6 +5039,7 @@ def _compute_report_aggregates(snapshot: dict[str, Any]) -> dict[str, Any]:
     ``counts``); row-like lists would be dropped at the boundary.  No raw rows
     are ever included -- the model narrates statistics, not cells.
     """
+    pd = _require_pandas()
 
     _require_pandas()
     frame = _read_dataframe(settings.data_path / snapshot["storage_path"], snapshot["file_name"])
