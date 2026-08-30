@@ -12,7 +12,15 @@ import {
 } from "@/components/workflow/WorkflowFrame";
 import { formatWorkflowDate } from "@/lib/workflow";
 
-const EFFORTS = ["S", "M", "L", "XL"];
+const EFFORTS = ["S", "M", "L"];
+
+type AiSolutionDraft = {
+  title: string;
+  approach: string;
+  pros: string[];
+  cons: string[];
+  effort: string;
+};
 
 function splitLines(value: string): string[] {
   return value
@@ -32,6 +40,9 @@ export default function Stage10SolutionPage() {
   const [busy, setBusy] = useState(false);
   const [busyId, setBusyId] = useState("");
   const [notice, setNotice] = useState("");
+  const [aiDrafts, setAiDrafts] = useState<AiSolutionDraft[]>([]);
+  const [selectingId, setSelectingId] = useState("");
+  const [rejectReasons, setRejectReasons] = useState<Record<string, string>>({});
 
   const confirmedProblems = useMemo(
     () => (snapshot?.problems || []).filter((item) => item.status === "confirmed"),
@@ -49,11 +60,21 @@ export default function Stage10SolutionPage() {
     setBusy(true);
     setNotice("");
     try {
-      await apiRequest("/ai/propose-solutions", {
+      const result = await apiRequest<{
+        status?: string;
+        output?: { options?: AiSolutionDraft[]; limitations?: string[] };
+      }>("/ai/propose-solutions", {
         method: "POST",
         body: JSON.stringify({ problem_id: activeProblemId, option_count: 3 }),
       });
-      setNotice("AI 已给出候选方案思路，请择优手动录入为正式选项，或直接自己写。");
+      const drafts = (result?.output?.options || []).filter((item) => item?.title && item?.approach);
+      if (result?.status === "succeeded" && drafts.length > 0) {
+        setAiDrafts(drafts);
+        setNotice("AI 已给出候选方案草稿，请检查后逐个填入表单再保存。");
+      } else {
+        setAiDrafts([]);
+        setNotice("AI 起草不可用，可手写。");
+      }
     } catch (draftError) {
       setNotice(draftError instanceof Error ? draftError.message : "AI 起草失败，可以手写。");
     } finally {
@@ -61,15 +82,22 @@ export default function Stage10SolutionPage() {
     }
   }
 
+  function fillDraft(draft: AiSolutionDraft) {
+    setTitle(draft.title || "");
+    setApproach(draft.approach || "");
+    setPros((draft.pros || []).join("\n"));
+    setCons((draft.cons || []).join("\n"));
+    setEffort(EFFORTS.includes(draft.effort) ? draft.effort : "M");
+  }
+
   async function addOption() {
     if (!activeProblemId || !accessToken() || !title.trim() || !approach.trim()) return;
     setBusy(true);
     setNotice("");
     try {
-      await apiRequest("/solutions", {
+      await apiRequest(`/problems/${activeProblemId}/solutions`, {
         method: "POST",
         body: JSON.stringify({
-          problem_id: activeProblemId,
           title: title.trim(),
           approach: approach.trim(),
           pros: splitLines(pros),
@@ -90,12 +118,38 @@ export default function Stage10SolutionPage() {
     }
   }
 
-  async function select(id: string) {
-    if (!accessToken()) return;
-    setBusyId(id);
+  function siblingsOf(optionId: string) {
+    return options.filter((item) => item.id !== optionId);
+  }
+
+  function beginSelect(id: string) {
+    setSelectingId(id);
+    setRejectReasons({});
+    setNotice("");
+  }
+
+  function cancelSelect() {
+    setSelectingId("");
+    setRejectReasons({});
+  }
+
+  async function confirmSelect() {
+    if (!selectingId || !accessToken()) return;
+    const siblings = siblingsOf(selectingId);
+    const reasons: Record<string, string> = {};
+    for (const sibling of siblings) {
+      reasons[sibling.id] = (rejectReasons[sibling.id] || "").trim();
+    }
+    if (siblings.some((sibling) => !reasons[sibling.id])) return;
+    setBusyId(selectingId);
     setNotice("");
     try {
-      await apiRequest(`/solutions/${id}/select`, { method: "POST", body: JSON.stringify({}) });
+      await apiRequest(`/solutions/${selectingId}/select`, {
+        method: "POST",
+        body: JSON.stringify({ reject_reasons: reasons }),
+      });
+      setSelectingId("");
+      setRejectReasons({});
       setNotice("已选定方案，其余候选自动标记为未采纳。");
       await refresh();
     } catch (selectError) {
@@ -142,7 +196,14 @@ export default function Stage10SolutionPage() {
               </div>
               <label className="field">
                 <span className="field-label">当前讨论的问题</span>
-                <select value={activeProblemId} onChange={(event) => setProblemId(event.target.value)}>
+                <select
+                  value={activeProblemId}
+                  onChange={(event) => {
+                    setProblemId(event.target.value);
+                    setAiDrafts([]);
+                    cancelSelect();
+                  }}
+                >
                   {confirmedProblems.map((problem) => (
                     <option key={problem.id} value={problem.id}>
                       {problem.title || problem.id.slice(0, 8)}
@@ -218,16 +279,70 @@ export default function Stage10SolutionPage() {
                           </div>
                         </div>
                       ) : null}
-                      {!selectedOption && (
+                      {!selectedOption && selectingId !== option.id && (
                         <button
                           className="btn btn-primary btn-sm"
                           style={{ marginTop: 12 }}
                           disabled={busyId === option.id}
-                          onClick={() => void select(option.id)}
+                          onClick={() => beginSelect(option.id)}
                         >
                           <CircleCheck size={13} />
                           选定这个方案
                         </button>
+                      )}
+                      {selectingId === option.id && (
+                        <div
+                          className="card card-pad"
+                          style={{ marginTop: 12, background: "var(--surface-2, #f7f8fb)" }}
+                        >
+                          <div className="card-kicker" style={{ marginBottom: 8 }}>
+                            确认选定：其余 {siblingsOf(option.id).length} 个候选方案将标记为未采纳，每个必须写明理由。
+                          </div>
+                          {siblingsOf(option.id).map((sibling) => (
+                            <label className="field" key={sibling.id}>
+                              <span className="field-label">
+                                「{sibling.title || "未命名方案"}」的落选理由
+                              </span>
+                              <input
+                                value={rejectReasons[sibling.id] || ""}
+                                placeholder="例如：改动面太大，先验证更小的方案"
+                                onChange={(event) =>
+                                  setRejectReasons((prev) => ({ ...prev, [sibling.id]: event.target.value }))
+                                }
+                              />
+                            </label>
+                          ))}
+                          {siblingsOf(option.id).length === 0 && (
+                            <p style={{ color: "var(--muted)", margin: "0 0 8px" }}>
+                              这是唯一的候选方案，没有需要填写落选理由的对象。
+                            </p>
+                          )}
+                          {siblingsOf(option.id).some((sibling) => !(rejectReasons[sibling.id] || "").trim()) && (
+                            <p style={{ color: "var(--muted)", fontSize: 13, margin: "0 0 8px" }}>
+                              每个落选方案必须写明理由。
+                            </p>
+                          )}
+                          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                            <button
+                              className="btn btn-subtle btn-sm"
+                              disabled={busyId === option.id}
+                              onClick={cancelSelect}
+                            >
+                              取消
+                            </button>
+                            <button
+                              className="btn btn-primary btn-sm"
+                              disabled={
+                                busyId === option.id ||
+                                siblingsOf(option.id).some((sibling) => !(rejectReasons[sibling.id] || "").trim())
+                              }
+                              onClick={() => void confirmSelect()}
+                            >
+                              <CircleCheck size={13} />
+                              确认选定
+                            </button>
+                          </div>
+                        </div>
                       )}
                     </div>
                   ))}
@@ -305,6 +420,61 @@ export default function Stage10SolutionPage() {
                 )}
               </div>
             </section>
+
+            {aiDrafts.length > 0 && (
+              <section className="card card-pad" style={{ marginTop: 16 }}>
+                <div className="card-head">
+                  <div>
+                    <h2 className="card-title">AI 方案草稿</h2>
+                    <div className="card-kicker">草稿仅供参考，检查修改后填入表单再保存。</div>
+                  </div>
+                  <button className="btn btn-subtle btn-sm" onClick={() => setAiDrafts([])}>
+                    清除草稿
+                  </button>
+                </div>
+                <div className="list" style={{ marginTop: 8 }}>
+                  {aiDrafts.map((draft, index) => (
+                    <div className="card card-pad" key={index} style={{ marginBottom: 10 }}>
+                      <div className="card-head">
+                        <div>
+                          <strong>{draft.title}</strong>
+                          <div className="card-kicker">工作量 {draft.effort}</div>
+                        </div>
+                        <span className="tag tag-amber">草稿</span>
+                      </div>
+                      <p style={{ lineHeight: 1.6 }}>{draft.approach}</p>
+                      {draft.pros?.length || draft.cons?.length ? (
+                        <div className="grid grid-2" style={{ gap: 12 }}>
+                          <div>
+                            <div className="card-kicker">优点</div>
+                            <ul style={{ margin: "4px 0 0", paddingLeft: 18, color: "var(--muted)" }}>
+                              {(draft.pros || []).map((item, itemIndex) => (
+                                <li key={itemIndex}>{item}</li>
+                              ))}
+                            </ul>
+                          </div>
+                          <div>
+                            <div className="card-kicker">代价</div>
+                            <ul style={{ margin: "4px 0 0", paddingLeft: 18, color: "var(--muted)" }}>
+                              {(draft.cons || []).map((item, itemIndex) => (
+                                <li key={itemIndex}>{item}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        </div>
+                      ) : null}
+                      <button
+                        className="btn btn-primary btn-sm"
+                        style={{ marginTop: 12 }}
+                        onClick={() => fillDraft(draft)}
+                      >
+                        填入表单
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
           </>
         )}
       </WorkflowGate>

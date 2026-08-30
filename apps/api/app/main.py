@@ -5,7 +5,7 @@ import hashlib
 import json
 import re
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,13 +36,18 @@ from . import db as database
 from .ai_context import (
     AI_OUTPUT_SCHEMA,
     AIOutputValidationError,
+    PROBLEM_DRAFT_SCHEMA,
+    REPORT_OUTPUT_SCHEMA,
+    SOLUTION_DRAFTS_SCHEMA,
     assert_safe_ai_context,
     build_ai_context,
     empty_ai_output,
     empty_report_output,
+    extract_ai_insights,
     validate_ai_output,
+    validate_problem_draft,
     validate_report_output,
-    REPORT_OUTPUT_SCHEMA,
+    validate_solution_drafts,
 )
 from .analytics.engine import AnalysisEngine
 from .analytics.quality import apply_cleaning as apply_quality_cleaning
@@ -4278,6 +4283,7 @@ async def _deepseek_answer(question: str, context: dict[str, Any], db: Session |
             quality=context.get("quality") or context.get("quality_report") or {},
             schema=context.get("schema") or context.get("data_columns") or [],
             dataframe=context.get("dataframe"),
+            insights=context.get("insights") or None,
             question=question,
         )
         adapter = DeepSeekAdapter(DeepSeekSettings.from_app_settings(settings))
@@ -4612,6 +4618,12 @@ def _ai_interpret_context(
     schema = [model_dict(column) for column in version.columns] if version is not None else None
     quality = version.quality_report if version is not None else None
     safe_request_context = _drop_feedback_content(request_context)
+    # "insights" is a server-side context key (the Copilot route loads confirmed
+    # insights itself).  A client-supplied list was always dropped on this path
+    # and must stay dropped: its entries carry a "content" field, which the
+    # allowlist re-check below correctly treats as feedback text.
+    if isinstance(safe_request_context, dict):
+        safe_request_context.pop("insights", None)
     context = build_ai_context(
         safe_request_context,
         project=project,
@@ -4769,13 +4781,24 @@ async def _run_ai_stage(
     system_prompt: str,
     context: dict[str, Any],
     flag_name: str = "insight_suggestions_enabled",
+    response_schema: dict[str, Any] | None = None,
+    output_validator: Callable[[Any], dict[str, Any]] | None = None,
+    empty_output: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Shared draft-generating AI call for the stage 9/10 endpoints.
 
     Wraps the same budget reservation, feature-flag check, structured-output
     validation and audit trail as /ai/interpret so a provider outage or an
-    unset key degrades to an empty draft instead of a 500.
+    unset key degrades to an empty draft instead of a 500.  Callers may swap
+    the default four-section contract for a stage-specific one via
+    ``response_schema``/``output_validator``/``empty_output``; omitting them
+    keeps the historical behaviour.
     """
+
+    schema = response_schema or AI_OUTPUT_SCHEMA
+
+    def fallback_output(summary: str, limitation: str) -> dict[str, Any]:
+        return dict(empty_output) if empty_output is not None else empty_ai_output(summary=summary, limitation=limitation)
 
     budget = _workspace_ai_budget(workspace)
     workspace_settings = _workspace_settings(workspace)
@@ -4808,7 +4831,7 @@ async def _run_ai_stage(
         _reject_ai_budget(db, workspace, user, ai_run, budget, daily_used=reserved_daily, reason="Workspace daily AI token budget has been exhausted")
     db.commit()
 
-    structured = empty_ai_output(summary="AI 当前不可用，请手动填写。", limitation="AI provider is not configured.")
+    structured = fallback_output("AI 当前不可用，请手动填写。", "AI provider is not configured.")
     result_status = "not_configured"
     error_code: str | None = None
     provider_request_id: str | None = None
@@ -4818,12 +4841,17 @@ async def _run_ai_stage(
     adapter = DeepSeekAdapter(DeepSeekSettings.from_app_settings(settings))
     if adapter.configured:
         try:
+            json_instruction = (
+                " 返回 JSON，必须包含 facts、hypotheses、recommendations、limitations；每条都必须有 evidence 数组。输出默认是 draft。Schema: "
+                if response_schema is None
+                else " 返回 JSON，输出默认是 draft。Schema: "
+            )
             result = await adapter.complete(
                 messages=[
-                    ChatMessage("system", system_prompt + " 返回 JSON，必须包含 facts、hypotheses、recommendations、limitations；每条都必须有 evidence 数组。输出默认是 draft。Schema: " + json.dumps(AI_OUTPUT_SCHEMA, ensure_ascii=True, separators=(",", ":"))),
+                    ChatMessage("system", system_prompt + json_instruction + json.dumps(schema, ensure_ascii=True, separators=(",", ":"))),
                     ChatMessage("user", json.dumps(context, ensure_ascii=False, separators=(",", ":"), default=str)),
                 ],
-                response_schema=AI_OUTPUT_SCHEMA,
+                response_schema=schema,
                 request_metadata=AiRequestMetadata(
                     workspace_id=workspace.id,
                     user_id=user.id,
@@ -4838,7 +4866,10 @@ async def _run_ai_stage(
                     raw = json.loads(result.content)
                 except (TypeError, json.JSONDecodeError):
                     raw = None
-            structured = validate_ai_output(raw) if raw is not None else empty_ai_output(summary="模型未返回结构化结果。", limitation="Provider response was not structured JSON.")
+            if raw is None:
+                structured = fallback_output("模型未返回结构化结果。", "Provider response was not structured JSON.")
+            else:
+                structured = output_validator(raw) if output_validator else validate_ai_output(raw)
             result_status = "succeeded"
             provider_request_id = result.provider_request_id
             prompt_tokens = _token_count(result.prompt_tokens)
@@ -4848,7 +4879,7 @@ async def _run_ai_stage(
         except AIOutputValidationError:
             result_status = "failed"
             error_code = "INVALID_AI_OUTPUT"
-            structured = empty_ai_output(summary="模型返回格式无法验证。", limitation="Provider response failed the structured output contract.")
+            structured = fallback_output("模型返回格式无法验证。", "Provider response failed the structured output contract.")
         except DeepSeekProviderError:
             result_status = "failed"
             error_code = "LLM_PROVIDER_ERROR"
@@ -5061,9 +5092,16 @@ async def ai_frame_problem(body: AIFrameProblemRequest, user: User = Depends(get
         user=user,
         workspace=workspace,
         feature_name="frame_problem",
-        system_prompt="你是产品分析助手。只根据给定的洞察证据，把观察归纳成清晰的产品问题陈述，不要猜测原始数据。每个问题必须能追溯到给定的洞察 id。",
+        system_prompt=(
+            "你是产品分析助手。只根据给定的洞察证据，把观察归纳成一个清晰的产品问题草稿，不要猜测原始数据。"
+            "title 是一句可验证的问题标题；statement 说明谁在什么场景遇到什么障碍、造成什么后果；"
+            "impact_scope 说明影响范围与量级；priority 从 P0/P1/P2/P3 中选；limitations 写出该判断的局限。"
+        ),
         context=context,
         flag_name="insight_suggestions_enabled",
+        response_schema=PROBLEM_DRAFT_SCHEMA,
+        output_validator=validate_problem_draft,
+        empty_output={"title": "", "statement": "", "impact_scope": "", "priority": "P2", "limitations": ["AI provider is not configured."]},
     )
     return ok({**result, "provider": "deepseek", "draft": True, "source_insight_ids": insight_ids})
 
@@ -5704,9 +5742,16 @@ async def ai_propose_solutions(body: AIProposeSolutionsRequest, user: User = Dep
         user=user,
         workspace=workspace,
         feature_name="propose_solutions",
-        system_prompt=f"你是产品方案助手。针对给定的产品问题，提出 {body.option_count} 个互不重复的候选方案，每个方案说明做法、优点、缺点和工作量（S/M/L）。不要重复已有方案。",
+        system_prompt=(
+            f"你是产品方案助手。针对给定的产品问题，提出 {body.option_count} 个互不重复的候选方案，"
+            "每个方案输出 title（方案名称）、approach（具体做法）、pros（优点列表）、cons（缺点或代价列表）、"
+            "effort（工作量，只能是 S/M/L）。不要重复已有方案。"
+        ),
         context=context,
         flag_name="insight_suggestions_enabled",
+        response_schema=SOLUTION_DRAFTS_SCHEMA,
+        output_validator=validate_solution_drafts,
+        empty_output={"options": [], "limitations": ["AI provider is not configured."]},
     )
     return ok({**result, "provider": "deepseek", "draft": True, "problem_id": problem.id})
 
@@ -5830,7 +5875,19 @@ async def copilot_message(session_id: str, body: CopilotMessageCreate, user: Use
         _reject_ai_budget(db, workspace, user, ai_run, budget, daily_used=reserved_daily, reason="Workspace daily AI token budget has been exhausted")
     db.commit()
     started = time.perf_counter()
-    copilot_context = {**safe_context, "project_id": session.project_id, "workspace_id": session.workspace_id, "user_id": user.id}
+    # The conversation is grounded in the insights the user already adopted.
+    # They are loaded server-side from the session's project -- never from the
+    # request body -- so a caller cannot choose which rows cross the boundary.
+    insights_payload: list[dict[str, Any]] = []
+    if session.project_id:
+        confirmed_insights = db.scalars(
+            select(Insight)
+            .where(Insight.project_id == session.project_id, Insight.status == "confirmed")
+            .order_by(Insight.created_at.desc())
+            .limit(20)
+        ).all()
+        insights_payload = extract_ai_insights(confirmed_insights)
+    copilot_context = {**safe_context, "project_id": session.project_id, "workspace_id": session.workspace_id, "user_id": user.id, "insights": insights_payload}
     answer, result_status, details = await _deepseek_answer(
         safe_question,
         copilot_context,

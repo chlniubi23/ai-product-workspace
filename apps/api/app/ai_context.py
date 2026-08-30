@@ -26,7 +26,9 @@ class AIOutputValidationError(ValueError):
 
 # A tuple preserves the wire order used in prompts and persisted run summaries;
 # the frozenset alias keeps membership checks cheap and backwards compatible.
-ALLOWED_CONTEXT_KEY_ORDER = ("goal", "metrics", "artifacts", "quality", "schema", "question")
+# ``insights`` is a server-side key: the Copilot route loads the session
+# project's confirmed insights itself; callers cannot push one in.
+ALLOWED_CONTEXT_KEY_ORDER = ("goal", "metrics", "artifacts", "quality", "schema", "question", "insights")
 ALLOWED_CONTEXT_KEYS = frozenset(ALLOWED_CONTEXT_KEY_ORDER)
 
 # These names are intentionally broader than the database column names.  A model
@@ -375,6 +377,58 @@ def _extract_schema(schema: Any) -> list[dict[str, str]]:
     return result
 
 
+_INSIGHT_EVIDENCE_ITEM_LIMIT = 20
+
+
+def _extract_insights(insights: Any) -> list[dict[str, Any]]:
+    """Project confirmed insights onto the fields a provider may see.
+
+    Only ``id/title/content/confidence/evidence`` survive; every value passes
+    the same scalar sanitizer as the rest of the context.  ``content`` is the
+    adopted insight body a human already confirmed, which is why it is allowed
+    here while the same word stays denied for raw feedback payloads.  Unknown
+    keys never survive and the list is capped, so a caller cannot widen the
+    projection by adding fields to the rows it passes in.
+    """
+
+    if insights is None:
+        return []
+    if isinstance(insights, (Mapping, str, bytes)):
+        insights = [insights]
+    output: list[dict[str, Any]] = []
+    for item in list(insights)[:20]:
+        title = _get(item, "title")
+        content = _get(item, "content")
+        if title is None and content is None:
+            continue
+        entry: dict[str, Any] = {
+            "id": str(_safe_scalar(_get(item, "id") or "", key="id", max_length=255) or ""),
+            "title": str(_safe_scalar(title or "", key="title", max_length=255) or ""),
+            "content": str(_safe_scalar(content or "", key="content", max_length=2000) or ""),
+        }
+        confidence = _get(item, "confidence")
+        if confidence is not None:
+            entry["confidence"] = str(_safe_scalar(confidence, key="confidence", max_length=20))
+        evidence = _get(item, "evidence")
+        if isinstance(evidence, (list, tuple)):
+            cleaned_evidence: list[Any] = []
+            for evidence_item in list(evidence)[:_INSIGHT_EVIDENCE_ITEM_LIMIT]:
+                if isinstance(evidence_item, Mapping):
+                    cleaned_item = {
+                        str(evidence_key)[:80]: _safe_scalar(evidence_value, key=str(evidence_key), max_length=255)
+                        for evidence_key, evidence_value in list(evidence_item.items())[:10]
+                        if not _is_forbidden_key(evidence_key)
+                    }
+                    if cleaned_item:
+                        cleaned_evidence.append(cleaned_item)
+                else:
+                    cleaned_evidence.append(_safe_scalar(evidence_item, max_length=255))
+            if cleaned_evidence:
+                entry["evidence"] = cleaned_evidence
+        output.append(entry)
+    return output
+
+
 def build_ai_context(
     source: Any | None = None,
     *,
@@ -392,6 +446,7 @@ def build_ai_context(
     dataframe: Any | None = None,
     question: Any | None = None,
     user_question: Any | None = None,
+    insights: Any | None = None,
     **_ignored: Any,
 ) -> dict[str, Any]:
     """Build the sole allowlisted payload accepted by analytics AI calls.
@@ -423,6 +478,8 @@ def build_ai_context(
             schema = [{"column_name": name, "inferred_type": "unknown"} for name in shape.get("columns", [])]
     if question is None:
         question = source_map.get("question", source_map.get("user_question"))
+    if insights is None:
+        insights = source_map.get("insights")
 
     # Explicit keyword aliases win over values in ``source``.
     metrics = metrics if metrics is not None else metric_definitions
@@ -437,6 +494,7 @@ def build_ai_context(
         "quality": _extract_quality(quality, quality_summary),
         "schema": _extract_schema(schema),
         "question": str(_safe_scalar(question or "", key="question", max_length=4000) or ""),
+        "insights": _extract_insights(insights),
     }
     return context
 
@@ -663,9 +721,132 @@ def empty_report_output(*, summary: str = "", limitation: str | None = None) -> 
     }
 
 
+# Stage 9 contract: a single problem statement draft.  ``priority`` is optional
+# because a model that cannot judge urgency should omit it rather than guess;
+# the effort/priority enums match the persistence models exactly so a draft can
+# be posted back to the REST layer without re-mapping.
+PROBLEM_DRAFT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["title", "statement", "impact_scope", "limitations"],
+    "properties": {
+        "title": {"type": "string"},
+        "statement": {"type": "string"},
+        "impact_scope": {"type": "string"},
+        "priority": {"type": "string", "enum": ["P0", "P1", "P2", "P3"]},
+        "limitations": {"type": "array", "maxItems": 10, "items": {"type": "string"}},
+    },
+}
+
+
+# Stage 10 contract: candidate solution options.  ``effort`` deliberately has no
+# XL -- SolutionCreate (apps/api/app/schemas.py) only accepts S/M/L, so a draft
+# outside that set could never be saved.
+SOLUTION_DRAFTS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["options", "limitations"],
+    "properties": {
+        "options": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["title", "approach", "pros", "cons", "effort"],
+                "properties": {
+                    "title": {"type": "string"},
+                    "approach": {"type": "string"},
+                    "pros": {"type": "array", "maxItems": 8, "items": {"type": "string"}},
+                    "cons": {"type": "array", "maxItems": 8, "items": {"type": "string"}},
+                    "effort": {"type": "string", "enum": ["S", "M", "L"]},
+                },
+            },
+        },
+        "limitations": {"type": "array", "maxItems": 10, "items": {"type": "string"}},
+    },
+}
+
+
+def _clamped_strings(value: Any, *, limit: int, max_length: int, label: str) -> list[str]:
+    if not isinstance(value, list):
+        raise AIOutputValidationError(f"'{label}' must be an array of strings")
+    return [str(item)[:max_length] for item in value[:limit] if str(item).strip()]
+
+
+def validate_problem_draft(value: Any) -> dict[str, Any]:
+    """Validate and normalize the stage-9 problem draft contract."""
+
+    if not isinstance(value, Mapping):
+        raise AIOutputValidationError("problem draft must be a JSON object")
+    missing = [key for key in ("title", "statement", "impact_scope", "limitations") if key not in value]
+    if missing:
+        raise AIOutputValidationError(f"problem draft is missing required fields: {', '.join(missing)}")
+    title = str(value.get("title") or "").strip()
+    statement = str(value.get("statement") or "").strip()
+    if not title or not statement:
+        raise AIOutputValidationError("problem draft requires non-empty title and statement")
+    result: dict[str, Any] = {
+        "title": title[:255],
+        "statement": statement[:4000],
+        "impact_scope": str(value.get("impact_scope") or "")[:2000],
+        "limitations": _clamped_strings(value.get("limitations"), limit=10, max_length=1000, label="limitations"),
+    }
+    priority = value.get("priority")
+    if priority is not None and str(priority).strip():
+        priority_text = str(priority).strip().upper()
+        if priority_text not in {"P0", "P1", "P2", "P3"}:
+            raise AIOutputValidationError("problem draft priority must be one of P0, P1, P2, P3")
+        result["priority"] = priority_text
+    return result
+
+
+def validate_solution_drafts(value: Any) -> dict[str, Any]:
+    """Validate and normalize the stage-10 solution draft contract."""
+
+    if not isinstance(value, Mapping):
+        raise AIOutputValidationError("solution drafts must be a JSON object")
+    missing = [key for key in ("options", "limitations") if key not in value]
+    if missing:
+        raise AIOutputValidationError(f"solution drafts are missing required fields: {', '.join(missing)}")
+    raw_options = value.get("options")
+    if not isinstance(raw_options, list):
+        raise AIOutputValidationError("solution drafts 'options' must be an array")
+    options: list[dict[str, Any]] = []
+    for item in raw_options[:5]:
+        if not isinstance(item, Mapping):
+            raise AIOutputValidationError("solution options must be objects")
+        option_missing = [key for key in ("title", "approach", "pros", "cons", "effort") if key not in item]
+        if option_missing:
+            raise AIOutputValidationError(f"solution option is missing required fields: {', '.join(option_missing)}")
+        title = str(item.get("title") or "").strip()
+        approach = str(item.get("approach") or "").strip()
+        if not title or not approach:
+            raise AIOutputValidationError("solution options require non-empty title and approach")
+        effort = str(item.get("effort") or "").strip().upper()
+        if effort not in {"S", "M", "L"}:
+            raise AIOutputValidationError("solution effort must be S, M, or L")
+        options.append(
+            {
+                "title": title[:255],
+                "approach": approach[:4000],
+                "pros": _clamped_strings(item.get("pros"), limit=8, max_length=500, label="pros"),
+                "cons": _clamped_strings(item.get("cons"), limit=8, max_length=500, label="cons"),
+                "effort": effort,
+            }
+        )
+    if not options:
+        raise AIOutputValidationError("solution drafts require at least one option")
+    return {
+        "options": options,
+        "limitations": _clamped_strings(value.get("limitations"), limit=10, max_length=1000, label="limitations"),
+    }
+
+
 # Friendly aliases for callers/tests that use the wording from the V1.1 document.
 validate_structured_ai_output = validate_ai_output
 build_safe_ai_context = build_ai_context
+extract_ai_insights = _extract_insights
 
 
 __all__ = [
@@ -674,13 +855,18 @@ __all__ = [
     "AI_OUTPUT_SCHEMA",
     "ALLOWED_CONTEXT_KEYS",
     "ALLOWED_CONTEXT_KEY_ORDER",
+    "PROBLEM_DRAFT_SCHEMA",
     "REPORT_OUTPUT_SCHEMA",
+    "SOLUTION_DRAFTS_SCHEMA",
     "assert_safe_ai_context",
     "build_ai_context",
     "build_safe_ai_context",
     "empty_ai_output",
     "empty_report_output",
+    "extract_ai_insights",
     "validate_ai_output",
+    "validate_problem_draft",
     "validate_report_output",
+    "validate_solution_drafts",
     "validate_structured_ai_output",
 ]

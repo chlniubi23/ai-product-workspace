@@ -42,22 +42,35 @@ export default function Stage9ProblemPage() {
     setBusy(true);
     setNotice("");
     try {
-      const result = await apiRequest<{ title?: string; statement?: string; impact_scope?: string }>(
-        "/ai/frame-problem",
-        {
-          method: "POST",
-          body: JSON.stringify({
-            project_id: projectId,
-            insight_ids: selected.length ? selected : confirmedInsights.map((item) => item.id),
-            question: title.trim(),
-          }),
-        },
-      );
-      if (result?.title) setTitle(result.title);
-      if (result?.statement) setStatement(result.statement);
-      if (result?.impact_scope) setImpact(result.impact_scope);
+      const result = await apiRequest<{
+        status?: string;
+        output?: {
+          title?: string;
+          statement?: string;
+          impact_scope?: string;
+          priority?: string;
+          limitations?: string[];
+        };
+      }>("/ai/frame-problem", {
+        method: "POST",
+        body: JSON.stringify({
+          project_id: projectId,
+          insight_ids: selected.length ? selected : confirmedInsights.map((item) => item.id),
+          question: title.trim(),
+        }),
+      });
+      if (result?.status === "succeeded" && result.output) {
+        setTitle(result.output.title || "");
+        setStatement(result.output.statement || "");
+        setImpact(result.output.impact_scope || "");
+        if (result.output.priority && PRIORITIES.includes(result.output.priority)) {
+          setPriority(result.output.priority);
+        }
+        setNotice("AI 起草完成，这是草稿，请你改成自己的说法再保存。");
+      } else {
+        setNotice("AI 起草不可用，可手写。");
+      }
       if (!selected.length) setSelected(confirmedInsights.map((item) => item.id));
-      setNotice("AI 起草完成，这是草稿，请你改成自己的说法再保存。");
     } catch (draftError) {
       setNotice(draftError instanceof Error ? draftError.message : "AI 起草失败，可以手写。");
     } finally {

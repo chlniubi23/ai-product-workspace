@@ -190,3 +190,97 @@ def test_viewer_cannot_trigger_an_ai_run(client, viewer, project):
 
     response = interpret(client, viewer, project)
     assert response.status_code in {200, 403}
+
+
+# --------------------------------------------------------------------------
+# Stage 9/10 draft contracts and the server-side `insights` context key
+# --------------------------------------------------------------------------
+
+
+def test_build_ai_context_keeps_only_the_insight_whitelist_fields():
+    """Insight rows are projected onto five fields; unknown keys never survive."""
+
+    from app.ai_context import build_ai_context
+
+    insights = [
+        {
+            "id": "ins-1",
+            "title": "Retention dipped for new users",
+            "content": "D" * 3000,
+            "confidence": "high",
+            "evidence": [{"type": "dataset_version", "id": "v-1"}, "raw evidence string"],
+            # Fields that must not survive the projection:
+            "status": "confirmed",
+            "project_id": "p-1",
+            "raw_rows": [{"secret": 1}],
+            "file_path": "/etc/passwd",
+        }
+    ]
+    context = build_ai_context(insights=insights)
+    assert len(context["insights"]) == 1
+    entry = context["insights"][0]
+    assert set(entry) == {"id", "title", "content", "confidence", "evidence"}
+    assert len(entry["content"]) == 2000
+    blob = json.dumps(context)
+    assert "secret" not in blob
+    assert "/etc/passwd" not in blob
+
+
+def test_build_ai_context_caps_insights_at_twenty_entries():
+    from app.ai_context import build_ai_context
+
+    insights = [{"id": str(index), "title": f"t{index}", "content": "c"} for index in range(30)]
+    context = build_ai_context(insights=insights)
+    assert len(context["insights"]) == 20
+
+
+def test_validate_problem_draft_clamps_lengths_and_normalizes_priority():
+    from app.ai_context import validate_problem_draft
+
+    draft = validate_problem_draft(
+        {
+            "title": "T" * 300,
+            "statement": "S" * 5000,
+            "impact_scope": "I" * 3000,
+            "priority": "p1",
+            "limitations": [f"limit {index}" for index in range(20)],
+        }
+    )
+    assert len(draft["title"]) == 255
+    assert len(draft["statement"]) == 4000
+    assert len(draft["impact_scope"]) == 2000
+    assert draft["priority"] == "P1"
+    assert len(draft["limitations"]) == 10
+
+
+def test_validate_problem_draft_rejects_missing_fields_and_bad_priority():
+    import pytest
+
+    from app.ai_context import AIOutputValidationError, validate_problem_draft
+
+    with pytest.raises(AIOutputValidationError):
+        validate_problem_draft({"title": "t", "statement": "s"})
+    with pytest.raises(AIOutputValidationError):
+        validate_problem_draft({"title": "", "statement": "s", "impact_scope": "", "limitations": []})
+    with pytest.raises(AIOutputValidationError):
+        validate_problem_draft({"title": "t", "statement": "s", "impact_scope": "", "priority": "P9", "limitations": []})
+
+
+def test_validate_solution_drafts_truncates_options_and_rejects_bad_effort():
+    import pytest
+
+    from app.ai_context import AIOutputValidationError, validate_solution_drafts
+
+    def option(effort="M"):
+        return {"title": "t", "approach": "a", "pros": ["p" * 600], "cons": ["c"], "effort": effort}
+
+    draft = validate_solution_drafts({"options": [option() for _ in range(8)], "limitations": []})
+    assert len(draft["options"]) == 5
+    assert len(draft["options"][0]["pros"][0]) == 500
+
+    with pytest.raises(AIOutputValidationError):
+        validate_solution_drafts({"options": [option(effort="XL")], "limitations": []})
+    with pytest.raises(AIOutputValidationError):
+        validate_solution_drafts({"limitations": []})
+    with pytest.raises(AIOutputValidationError):
+        validate_solution_drafts({"options": [], "limitations": []})

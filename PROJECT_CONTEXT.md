@@ -162,8 +162,9 @@ AI_Product_Workspace/
 ## 7. AI / LLM 逻辑（本项目的核心特色）
 
 ### 7.1 出站上下文防火墙（app/ai_context.py）
-- `build_ai_context()` 是唯一合法出站构造器：只允许 `goal / metrics / artifacts / quality / schema / question` 六个键；`FORBIDDEN_CONTEXT_KEYS`（raw_rows/file_path/token/database_url…）、`_FEEDBACK_CONTENT_KEYS`（feedback/content/comment/…约 25 个变体键）、行级列表键（rows/records/samples…）一律剔除；Email/电话正则脱敏，ID 类字段做稳定哈希匿名化。
-- `assert_safe_ai_context()` 复检；`validate_ai_output()` 强制输出含 `facts/hypotheses/recommendations/limitations` 四节、每条 claim 必带 evidence 数组；`validate_report_output()` 校验分章报告。
+- `build_ai_context()` 是唯一合法出站构造器：白名单键为 `goal / metrics / artifacts / quality / schema / question / insights` 七个；`FORBIDDEN_CONTEXT_KEYS`（raw_rows/file_path/token/database_url…）、`_FEEDBACK_CONTENT_KEYS`（feedback/content/comment/…约 25 个变体键）、行级列表键（rows/records/samples…）一律剔除；Email/电话正则脱敏，ID 类字段做稳定哈希匿名化。
+- `insights` 是 2026-08-30 契约修复时**新增**的键（不是放宽）：每条只保留 `id/title/content/confidence/evidence`（`_extract_insights`，≤20 条、content≤2000 字符、evidence 走标量消毒）。仅由服务端注入（Copilot 路径加载 confirmed 洞察）；`/ai/interpret` 的 `_ai_interpret_context` 显式 pop 掉客户端传入的 insights，保持"客户端洞察一律丢弃"的既有行为（否则该键携带的 content 子键会被 `assert_safe_ai_context` 判为 feedback 文本导致 500）。
+- `assert_safe_ai_context()` 复检；`validate_ai_output()` 强制输出含 `facts/hypotheses/recommendations/limitations` 四节、每条 claim 必带 evidence 数组；`validate_report_output()` 校验分章报告；另有 `PROBLEM_DRAFT_SCHEMA`/`validate_problem_draft`（stage 9 问题草稿：title/statement/impact_scope/limitations，priority 可选 P0-P3）与 `SOLUTION_DRAFTS_SCHEMA`/`validate_solution_drafts`（stage 10 方案草稿：options≤5 × title/approach/pros/cons/effort，effort 只允许 S/M/L）。
 
 ### 7.2 LLM 适配层（app/infrastructure/llm/deepseek.py）
 - `DeepSeekAdapter.complete()`：PII 脱敏所有消息（8000 字符截断）、JSON mode（`response_format: json_object`）、指数退避重试（429/5xx/网络错）、usage 统计。
@@ -173,10 +174,11 @@ AI_Product_Workspace/
 
 ### 7.3 请求级编排（main.py）
 - `_copilot_orchestrator()`（约 4165 行）：构造 workspace 绑定的工具注册表，`resolve_version` 校验数据版本归属。
-- `_run_ai_stage()`（约 4763 行）：阶段 9/10 AI 起草的共享模板——feature flag 检查 → 预算预留 → provider 调用 → 结构化校验 → 事后预算复核 → AIRun 落账 → 审计。**未配 key 或 provider 故障一律降级为空草稿（`empty_ai_output`），绝不 500。**
+- `_run_ai_stage()`（约 4763 行）：阶段 9/10 AI 起草的共享模板——feature flag 检查 → 预算预留 → provider 调用 → 结构化校验 → 事后预算复核 → AIRun 落账 → 审计。**未配 key 或 provider 故障一律降级为空草稿（`empty_ai_output`），绝不 500。** 支持三个可选参数自定义阶段契约：`response_schema`（替换提示词/解析用的 JSON schema）、`output_validator`（替换 `validate_ai_output`）、`empty_output`（降级时的空草稿形状）；缺省时行为与四段式契约完全一致。`/ai/frame-problem` 用它返回问题草稿对象、`/ai/propose-solutions` 返回 `{options: [...], limitations}`（均不再是四段式，前端 stage9/stage10 按此渲染）。
 - 预算体系：`_workspace_ai_budget`（workspace settings 的 per_request/daily/max_output，三者大小关系在 PATCH 时校验）+ `_workspace_token_usage`（当日 AIRun 累计；running 状态按满额预留防并发超卖）+ `_reject_ai_budget`（429 + 审计）。copilot 消息路径对 workspace 行加锁（`with_for_update`）。
 - AI 端点清单：`/ai/interpret`、`/ai/frame-problem`、`/ai/propose-solutions`、`/ai/draft-document`、`/ai/cluster-feedback`、`/ai/usage`、`/dataset-versions/{id}/report-narration`、`/projects/{id}/auto-report`。
 - Copilot SSE 是**回放**而非实时流：事件先存 `AIRun.input_summary_json.events`，`GET /copilot/runs/{id}/events` 逐条吐出（`_sse`）。
+- Copilot 上下文中的洞察由**服务端**注入：`copilot_message` 按 `session.project_id` 查询 confirmed 洞察（created_at 倒序 ≤20 条），经 `extract_ai_insights` 消毒后并入 `copilot_context`；不信任前端传的 insight_ids。
 
 ### 7.4 自动报告（`generate_auto_report`，约 5355 行）
 「数字先行，叙述在后」：pandas 算每数据集聚合（EDA/分布/相关性/趋势，`asyncio.to_thread` 中执行，单文件失败隔离为 read_failure）→ 聚合经 `build_ai_context` 消毒后作为唯一 AI 输入 → AI 只写叙述 → 确定性报告体与 AI 章节一并入库（`deterministic_json` + `sections_json`）→ 人工 confirm 独立动作。
@@ -216,9 +218,10 @@ AI_Product_Workspace/
 ## 10. 当前完成度
 
 **已实现且验证**：
-- 后端测试套件 **149 passed, 1 xfailed**（2026-08-30 实测运行）。覆盖：RBAC 与 workspace 隔离、数据管线（上传/版本/清洗/质量）、分析引擎全类型、AI 降级边界（无 key 绝不 500、输出契约、上下文白名单、反馈原文不外泄）、决策链规则（证据强制/落选理由/审批失效）、项目级联删除、报告叙述消毒。
+- 后端测试套件 **161 passed, 1 xfailed**（2026-08-30 实测运行；含 stage 9/10 草稿契约与 Copilot 洞察注入的专项测试）。覆盖：RBAC 与 workspace 隔离、数据管线（上传/版本/清洗/质量）、分析引擎全类型、AI 降级边界（无 key 绝不 500、输出契约、上下文白名单、反馈原文不外泄）、决策链规则（证据强制/落选理由/审批失效）、项目级联删除、报告叙述消毒。
 - 8 个 Alembic 迁移可从零建库；`.env` 已配置 DeepSeek；前后端均可本地跑通。
 - 前端 12 阶段页面、工作台、数据管理、设置页齐全。
+- **12 阶段全链路已真实手动冒烟走通**（2026-08-30，真实 DeepSeek key：上传→工作台报告→洞察→讨论→问题→方案→决策→PRD 导出）。
 
 **进行中（V1.1 迁移收尾）**：
 - legacy 表/API 与新表/API 并存，代码中大量兼容分支（`_migrate_legacy_metric_dictionary`、`_drop_feedback_content`、feedback 双轨等）；`0005` 迁移默认不删 legacy 表，需显式 `V11_DROP_LEGACY_TABLES=true`。
@@ -244,13 +247,14 @@ AI_Product_Workspace/
 8. **SSE 非实时**：copilot 事件回放式，用户体验依赖轮询 job 状态；`DeepSeekAdapter.stream()` 是伪流（一次性 complete 后整体 yield）。
 9. **文件存储在本机磁盘**：`data/uploads|processed|exports`，无对象存储；`_purge_project` 物理删除不可恢复（有审计）。
 10. **测试基建的小脆弱点**：`tests/conftest.py` 必须在 import app 前设置环境变量（ruff 已按文件豁免 E402 并有注释）；测试库文件在 `output/test-runtime`（rebuild on each run）。
+11. **真实 key 下的 AI 输出可靠性（2026-08-30 冒烟观察，未修）**：`deepseek-v4-flash` 偶发返回无法解析为 JSON 的内容或被 `max_output` 截断——此时 `_run_ai_stage` 沿用既有"raw 为 None 即空草稿"语义把 run 标为 `succeeded` 但 output 为空形状，前端按"AI 起草不可用，可手写"降级（propose-solutions 冒烟中 2 次出现 1 次）；Copilot 编排的 plan 校验（`INVALID_ANALYSIS_PLAN`）在真实 key 下也出现过失败降级。降级路径本身行为正确，属模型输出质量/预算配置问题。
 
 ---
 
 ## 12. 给后续开发对话的关键事实速查
 
 - 新增 API 端点的惯例：写在 `main.py`，用 `error()`/`ok()` 信封、`Depends(get_current_user)` + `membership()/project_for()` 做 RBAC、写 `audit()`、请求模型进 `schemas.py`。
-- 新增 AI 能力的惯例：复用 `_run_ai_stage()` 模板（flag→预算→调用→校验→落账），上下文必须过 `build_ai_context`，输出必须过 `validate_ai_output`，AI 结果一律 draft。
+- 新增 AI 能力的惯例：复用 `_run_ai_stage()` 模板（flag→预算→调用→校验→落账），需要阶段专属输出契约时传 `response_schema`/`output_validator`/`empty_output`（见 `PROBLEM_DRAFT_SCHEMA`/`SOLUTION_DRAFTS_SCHEMA` 的用法）；上下文必须过 `build_ai_context`，输出必须过对应校验器，AI 结果一律 draft。Copilot 的 insights 上下文由服务端注入，客户端传入的一律丢弃。
 - 前端新页面的惯例：`app/(workspace)/` 下建目录，用 `WorkflowFrame` 的 `WorkflowHeader/WorkflowGate` 包裹，门控逻辑改 `lib/workflow.ts` 的 `stepCompletion()`，导航加 `lib/navigation.ts`。
 - 分析类型扩展点：`analytics/engine.py`（计算）+ `main.py:_analysis_artifacts`（持久化映射）+ `_analysis_config_validation`（配置校验）+ `_auto_analysis_plan`（是否自动选）+ `deepseek.py` 工具白名单（若暴露给 Copilot）。
 - 测试运行：`cd apps/api && .venv/Scripts/python.exe -m pytest tests -q`（Windows；测试自备隔离 SQLite 与空 DeepSeek key）。

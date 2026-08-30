@@ -260,7 +260,11 @@ export function formatWorkflowDate(value?: string): string {
 }
 
 async function requestList<T>(path: string): Promise<T[]> {
-  const payload = await apiRequest<unknown>(path);
+  // The backend page_params caps page_size at 100. Without this, the default
+  // page of 20 hides older rows once records accumulate and the stage 6-12
+  // gates silently lose sight of them.
+  const separator = path.includes("?") ? "&" : "?";
+  const payload = await apiRequest<unknown>(`${path}${separator}page_size=100`);
   return asArray<T>(payload);
 }
 
