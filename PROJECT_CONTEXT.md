@@ -46,6 +46,8 @@
 
 ## 3. 目录结构（实际状态）
 
+**第三批（2026-08-30 完成）**：`main.py` 已从 6027 行拆为「app 组装层（146 行）+ `common.py` + 10 个 services + 13 个 routers」，路由清单由 `tests/test_route_manifest.py` 冻结守护。
+
 ```
 AI_Product_Workspace/
 ├── .env / .env.example          # 配置（DEEPSEEK_API_KEY 等已配置）
@@ -55,21 +57,30 @@ AI_Product_Workspace/
 └── apps/
     ├── api/                     # FastAPI 后端
     │   ├── app/
-    │   │   ├── main.py          # ★ 5970 行：全部路由+业务逻辑+job handlers
-    │   │   ├── models.py        #   636 行：27 张 ORM 表
-    │   │   ├── schemas.py       #   422 行：Pydantic 请求模型
-    │   │   ├── auth.py          #   密码哈希 + JWT
-    │   │   ├── config.py        #   pydantic-settings（Settings）
-    │   │   ├── db.py            #   engine/init/fallback/补列
-    │   │   ├── ai_context.py    #   ★ 686 行：AI 出站上下文防火墙 + 输出契约
-    │   │   ├── analytics/
-    │   │   │   ├── engine.py    #   ★ 643 行：确定性分析引擎
-    │   │   │   └── quality.py   #   405 行：质量评估 + 清洗操作
-    │   │   └── infrastructure/
-    │   │       ├── jobs.py      #   285 行：JobExecutor
-    │   │       └── llm/deepseek.py  # ★ 807 行：LLM 适配 + 工具白名单 + Copilot 编排
+    │   │   ├── main.py          #   146 行：app 实例 + CORS/legacy 中间件 + 异常处理器 + startup + include_router + health 三端点 + _register_job_handlers() 调用
+    │   │   ├── common.py        #   112 行：ok()/error() 响应信封、_request_id、serialize/model_dict、page_params/paged、_require_pandas 懒加载哨兵、_redact_validation_details
+    │   │   ├── ai_context.py    #   AI 出站上下文防火墙 + 输出契约（未改动）
+    │   │   ├── models.py / schemas.py / auth.py / config.py / db.py   # 未改动
+    │   │   ├── services/        #   业务逻辑层（不含路由装饰器；禁止反向导入 routers）
+    │   │   │   ├── access.py             #   membership/project_for/_dataset_version_for/_problem_for 等实体定位 + RBAC
+    │   │   │   ├── audit.py              #   audit()/audit_user_workspaces
+    │   │   │   ├── workspace_settings.py #   工作区设置/双层 token 预算/_workspace_payload/指标字典迁移
+    │   │   │   ├── evidence.py           #   _check_evidence_scope/证据强制/引用范围校验
+    │   │   │   ├── datasets.py           #   读文件/字段 schema/质量摘要/清洗操作/版本 payload
+    │   │   │   ├── analysis_pipeline.py  #   分析产物持久化/配置校验/自动分析计划/_analysis_artifacts
+    │   │   │   ├── ai_stages.py          #   _run_ai_stage 模板/_deepseek_answer/Copilot 编排胶水/AI 上下文投影
+    │   │   │   ├── auto_report.py        #   项目级自动报告（pandas 聚合 + 确定性骨架）
+    │   │   │   ├── documents.py          #   文档 payload + Markdown 渲染 + generate_document
+    │   │   │   └── job_handlers.py       #   job_executor 唯一实例 + 全部 _handle_* job handler + _register_job_handlers 定义
+    │   │   ├── routers/         #   路由层：APIRouter + @router.<method>("/api/v1/...")（路径全写）
+    │   │   │   ├── auth.py / workspaces.py / projects.py / datasets.py / analysis.py
+    │   │   │   ├── insights.py / feedback.py / problems.py / decisions.py / documents.py
+    │   │   │   ├── jobs.py / copilot.py / ai.py
+    │   │   │   └── （/ai/draft-document 在 documents.py、/ai/cluster-feedback 在 feedback.py——别名路由跟随其调用的服务函数所在 router，避免 routers 互导）
+    │   │   ├── analytics/       #   engine.py / quality.py（未改动；顶层 import pandas 属既有行为）
+    │   │   └── infrastructure/  #   jobs.py / llm/deepseek.py（未改动）
     │   ├── alembic/versions/    #   8 个迁移
-    │   ├── tests/               #   9 个测试文件，149 用例
+    │   ├── tests/               #   10 个测试文件，162 用例（含 route manifest 冻结测试）
     │   └── pyproject.toml
     └── web/                     # Next.js 14 前端
         ├── middleware.ts        #   登录门禁 + legacy 路由重定向
@@ -86,7 +97,7 @@ AI_Product_Workspace/
         │   └── analysis/                #   ChartRenderer(ECharts) / ReportMarkdown
         └── lib/
             ├── api.ts           #   fetch 封装 + 会话存取
-            ├── workflow.ts      #   ★ 363 行：快照加载 + 12 阶段门控计算
+            ├── workflow.ts      #   ★ 快照加载（10 类列表）+ 12 阶段门控计算
             ├── navigation.ts    #   导航元数据 + legacy 路由别名
             ├── settings.ts      #   设置/健康 API 封装
             └── chartOption.ts / format.ts / upload.ts
@@ -255,8 +266,11 @@ AI_Product_Workspace/
 
 ## 12. 给后续开发对话的关键事实速查
 
-- 新增 API 端点的惯例：写在 `main.py`，用 `error()`/`ok()` 信封、`Depends(get_current_user)` + `membership()/project_for()` 做 RBAC、写 `audit()`、请求模型进 `schemas.py`。
-- 新增 AI 能力的惯例：复用 `_run_ai_stage()` 模板（flag→预算→调用→校验→落账），需要阶段专属输出契约时传 `response_schema`/`output_validator`/`empty_output`（见 `PROBLEM_DRAFT_SCHEMA`/`SOLUTION_DRAFTS_SCHEMA` 的用法）；上下文必须过 `build_ai_context`，输出必须过对应校验器，AI 结果一律 draft。Copilot 的 insights 上下文由服务端注入，客户端传入的一律丢弃。
+**第三批（2026-08-30）拆分后的落位规则**：
+- 新增 API 端点：写到对应域的 `app/routers/<域>.py`（`router = APIRouter()` + `@router.<method>("/api/v1/...")` 路径全写），在 `main.py` 加 `app.include_router(...)`；请求模型进 `schemas.py`。`tests/test_route_manifest.py` 会冻结断言全部 (path, methods, name)——路由变更必须同步重生成该清单。
+- 新增业务逻辑：放到 `app/services/<域>.py`；被多个 router 共用的 helper 必须下沉 services（routers 之间禁止互导，services 禁止反向导入 routers）。`ok()/error()/model_dict/paged` 等信封工具在 `common.py`；`_require_pandas()` 是 pandas 懒加载哨兵（使用方在函数内 `pd = _require_pandas()`，运行时禁止模块顶层 import pandas）。
+- job handler：`app/services/job_handlers.py`，`job_executor` 全仓库唯一实例在此；新增 handler 后在 `_register_job_handlers()` 注册（main.py 末尾恰好调用一次）。
+- 新增 AI 能力：服务逻辑进 `services/ai_stages.py`（复用 `_run_ai_stage()` 模板，可传 `response_schema`/`output_validator`/`empty_output` 定义阶段契约），路由壳进 `routers/ai.py`；上下文必须过 `build_ai_context`，AI 结果一律 draft；Copilot 的 insights 上下文由服务端注入，客户端传入的一律丢弃。
+- 分析类型扩展点：`analytics/engine.py`（计算）+ `services/analysis_pipeline.py`（`_analysis_artifacts` 持久化映射、`_analysis_config_validation`、`_auto_analysis_plan`）+ `deepseek.py` 工具白名单（若暴露给 Copilot）。
 - 前端新页面的惯例：`app/(workspace)/` 下建目录，用 `WorkflowFrame` 的 `WorkflowHeader/WorkflowGate` 包裹，门控逻辑改 `lib/workflow.ts` 的 `stepCompletion()`，导航加 `lib/navigation.ts`。
-- 分析类型扩展点：`analytics/engine.py`（计算）+ `main.py:_analysis_artifacts`（持久化映射）+ `_analysis_config_validation`（配置校验）+ `_auto_analysis_plan`（是否自动选）+ `deepseek.py` 工具白名单（若暴露给 Copilot）。
 - 测试运行：`cd apps/api && .venv/Scripts/python.exe -m pytest tests -q`（Windows；测试自备隔离 SQLite 与空 DeepSeek key）。
