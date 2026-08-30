@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ChevronRight, Gavel, Send, ShieldCheck } from "lucide-react";
+import { Check, ChevronRight, Gavel, Send, ShieldCheck } from "lucide-react";
 import { useMemo, useState } from "react";
 import { apiRequest, accessToken } from "@/lib/api";
 import {
@@ -11,7 +11,11 @@ import {
   EvidenceStatus,
   useWorkflowSnapshot,
 } from "@/components/workflow/WorkflowFrame";
-import { formatWorkflowDate } from "@/lib/workflow";
+import {
+  formatWorkflowDate,
+  type WorkflowApproval,
+  type WorkflowDecision,
+} from "@/lib/workflow";
 
 const PRIORITIES = ["P0", "P1", "P2", "P3"];
 
@@ -27,6 +31,8 @@ export default function Stage11DecisionPage() {
   const [busy, setBusy] = useState(false);
   const [busyId, setBusyId] = useState("");
   const [notice, setNotice] = useState("");
+  const [rejectingId, setRejectingId] = useState("");
+  const [rejectReason, setRejectReason] = useState("");
 
   const confirmedProblems = useMemo(
     () => (snapshot?.problems || []).filter((item) => item.status === "confirmed"),
@@ -41,8 +47,30 @@ export default function Stage11DecisionPage() {
       ),
     [snapshot, activeProblemId],
   );
-  const decisions = snapshot?.decisions || [];
+  const decisions = useMemo(() => snapshot?.decisions || [], [snapshot]);
   const projectId = snapshot?.activeDataset?.project_id;
+
+  // Pending approvals that point at a known proposal; proposals of the active
+  // project float to the top, everything else still shows.
+  const pendingApprovals = useMemo(() => {
+    const decisionsById = new Map(decisions.map((item) => [item.id, item]));
+    return (snapshot?.approvals || [])
+      .filter(
+        (approval): approval is WorkflowApproval & { target_id: string } =>
+          approval.target_type === "decision_proposal" &&
+          !!approval.target_id &&
+          decisionsById.has(approval.target_id),
+      )
+      .map((approval) => {
+        const decision = decisionsById.get(approval.target_id) as WorkflowDecision;
+        return { approval, decision };
+      })
+      .sort((left, right) => {
+        const leftSameProject = left.decision.project_id === projectId ? 0 : 1;
+        const rightSameProject = right.decision.project_id === projectId ? 0 : 1;
+        return leftSameProject - rightSameProject;
+      });
+  }, [snapshot, decisions, projectId]);
 
   const evidence = useMemo(() => {
     const refs = (activeProblem?.source_insight_ids || []).map((id) => ({ type: "insight", id }));
@@ -82,7 +110,7 @@ export default function Stage11DecisionPage() {
       setValidation("");
       setImpact("");
       setRisk("");
-      setNotice("决策已存为草稿。提交后需要你自己确认一次，作为落笔前的最后检查。");
+      setNotice("决策已存为草稿，提交后进入待审批。");
       await refresh();
     } catch (createError) {
       setNotice(createError instanceof Error ? createError.message : "创建失败");
@@ -96,22 +124,64 @@ export default function Stage11DecisionPage() {
     setBusyId(id);
     setNotice("");
     try {
-      const result = await apiRequest<{ approval_request?: { id: string; version?: number } }>(
-        `/decision-proposals/${id}/submit`,
-        { method: "POST" },
-      );
-      const approvalId = result?.approval_request?.id;
-      const version = result?.approval_request?.version ?? 1;
-      if (approvalId) {
-        await apiRequest(`/approval-requests/${approvalId}/approve`, {
-          method: "POST",
-          body: JSON.stringify({ version, decision_note: "本人确认" }),
-        });
-      }
-      setNotice("决策已确认，可以生成 PRD。");
+      // Submitting only moves the proposal to pending_approval and creates the
+      // approval request. Approving or rejecting is a separate, deliberate
+      // action in the 待审批 section below -- the same account may do both.
+      await apiRequest(`/decision-proposals/${id}/submit`, { method: "POST" });
+      setNotice("决策已提交，等待审批");
       await refresh();
     } catch (submitError) {
       setNotice(submitError instanceof Error ? submitError.message : "提交失败");
+    } finally {
+      setBusyId("");
+    }
+  }
+
+  async function approveRequest(approvalId: string, version: number | undefined) {
+    if (!accessToken()) return;
+    setBusyId(approvalId);
+    setNotice("");
+    try {
+      await apiRequest(`/approval-requests/${approvalId}/approve`, {
+        method: "POST",
+        body: JSON.stringify({ version: version ?? 1, decision_note: "" }),
+      });
+      setNotice("决策已批准");
+      await refresh();
+    } catch (approvalError) {
+      setNotice(approvalError instanceof Error ? approvalError.message : "审批操作失败");
+    } finally {
+      setBusyId("");
+    }
+  }
+
+  function beginReject(approvalId: string) {
+    setRejectingId(approvalId);
+    setRejectReason("");
+    setNotice("");
+  }
+
+  function cancelReject() {
+    setRejectingId("");
+    setRejectReason("");
+  }
+
+  async function rejectRequest(approvalId: string, version: number | undefined) {
+    const reason = rejectReason.trim();
+    if (!accessToken() || !reason) return;
+    setBusyId(approvalId);
+    setNotice("");
+    try {
+      await apiRequest(`/approval-requests/${approvalId}/reject`, {
+        method: "POST",
+        body: JSON.stringify({ version: version ?? 1, decision_note: reason }),
+      });
+      setRejectingId("");
+      setRejectReason("");
+      setNotice("决策已驳回，提案退回后可修改并重新提交。");
+      await refresh();
+    } catch (rejectError) {
+      setNotice(rejectError instanceof Error ? rejectError.message : "审批操作失败");
     } finally {
       setBusyId("");
     }
@@ -122,7 +192,7 @@ export default function Stage11DecisionPage() {
       <WorkflowHeader
         step={11}
         title="产品决策"
-        description="把选定方案写成一条可追溯的决策：做什么、预期什么、怎么验证。证据自动继承问题引用的洞察。"
+        description="提交后进入待审批，批准或驳回（驳回必须写明理由）。同一账号可先提交再审批；用两个账号登录即可演示双人治理。"
         completion={completion}
         loading={loading || busy}
       />
@@ -252,7 +322,7 @@ export default function Stage11DecisionPage() {
                   <div>
                     <h2 className="card-title">决策记录</h2>
                     <div className="card-kicker">
-                      共 {decisions.length} 条 · 已确认{" "}
+                      共 {decisions.length} 条 · 已批准{" "}
                       {decisions.filter((item) => item.status === "approved").length} 条
                     </div>
                   </div>
@@ -291,7 +361,7 @@ export default function Stage11DecisionPage() {
                           onClick={() => void submit(decision.id)}
                         >
                           <Send size={13} />
-                          提交并确认
+                          提交审批
                         </button>
                       )}
                     </div>
@@ -304,6 +374,99 @@ export default function Stage11DecisionPage() {
                 </div>
               </section>
             )}
+
+            <section className="card card-pad" style={{ marginTop: 16 }}>
+              <div className="card-head">
+                <div>
+                  <h2 className="card-title">待审批</h2>
+                  <div className="card-kicker">
+                    批准或驳回；驳回必须写明理由，提案在审批中被编辑会导致审批失效。
+                  </div>
+                </div>
+                <ShieldCheck size={17} color="#4a6cf7" />
+              </div>
+              {pendingApprovals.length === 0 ? (
+                <p style={{ color: "var(--muted)" }}>没有等待审批的决策提案。</p>
+              ) : (
+                <div className="list" style={{ marginTop: 8 }}>
+                  {pendingApprovals.map(({ approval, decision }) => (
+                    <div className="card card-pad" key={approval.id} style={{ marginBottom: 10 }}>
+                      <div className="card-head">
+                        <div>
+                          <strong>{decision.title || "未命名决策"}</strong>
+                          <div className="card-kicker">
+                            v{approval.version ?? decision.version ?? 1} · 提交于{" "}
+                            {formatWorkflowDate(approval.created_at)}
+                            {approval.requested_by
+                              ? ` · 提交人 ${String(approval.requested_by).slice(0, 8)}`
+                              : ""}
+                          </div>
+                        </div>
+                        <span className="tag tag-amber">待审批</span>
+                      </div>
+                      <p style={{ lineHeight: 1.6 }}>{decision.proposed_action || "没有动作描述。"}</p>
+                      {decision.validation_plan && (
+                        <p style={{ color: "var(--muted)", fontSize: 13 }}>验证：{decision.validation_plan}</p>
+                      )}
+                      {rejectingId === approval.id ? (
+                        <div style={{ marginTop: 12 }}>
+                          <label className="field">
+                            <span className="field-label">驳回理由（必填）</span>
+                            <textarea
+                              rows={2}
+                              value={rejectReason}
+                              placeholder="写明为什么不批准，例如：验证口径无法复盘"
+                              onChange={(event) => setRejectReason(event.target.value)}
+                            />
+                          </label>
+                          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                            <button
+                              className="btn btn-subtle btn-sm"
+                              disabled={busyId === approval.id}
+                              onClick={cancelReject}
+                            >
+                              取消
+                            </button>
+                            <button
+                              className="btn btn-primary btn-sm"
+                              disabled={busyId === approval.id || !rejectReason.trim()}
+                              onClick={() => void rejectRequest(approval.id, approval.version)}
+                            >
+                              确认驳回
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div
+                          style={{
+                            display: "flex",
+                            gap: 8,
+                            marginTop: 12,
+                            justifyContent: "flex-end",
+                          }}
+                        >
+                          <button
+                            className="btn btn-subtle btn-sm"
+                            disabled={busyId === approval.id}
+                            onClick={() => beginReject(approval.id)}
+                          >
+                            驳回
+                          </button>
+                          <button
+                            className="btn btn-primary btn-sm"
+                            disabled={busyId === approval.id}
+                            onClick={() => void approveRequest(approval.id, approval.version)}
+                          >
+                            <Check size={13} />
+                            批准
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
           </>
         )}
       </WorkflowGate>

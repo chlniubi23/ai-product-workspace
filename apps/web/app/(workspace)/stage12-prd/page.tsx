@@ -1,6 +1,7 @@
 "use client";
 
-import { Download, FileText, Sparkles } from "lucide-react";
+import Link from "next/link";
+import { ChevronRight, Download, FileText, Sparkles } from "lucide-react";
 import { useState } from "react";
 import { apiRequest } from "@/lib/api";
 import {
@@ -25,6 +26,10 @@ export default function Stage12PrdPage() {
   const [notice, setNotice] = useState("");
   const projectId = snapshot?.activeDataset?.project_id;
   const confirmed = snapshot?.insights.filter((insight) => insight.status === "confirmed") || [];
+  // The delivery gate follows the decision chain, not raw insight count: an
+  // approved decision is what proves stages 9-11 actually happened.
+  const hasApprovedDecision =
+    (snapshot?.decisions || []).some((decision) => decision.status === "approved");
 
   const generate = async () => {
     if (!projectId || !confirmed.length) return;
@@ -77,11 +82,14 @@ export default function Stage12PrdPage() {
         </div>
       )}
       <WorkflowGate step={12} completion={completion} loading={loading}>
-        {!confirmed.length ? (
+        {!hasApprovedDecision ? (
           <section className="card empty-state">
             <FileText size={20} />
-            <strong>暂无已确认洞察</strong>
+            <strong>还没有已批准的决策</strong>
             <p>先在第 11 步完成产品决策。</p>
+            <Link className="btn btn-primary btn-sm" href="/stage11-decision">
+              前往第 11 步·产品决策 <ChevronRight size={13} />
+            </Link>
           </section>
         ) : (
           <section className="card card-pad" style={{ marginTop: 16 }}>

@@ -139,6 +139,17 @@ export type WorkflowDiscussion = {
   created_at?: string;
 };
 
+/** Pending approval request; the backend only ever lists status=pending rows. */
+export type WorkflowApproval = {
+  id: string;
+  target_type?: string;
+  target_id?: string;
+  status?: string;
+  version?: number;
+  requested_by?: string;
+  created_at?: string;
+};
+
 export type WorkflowSnapshot = {
   projects: WorkflowProject[];
   datasets: WorkflowDataset[];
@@ -149,6 +160,7 @@ export type WorkflowSnapshot = {
   solutions: WorkflowSolution[];
   decisions: WorkflowDecision[];
   discussions: WorkflowDiscussion[];
+  approvals: WorkflowApproval[];
   activeDataset?: WorkflowDataset;
   activeVersion?: WorkflowVersion;
   workspaceId: string;
@@ -311,6 +323,7 @@ export async function loadWorkflowSnapshot(): Promise<WorkflowSnapshot> {
     solutionsResult,
     decisionsResult,
     discussionsResult,
+    approvalsResult,
     meResult,
   ] = await Promise.allSettled([
     requestList<WorkflowProject>("/projects"),
@@ -322,6 +335,9 @@ export async function loadWorkflowSnapshot(): Promise<WorkflowSnapshot> {
     requestList<WorkflowSolution>("/solutions"),
     requestList<WorkflowDecision>("/decision-proposals"),
     requestList<WorkflowDiscussion>("/discussions"),
+    // The endpoint itself only returns status=pending rows; requestList
+    // appends page_size=100.
+    requestList<WorkflowApproval>("/approval-requests"),
     apiRequest<unknown>("/me"),
   ]);
   const read = <T>(result: PromiseSettledResult<T[]>, label: string): T[] => {
@@ -338,6 +354,7 @@ export async function loadWorkflowSnapshot(): Promise<WorkflowSnapshot> {
   const solutions = read(solutionsResult, "候选方案");
   const decisions = read(decisionsResult, "产品决策");
   const discussions = read(discussionsResult, "讨论记录");
+  const approvals = read(approvalsResult, "待审批");
   const activeDataset = latestDataset(datasets);
   const activeVersion = await hydrateActiveVersion(activeDataset);
   const workspaceId =
@@ -354,6 +371,7 @@ export async function loadWorkflowSnapshot(): Promise<WorkflowSnapshot> {
     solutions,
     decisions,
     discussions,
+    approvals,
     activeDataset,
     activeVersion,
     workspaceId,

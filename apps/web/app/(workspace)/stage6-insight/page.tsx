@@ -46,7 +46,7 @@ export default function Stage6InsightPage() {
         }),
       });
       setOutput(result.output || result.structured || null);
-      setNotice("AI 草稿已生成，请逐条确认引用后保存");
+      setNotice("AI 草稿已生成，请逐条检查引用后保存为草稿");
     } catch (cause) {
       setNotice(cause instanceof Error ? cause.message : "AI 解读失败");
     } finally {
@@ -65,6 +65,9 @@ export default function Stage6InsightPage() {
       for (const [section, type] of sections) {
         for (const claim of (output[section] as Claim[] | undefined) || []) {
           if (!claim.text || !(claim.evidence || []).length) continue;
+          // No status field on purpose: stage 6 only produces drafts. The
+          // backend defaults InsightCreate.status to "draft"; adoption is a
+          // separate stage-7 decision.
           await apiRequest("/insights", {
             method: "POST",
             body: JSON.stringify({
@@ -73,12 +76,11 @@ export default function Stage6InsightPage() {
               insight_type: type,
               content: claim.text,
               evidence: claim.evidence,
-              status: "confirmed",
             }),
           });
         }
       }
-      setNotice("已确认并保存有证据的洞察");
+      setNotice("洞察草稿已保存，请到第 7 步逐条裁决");
       await refresh();
     } catch (cause) {
       setNotice(cause instanceof Error ? cause.message : "洞察保存失败");
@@ -102,11 +104,10 @@ export default function Stage6InsightPage() {
           insight_type: "fact",
           content: manualText.trim(),
           evidence: [{ type: "analysis_artifact", id: artifactId }],
-          status: "confirmed",
         }),
       });
       setManualText("");
-      setNotice("手工洞察已确认并保存");
+      setNotice("手工洞察已存为草稿，请到第 7 步裁决");
       await refresh();
     } catch (cause) {
       setNotice(cause instanceof Error ? cause.message : "手工洞察保存失败");
@@ -212,12 +213,12 @@ export default function Stage6InsightPage() {
                 <section className="card card-pad" style={{ marginTop: 16 }}>
                   <div className="card-head">
                     <div>
-                      <h2 className="card-title">人工确认</h2>
-                      <div className="card-kicker">没有引用的句子不会进入交付</div>
+                      <h2 className="card-title">保存洞察草稿</h2>
+                      <div className="card-kicker">没有引用的句子不会落库，采纳与否在第 7 步裁决</div>
                     </div>
                     <button className="btn btn-primary" onClick={() => void confirmClaims()}>
                       <Check size={14} />
-                      确认并保存
+                      保存为草稿
                     </button>
                   </div>
                   {output.limitations?.length ? (
@@ -239,7 +240,7 @@ export default function Stage6InsightPage() {
                 rows={3}
                 value={manualText}
                 onChange={(event) => setManualText(event.target.value)}
-                placeholder="记录你确认后的事实或下一步建议"
+                placeholder="记录你观察到的事实或下一步建议"
               />
               <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
                 <button className="btn" onClick={() => void saveManual()}>
@@ -248,6 +249,12 @@ export default function Stage6InsightPage() {
                 </button>
               </div>
             </section>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
+              <Link className="btn btn-primary btn-sm" href="/stage7-copilot">
+                前往第 7 步·决策副驾 <ChevronRight size={13} />
+              </Link>
+            </div>
           </>
         )}
       </WorkflowGate>

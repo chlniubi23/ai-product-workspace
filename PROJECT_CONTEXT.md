@@ -142,13 +142,15 @@ AI_Product_Workspace/
 | 4 分析运行 | 工作台 | 存在 succeeded 的 AnalysisRun | `POST /analysis-runs`、`POST /analysis-runs/validate-config` |
 | 5 分析产物 | 工作台 | run 有 artifacts/result_summary | `GET /analysis-runs/{id}/artifacts` |
 | 5.5 AI 报告 | 工作台 | （非门控，独立 confirm） | `POST /projects/{id}/auto-report`、`POST /auto-reports/{id}/confirm` |
-| 6 洞察引擎 | stage6-insight | insights.length > 0 | `POST /ai/interpret`（产 draft） |
-| 7 决策副驾 | stage7-copilot | 存在 status=confirmed 的洞察 | `PATCH /insights/{id}`（采纳**强制 evidence 非空**） |
+| 6 洞察引擎 | stage6-insight | insights.length > 0 | `POST /ai/interpret`（产 draft）。**第二批起本步只落草稿**：保存洞察不传 status，后端默认 draft |
+| 7 决策副驾 | stage7-copilot | 存在 status=confirmed 的洞察 | `PATCH /insights/{id}`（第 7 步统一裁决采纳/否决；采纳**强制 evidence 非空**） |
 | 8 人机讨论 | stage8-discussion | copilot session turn_count>0 | `POST /copilot/sessions/{id}/messages`、SSE `GET /copilot/runs/{id}/events` |
 | 9 产品问题 | stage9-problem | problem.status=confirmed | `POST /ai/frame-problem`（草稿）→ `POST /problems`（落库，confirm 需 source_insight_ids） |
 | 10 方案讨论 | stage10-solution | solution.status=selected | `POST /ai/propose-solutions` → `POST /solutions/{id}/select`（**落选方案必须写 reject_reason**） |
-| 11 产品决策 | stage11-decision（无 AI） | decision.status=approved | `POST /decision-proposals/{id}/submit`（自动生成 approval_request）→ `POST /approval-requests/{id}/approve|reject`（驳回必写理由；提案被编辑则审批失效） |
-| 12 PRD | stage12-prd | 文档有版本 | `POST /documents`、`/documents/generate`、`/documents/{id}/versions`、`/documents/{id}/submit`、`GET /documents/{id}/export`（.md 下载） |
+| 11 产品决策 | stage11-decision（无 AI） | decision.status=approved | `POST /decision-proposals/{id}/submit`（仅置 pending_approval + 建 pending 审批）→ **审批是独立动作**：`POST /approval-requests/{id}/approve|reject`（驳回必写理由；提案被编辑则审批返回 VERSION_CONFLICT）。同一账号可先提交再审批 |
+| 12 PRD | stage12-prd | 文档有版本（workflow 门控不变） | `POST /documents`、`/documents/generate`、`/documents/{id}/versions`、`/documents/{id}/submit`、`GET /documents/{id}/export`（.md 下载）。页面渲染门控=存在 approved 决策（第二批对齐） |
+
+> **第二批流程收敛（2026-08-30 完成，纯前端）**：第 6 步只产草稿、第 7 步统一裁决；第 11 步提交与审批分离（`submit()` 不再自动 approve，页面新增待审批区块，数据来自 `GET /approval-requests`）；第 12 步渲染门控从"有已确认洞察"改为"存在 approved 决策"。后端零改动。
 
 **上传后的自动管线**（`_handle_dataset_parse`，main.py 约 2413 行）：
 解析 → 行列数/空表校验 → 质量评估 → 写字段字典 → **`schema_auto_accepted_at` 打点 + 内联跑 `_auto_analysis_plan`**（≤3 个：事件表选留存、指标表选趋势+异常，漏斗永不自动选；幂等，失败不拖垮解析）。
@@ -207,7 +209,7 @@ AI_Product_Workspace/
 ## 9. 前端结构与数据流
 
 - **认证流**：login 页 `POST /auth/login` → `saveSession()`（localStorage + 镜像 cookie，cookie max-age 解析 JWT exp 对齐，`lib/api.ts:43`）→ middleware 放行；任意 401 统一 `clearSession()` + 跳 `/login`（`api.ts:22`）。
-- **工作台数据流**：`loadWorkflowSnapshot()`（`workflow.ts:298`）`Promise.allSettled` 并行拉 9 类列表 + `/me`，容错收集 loadErrors → `hydrateActiveVersion` 补拉 schema/质量报告 → `stepCompletion()` 算门控 → `WorkflowFrame` 渲染门控/进度。
+- **工作台数据流**：`loadWorkflowSnapshot()`（`workflow.ts:298`）`Promise.allSettled` 并行拉 10 类列表（含第二批新增的 `/approval-requests`，仅 pending）+ `/me`，容错收集 loadErrors → `hydrateActiveVersion` 补拉 schema/质量报告 → `stepCompletion()` 算门控 → `WorkflowFrame` 渲染门控/进度。
 - **工作台上传流**（`app/(workspace)/page.tsx`）：选文件 → `upload-batch` → 轮询 job（`TERMINAL_JOB_STATUS`，POLL_LIMIT=150）→ 就绪后 `POST auto-report` → 渲染 ReportMarkdown + ECharts 图表 → confirm/重新生成。
 - **各阶段页**均为「门控包裹 + API 薄封装」模式；AI 起草按钮调用对应 `/ai/*` 端点，返回的 draft 填充表单，用户修改后走常规 POST/PATCH 落库。
 - **设置页**：workspace 设置（时区/AI 模型/输出上限/双层 token 预算/feature flags）+ `/health/ai`、`/health/ready` 健康面板。
