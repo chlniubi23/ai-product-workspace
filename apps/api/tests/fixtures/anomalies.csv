@@ -1,0 +1,5 @@
+user_id,event_time,event_name,channel,version,latency_ms
+u_101,2026-08-01T09:00:00Z,register_start,organic,1.0.3,210
+u_101,2026-08-01T09:00:00Z,register_start,organic,1.0.3,210
+,not-a-date,register_success,organic,1.0.3,9999
+u_102,2026-08-02T09:00:00Z,register_success,paid,1.0.3,-12

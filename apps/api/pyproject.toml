@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-product-workspace-api"
+version = "1.0.0"
+description = "FastAPI backend for AI Product Workspace"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.111,<1",
+  "uvicorn[standard]>=0.30,<1",
+  "sqlalchemy>=2.0,<3",
+  "alembic>=1.13,<2",
+  "pymysql>=1.1,<2",
+  "pydantic>=2.7,<3",
+  "pydantic-settings>=2.2,<3",
+  "email-validator>=2.1,<3",
+  "bcrypt>=4.2,<6",
+  "PyJWT>=2.8,<3",
+  "python-multipart>=0.0.9,<1",
+  "pandas>=2.1,<3",
+  "numpy>=1.26,<2",
+  "openpyxl>=3.1,<4",
+  "httpx>=0.27,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.4,<9",
+  "ruff>=0.6,<1",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+filterwarnings = [
+  # quality.py:73 probes whether a text column parses as dates; the per-element
+  # dateutil fallback is the intended path for mixed real-world input.
+  "ignore:Could not infer format:UserWarning",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+# B008: FastAPI's Depends()/File()/Form() defaults are the framework idiom, not a bug.
+ignore = ["B008", "E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Alembic migrations are generated; E402 is inherent to their template.
+"alembic/**" = ["E402"]
+# conftest must set test-only environment variables before importing the app,
+# so imports cannot all sit at the top of the file.
+"tests/conftest.py" = ["E402"]
+
+[tool.uvicorn]
+app = "app.main:app"
+host = "0.0.0.0"
+port = 8000

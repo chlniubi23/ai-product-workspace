@@ -1,0 +1,686 @@
+"""Safe context and output contracts for product-analytics AI calls.
+
+The application stores considerably more information than an AI call needs.  This
+module is deliberately dependency-light so every AI entry point can use the same
+allowlist without importing the database layer.  ``build_ai_context`` is the only
+supported shape for outbound analytics context; it never returns raw rows, file
+contents, storage paths, credentials, or values from ``.env``.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import re
+from collections.abc import Mapping
+from dataclasses import asdict, is_dataclass
+from typing import Any
+
+
+class AIContextError(ValueError):
+    """Raised when a caller supplies an invalid or unsafe AI context."""
+
+
+class AIOutputValidationError(ValueError):
+    """Raised when a provider response does not satisfy the output contract."""
+
+
+# A tuple preserves the wire order used in prompts and persisted run summaries;
+# the frozenset alias keeps membership checks cheap and backwards compatible.
+ALLOWED_CONTEXT_KEY_ORDER = ("goal", "metrics", "artifacts", "quality", "schema", "question")
+ALLOWED_CONTEXT_KEYS = frozenset(ALLOWED_CONTEXT_KEY_ORDER)
+
+# These names are intentionally broader than the database column names.  A model
+# or a future adapter must not be able to smuggle a file/row payload by choosing a
+# slightly different spelling.
+FORBIDDEN_CONTEXT_KEYS = frozenset(
+    {
+        "raw",
+        "raw_data",
+        "raw_rows",
+        "rows",
+        "records",
+        "cells",
+        "cell_values",
+        "values",
+        "dataframe",
+        "df",
+        "file",
+        "file_content",
+        "content_bytes",
+        "storage_path",
+        "file_path",
+        "path",
+        "source_path",
+        "env",
+        "environment",
+        "password",
+        "password_hash",
+        "secret",
+        "api_key",
+        "apikey",
+        "authorization",
+        "access_token",
+        "refresh_token",
+        "token",
+        "database_url",
+        "deepseek_api_key",
+    }
+)
+# Free-form feedback is persisted in a separate domain model and must never be
+# copied into an aggregate artifact sent to a provider.  Include common naming
+# variants because imported CSV/JSON payloads are not consistent about casing.
+_FEEDBACK_CONTENT_KEYS = frozenset(
+    {
+        "feedback",
+        "feedback_item",
+        "feedback_items",
+        "feedback_text",
+        "feedbacktext",
+        "feedback_content",
+        "feedbackcontent",
+        "comment",
+        "comments",
+        "comment_text",
+        "commenttext",
+        "message",
+        "messages",
+        "message_text",
+        "messagetext",
+        "review",
+        "reviews",
+        "review_text",
+        "reviewtext",
+        "content",
+        "content_text",
+        "contenttext",
+        "verbatim",
+        "verbatims",
+    }
+)
+_SECRET_KEY_RE = re.compile(
+    r"(?:password|passwd|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|database[_-]?url|storage[_-]?path|file[_-]?path)",
+    re.I,
+)
+_PII_KEY_RE = re.compile(r"(?:email|phone|mobile|telephone|address|user[_-]?id|account[_-]?id|external[_-]?ref)", re.I)
+_EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I)
+_PHONE_RE = re.compile(r"(?<!\d)(?:\+?\d[\d .()\-]{8,}\d)(?!\d)")
+
+_ALIASES = {
+    "goal_statement": "goal",
+    "metric_definitions": "metrics",
+    "analysis_artifacts": "artifacts",
+    "quality_summary": "quality",
+    "quality_report": "quality",
+    "dataset_schema": "schema",
+    "columns": "schema",
+    "user_question": "question",
+}
+
+# Lists under these keys are commonly row-level data rather than aggregate
+# results.  They are removed even when nested in an otherwise valid artifact.
+_ROW_LIST_KEYS = frozenset(
+    {
+        "raw",
+        "raw_data",
+        "raw_rows",
+        "rows",
+        "records",
+        "cells",
+        "cell_values",
+        "data",
+        "samples",
+        "sample_rows",
+        "observations",
+        "user_events",
+    }
+)
+_AGGREGATE_LIST_KEYS = frozenset(
+    {
+        "categories",
+        "labels",
+        "periods",
+        "series",
+        "breakdown",
+        "counts",
+        "rates",
+        "means",
+        "medians",
+        "quantiles",
+        "bins",
+        "evidence",
+        "ids",
+        "metrics",
+        "stages",
+        "cohorts",
+    }
+)
+
+
+def _get(value: Any, key: str, default: Any = None) -> Any:
+    """Read a field from mappings, Pydantic models, dataclasses, or ORM rows."""
+
+    if value is None:
+        return default
+    if isinstance(value, Mapping):
+        return value.get(key, default)
+    try:
+        return getattr(value, key)
+    except AttributeError:
+        pass
+    if hasattr(value, "model_dump"):
+        try:
+            dumped = value.model_dump()
+            return dumped.get(key, default) if isinstance(dumped, Mapping) else default
+        except Exception:
+            return default
+    if is_dataclass(value):
+        try:
+            return asdict(value).get(key, default)
+        except Exception:
+            return default
+    return default
+
+
+def _normal_key(key: Any) -> str:
+    return re.sub(r"[^a-z0-9_]", "", str(key).strip().lower().replace("-", "_"))
+
+
+def _is_forbidden_key(key: Any) -> bool:
+    normalized = _normal_key(key)
+    return (
+        normalized in FORBIDDEN_CONTEXT_KEYS
+        or normalized in _FEEDBACK_CONTENT_KEYS
+        or bool(_SECRET_KEY_RE.search(normalized))
+    )
+
+
+def _anon(value: Any) -> str:
+    return "anon_" + hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:12]
+
+
+def _safe_scalar(value: Any, *, key: str | None = None, max_length: int = 2000) -> Any:
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if hasattr(value, "isoformat") and not isinstance(value, str):
+        try:
+            return value.isoformat()
+        except Exception:
+            return str(value)[:max_length]
+    if isinstance(value, str):
+        if key and _SECRET_KEY_RE.search(key):
+            return "[REDACTED]"
+        text = _EMAIL_RE.sub("[email]", value)
+        text = _PHONE_RE.sub("[phone]", text)
+        if key and _PII_KEY_RE.search(key) and key not in {"summary", "description", "question"}:
+            return _anon(value)
+        return text[:max_length]
+    # Numpy scalar values and UUIDs are safe after conversion to text, but never
+    # pass an arbitrary object (which could serialize a dataframe or file handle).
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return "[REDACTED]"
+    return str(value)[:max_length]
+
+
+def _dataframe_shape(value: Any) -> dict[str, Any] | None:
+    """Return metadata for dataframe-like objects without touching cell values."""
+
+    if value is None or not hasattr(value, "columns") or not hasattr(value, "shape"):
+        return None
+    try:
+        columns = [str(item)[:120] for item in list(value.columns)[:100]]
+        shape = tuple(value.shape)
+        return {"row_count": int(shape[0]), "column_count": int(shape[1]), "columns": columns}
+    except Exception:
+        return {"row_count": None, "column_count": None, "columns": []}
+
+
+def _sanitize_aggregate(value: Any, *, key: str | None = None, depth: int = 0) -> Any:
+    """Copy aggregate JSON while dropping row-like structures and secrets."""
+
+    if depth > 8:
+        return None
+    if key and _is_forbidden_key(key):
+        return None
+    shape = _dataframe_shape(value)
+    if shape is not None:
+        return shape
+    if isinstance(value, Mapping):
+        result: dict[str, Any] = {}
+        for raw_key, child in list(value.items())[:200]:
+            child_key = str(raw_key)
+            normalized = _normal_key(child_key)
+            if _is_forbidden_key(normalized) or normalized in _ROW_LIST_KEYS:
+                continue
+            cleaned = _sanitize_aggregate(child, key=normalized, depth=depth + 1)
+            if cleaned is not None:
+                result[child_key[:120]] = cleaned
+        return result
+    if isinstance(value, (list, tuple, set)):
+        normalized_key = _normal_key(key or "")
+        if normalized_key in _ROW_LIST_KEYS:
+            return None
+        # Scalar arrays are retained only where an aggregate artifact convention
+        # makes their semantics clear.  An arbitrary list could be raw rows or
+        # cell values and is therefore dropped.
+        if normalized_key not in _AGGREGATE_LIST_KEYS:
+            if value and all(isinstance(item, Mapping) for item in list(value)[:10]):
+                return None
+            return None
+        cleaned_items = []
+        for item in list(value)[:100]:
+            if isinstance(item, Mapping):
+                cleaned = _sanitize_aggregate(item, depth=depth + 1)
+            else:
+                cleaned = _safe_scalar(item, key=normalized_key, max_length=400)
+            if cleaned is not None:
+                cleaned_items.append(cleaned)
+        return cleaned_items
+    return _safe_scalar(value, key=key)
+
+
+def _extract_goal(project: Any, goal: Any) -> str:
+    value = goal
+    if value is None:
+        value = _get(project, "goal_statement")
+    if value is None:
+        value = _get(project, "goal")
+    return str(_safe_scalar(value or "", key="goal", max_length=4000) or "")
+
+
+def _extract_metrics(metrics: Any) -> list[dict[str, Any]]:
+    if metrics is None:
+        return []
+    if isinstance(metrics, (Mapping, str, bytes)):
+        metrics = [metrics]
+    output: list[dict[str, Any]] = []
+    for item in list(metrics)[:100]:
+        name = _get(item, "name") or _get(item, "metric_name")
+        definition = _get(item, "definition") or _get(item, "description") or ""
+        unit = _get(item, "unit") or ""
+        if name is None and not definition:
+            continue
+        output.append(
+            {
+                "name": str(_safe_scalar(name or "", key="name", max_length=255) or ""),
+                "definition": str(_safe_scalar(definition, key="definition", max_length=2000) or ""),
+                "unit": str(_safe_scalar(unit, key="unit", max_length=80) or ""),
+            }
+        )
+    return output
+
+
+def _extract_artifacts(artifacts: Any) -> list[dict[str, Any]]:
+    if artifacts is None:
+        return []
+    if isinstance(artifacts, (Mapping, str, bytes)):
+        artifacts = [artifacts]
+    output: list[dict[str, Any]] = []
+    for item in list(artifacts)[:100]:
+        payload = _get(item, "payload_json")
+        if payload is None:
+            payload = _get(item, "payload")
+        # A plain aggregate mapping is accepted for convenient service callers.
+        if payload is None and isinstance(item, Mapping):
+            payload = item
+        cleaned_payload = _sanitize_aggregate(payload, key="payload") if payload is not None else {}
+        record: dict[str, Any] = {}
+        for field in ("id", "artifact_type", "title", "fingerprint", "analysis_run_id"):
+            value = _get(item, field)
+            if value is not None:
+                record[field] = str(_safe_scalar(value, key=field, max_length=255))
+        record["payload"] = cleaned_payload if isinstance(cleaned_payload, Mapping) else {}
+        output.append(record)
+    return output
+
+
+def _extract_quality(quality: Any, quality_summary: Any = None) -> dict[str, Any]:
+    source = quality_summary if quality_summary is not None else quality
+    if source is None:
+        return {}
+    summary = _get(source, "summary_json")
+    if summary is None:
+        summary = _get(source, "summary")
+    result: dict[str, Any] = {}
+    for field in ("overall_score", "status"):
+        value = _get(source, field)
+        if value is not None:
+            result[field] = _safe_scalar(value, key=field)
+    cleaned = _sanitize_aggregate(summary, key="summary") if summary is not None else None
+    if isinstance(cleaned, Mapping):
+        result["summary"] = cleaned
+    elif isinstance(source, Mapping):
+        cleaned_source = _sanitize_aggregate(source, key="quality")
+        if isinstance(cleaned_source, Mapping):
+            result["summary"] = cleaned_source
+    return result
+
+
+def _extract_schema(schema: Any) -> list[dict[str, str]]:
+    if schema is None:
+        return []
+    if isinstance(schema, (Mapping, str, bytes)):
+        schema = [schema]
+    result: list[dict[str, str]] = []
+    for item in list(schema)[:200]:
+        name = _get(item, "column_name") or _get(item, "name") or _get(item, "display_name")
+        inferred = _get(item, "inferred_type") or _get(item, "confirmed_type") or _get(item, "type")
+        if name is None:
+            continue
+        result.append(
+            {
+                "column_name": str(_safe_scalar(name, key="column_name", max_length=255) or ""),
+                "inferred_type": str(_safe_scalar(inferred or "unknown", key="inferred_type", max_length=80) or "unknown"),
+            }
+        )
+    return result
+
+
+def build_ai_context(
+    source: Any | None = None,
+    *,
+    project: Any | None = None,
+    goal: Any | None = None,
+    metrics: Any | None = None,
+    metric_definitions: Any | None = None,
+    artifacts: Any | None = None,
+    analysis_artifacts: Any | None = None,
+    quality: Any | None = None,
+    quality_summary: Any | None = None,
+    schema: Any | None = None,
+    dataset_schema: Any | None = None,
+    columns: Any | None = None,
+    dataframe: Any | None = None,
+    question: Any | None = None,
+    user_question: Any | None = None,
+    **_ignored: Any,
+) -> dict[str, Any]:
+    """Build the sole allowlisted payload accepted by analytics AI calls.
+
+    ``source`` may be a mapping containing aliases such as ``goal_statement`` or
+    ``raw_rows``.  Unknown and forbidden fields are intentionally ignored, rather
+    than echoed back.  This makes the helper safe at trust boundaries while still
+    allowing callers to pass an ORM object or an existing page-context mapping.
+    """
+
+    source_map: Mapping[str, Any] = source if isinstance(source, Mapping) else {}
+    if project is None:
+        project = source_map.get("project")
+    if goal is None:
+        goal = source_map.get("goal", source_map.get("goal_statement"))
+    if metrics is None:
+        metrics = source_map.get("metrics", source_map.get("metric_definitions"))
+    if artifacts is None:
+        artifacts = source_map.get("artifacts", source_map.get("analysis_artifacts"))
+    if quality is None and quality_summary is None:
+        quality = source_map.get("quality", source_map.get("quality_summary", source_map.get("quality_report")))
+    if schema is None:
+        schema = source_map.get("schema", source_map.get("dataset_schema", source_map.get("columns")))
+    if schema is None and dataframe is not None:
+        # A dataframe may be supplied by legacy callers, but only its shape and
+        # column names/types can cross the boundary.  No cell is ever inspected.
+        shape = _dataframe_shape(dataframe)
+        if shape:
+            schema = [{"column_name": name, "inferred_type": "unknown"} for name in shape.get("columns", [])]
+    if question is None:
+        question = source_map.get("question", source_map.get("user_question"))
+
+    # Explicit keyword aliases win over values in ``source``.
+    metrics = metrics if metrics is not None else metric_definitions
+    artifacts = artifacts if artifacts is not None else analysis_artifacts
+    schema = schema if schema is not None else (dataset_schema if dataset_schema is not None else columns)
+    question = question if question is not None else user_question
+
+    context = {
+        "goal": _extract_goal(project, goal),
+        "metrics": _extract_metrics(metrics),
+        "artifacts": _extract_artifacts(artifacts),
+        "quality": _extract_quality(quality, quality_summary),
+        "schema": _extract_schema(schema),
+        "question": str(_safe_scalar(question or "", key="question", max_length=4000) or ""),
+    }
+    return context
+
+
+def _contains_forbidden(value: Any) -> str | None:
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            if _is_forbidden_key(key):
+                return str(key)
+            found = _contains_forbidden(child)
+            if found:
+                return found
+    elif isinstance(value, (list, tuple, set)):
+        for child in value:
+            found = _contains_forbidden(child)
+            if found:
+                return found
+    return None
+
+
+def assert_safe_ai_context(context: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a previously built context and return a shallow plain copy."""
+
+    if not isinstance(context, Mapping):
+        raise AIContextError("AI context must be an object")
+    unknown = set(context) - ALLOWED_CONTEXT_KEYS
+    if unknown:
+        raise AIContextError(f"AI context contains non-allowlisted fields: {sorted(unknown)}")
+    forbidden = _contains_forbidden(context)
+    if forbidden:
+        raise AIContextError(f"AI context contains forbidden field: {forbidden}")
+    return {key: context.get(key) for key in ALLOWED_CONTEXT_KEY_ORDER}
+
+
+# JSON schema used in provider prompts and tests.  ``evidence`` is required on
+# every claim; an empty list is allowed in a response so the UI can flag it, while
+# persistence paths can request ``require_nonempty_evidence=True``.
+AI_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": True,
+    "required": ["facts", "hypotheses", "recommendations", "limitations"],
+    "properties": {
+        "summary": {"type": "string"},
+        "facts": {"type": "array", "items": {"$ref": "#/$defs/claim"}},
+        "hypotheses": {"type": "array", "items": {"$ref": "#/$defs/claim"}},
+        "recommendations": {"type": "array", "items": {"$ref": "#/$defs/claim"}},
+        "limitations": {"type": "array", "items": {"type": "string"}},
+    },
+    "$defs": {
+        "claim": {
+            "type": "object",
+            "additionalProperties": True,
+            "required": ["text", "evidence"],
+            "properties": {
+                "text": {"type": "string"},
+                "evidence": {"type": "array"},
+                "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+            },
+        }
+    },
+}
+
+
+def _normalize_evidence(value: Any) -> list[Any]:
+    if not isinstance(value, list):
+        raise AIOutputValidationError("claim.evidence must be an array")
+    result: list[Any] = []
+    for item in value[:100]:
+        if isinstance(item, str):
+            text = item.strip()
+            if text:
+                result.append(text[:255])
+        elif isinstance(item, Mapping):
+            ref_id = item.get("id") or item.get("artifact_id") or item.get("ref")
+            if not ref_id:
+                raise AIOutputValidationError("evidence objects require an id")
+            ref: dict[str, Any] = {"id": str(ref_id)[:255]}
+            if item.get("type") is not None:
+                ref["type"] = str(item.get("type"))[:80]
+            result.append(ref)
+        else:
+            raise AIOutputValidationError("evidence entries must be strings or objects")
+    return result
+
+
+def validate_ai_output(value: Any, *, require_nonempty_evidence: bool = False) -> dict[str, Any]:
+    """Validate and normalize the fixed facts/hypotheses/recommendations shape."""
+
+    if not isinstance(value, Mapping):
+        raise AIOutputValidationError("AI output must be a JSON object")
+    missing = [key for key in ("facts", "hypotheses", "recommendations", "limitations") if key not in value]
+    if missing:
+        raise AIOutputValidationError(f"AI output is missing required sections: {', '.join(missing)}")
+    result: dict[str, Any] = {}
+    if value.get("summary") is not None:
+        result["summary"] = str(value.get("summary"))[:6000]
+    for section in ("facts", "hypotheses", "recommendations"):
+        entries = value.get(section)
+        if not isinstance(entries, list):
+            raise AIOutputValidationError(f"AI output section '{section}' must be an array")
+        normalized_entries: list[dict[str, Any]] = []
+        for entry in entries[:100]:
+            if not isinstance(entry, Mapping):
+                raise AIOutputValidationError(f"{section} entries must be objects")
+            text = entry.get("text")
+            if text is None or not str(text).strip():
+                raise AIOutputValidationError(f"{section} entries require non-empty text")
+            if "evidence" not in entry:
+                raise AIOutputValidationError(f"{section} entries require an evidence array")
+            evidence = _normalize_evidence(entry.get("evidence"))
+            if require_nonempty_evidence and not evidence:
+                raise AIOutputValidationError(f"{section} entries require at least one evidence reference")
+            normalized: dict[str, Any] = {"text": str(text)[:4000], "evidence": evidence}
+            if section == "hypotheses":
+                confidence = str(entry.get("confidence") or "medium").lower()
+                if confidence not in {"high", "medium", "low"}:
+                    raise AIOutputValidationError("hypothesis confidence must be high, medium, or low")
+                normalized["confidence"] = confidence
+            elif entry.get("confidence") is not None:
+                normalized["confidence"] = str(entry.get("confidence"))[:20]
+            if "requires_approval" in entry:
+                normalized["requires_approval"] = bool(entry.get("requires_approval"))
+            normalized_entries.append(normalized)
+        result[section] = normalized_entries
+    limitations = value.get("limitations")
+    if not isinstance(limitations, list):
+        raise AIOutputValidationError("AI output limitations must be an array")
+    result["limitations"] = [str(item)[:1000] for item in limitations[:100] if str(item).strip()]
+    forbidden = _contains_forbidden(result)
+    if forbidden:
+        raise AIOutputValidationError(f"AI output contains forbidden field: {forbidden}")
+    return result
+
+
+def empty_ai_output(*, summary: str = "", limitation: str | None = None) -> dict[str, Any]:
+    """Return a valid no-claims response for unavailable providers or clarification."""
+
+    return {
+        "summary": summary,
+        "facts": [],
+        "hypotheses": [],
+        "recommendations": [],
+        "limitations": [limitation] if limitation else [],
+    }
+
+
+# Structured contract for the multi-section analysis report.  Every number the
+# model writes must come from the aggregate context; sections are free-form
+# markdown so the UI can render prose, lists and inline emphasis.
+REPORT_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["title", "summary", "sections", "key_findings", "recommendations", "limitations"],
+    "properties": {
+        "title": {"type": "string"},
+        "summary": {"type": "string"},
+        "sections": {
+            "type": "array",
+            "maxItems": 12,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["heading", "content"],
+                "properties": {
+                    "heading": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+            },
+        },
+        "key_findings": {"type": "array", "maxItems": 15, "items": {"type": "string"}},
+        "recommendations": {"type": "array", "maxItems": 15, "items": {"type": "string"}},
+        "limitations": {"type": "array", "maxItems": 15, "items": {"type": "string"}},
+    },
+}
+
+
+def validate_report_output(value: Any) -> dict[str, Any]:
+    """Validate and normalize the structured report contract."""
+
+    if not isinstance(value, Mapping):
+        raise AIOutputValidationError("report output must be a JSON object")
+    missing = [key for key in ("title", "summary", "sections", "key_findings", "recommendations", "limitations") if key not in value]
+    if missing:
+        raise AIOutputValidationError(f"report output is missing required sections: {', '.join(missing)}")
+
+    def strings(key: str) -> list[str]:
+        entries = value.get(key)
+        if not isinstance(entries, list):
+            raise AIOutputValidationError(f"report output '{key}' must be an array")
+        return [str(item)[:1000] for item in entries[:15] if str(item).strip()]
+
+    sections: list[dict[str, str]] = []
+    raw_sections = value.get("sections")
+    if not isinstance(raw_sections, list):
+        raise AIOutputValidationError("report output 'sections' must be an array")
+    for item in raw_sections[:12]:
+        if not isinstance(item, Mapping):
+            raise AIOutputValidationError("report sections must be objects")
+        heading = str(item.get("heading") or "").strip()
+        content = str(item.get("content") or "").strip()
+        if not heading or not content:
+            raise AIOutputValidationError("report sections require non-empty heading and content")
+        sections.append({"heading": heading[:200], "content": content[:20000]})
+    return {
+        "title": str(value.get("title") or "").strip()[:255] or "数据分析报告",
+        "summary": str(value.get("summary") or "")[:6000],
+        "sections": sections,
+        "key_findings": strings("key_findings"),
+        "recommendations": strings("recommendations"),
+        "limitations": strings("limitations"),
+    }
+
+
+def empty_report_output(*, summary: str = "", limitation: str | None = None) -> dict[str, Any]:
+    """Return a valid empty report for unavailable providers."""
+
+    return {
+        "title": "",
+        "summary": summary,
+        "sections": [],
+        "key_findings": [],
+        "recommendations": [],
+        "limitations": [limitation] if limitation else [],
+    }
+
+
+# Friendly aliases for callers/tests that use the wording from the V1.1 document.
+validate_structured_ai_output = validate_ai_output
+build_safe_ai_context = build_ai_context
+
+
+__all__ = [
+    "AIContextError",
+    "AIOutputValidationError",
+    "AI_OUTPUT_SCHEMA",
+    "ALLOWED_CONTEXT_KEYS",
+    "ALLOWED_CONTEXT_KEY_ORDER",
+    "REPORT_OUTPUT_SCHEMA",
+    "assert_safe_ai_context",
+    "build_ai_context",
+    "build_safe_ai_context",
+    "empty_ai_output",
+    "empty_report_output",
+    "validate_ai_output",
+    "validate_report_output",
+    "validate_structured_ai_output",
+]

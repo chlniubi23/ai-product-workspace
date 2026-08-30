@@ -1,0 +1,14 @@
+user_id,event_time,event_name,channel,version
+u_001,2026-08-01T09:00:00Z,register_start,organic,1.0.3
+u_001,2026-08-01T09:02:00Z,register_success,organic,1.0.3
+u_001,2026-08-02T10:00:00Z,first_value,organic,1.0.3
+u_002,2026-08-01T11:30:00Z,register_start,paid,1.0.3
+u_002,2026-08-01T11:34:00Z,register_success,paid,1.0.3
+u_003,2026-08-02T08:20:00Z,register_start,referral,1.0.3
+u_003,2026-08-02T08:22:00Z,register_success,referral,1.0.3
+u_003,2026-08-09T08:25:00Z,first_value,referral,1.0.3
+u_004,2026-08-02T14:10:00Z,register_start,organic,1.0.3
+u_004,2026-08-02T14:15:00Z,register_success,organic,1.0.3
+u_005,2026-08-03T16:00:00Z,register_start,paid,1.0.3
+u_005,2026-08-03T16:02:00Z,register_success,paid,1.0.3
+u_005,2026-08-10T16:10:00Z,first_value,paid,1.0.3

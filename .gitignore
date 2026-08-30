@@ -1,0 +1,51 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+*.egg-info/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+npm-debug.log*
+*.log
+
+# Local data and generated exports
+apps/api/data/*
+!apps/api/data/uploads/
+!apps/api/data/processed/
+!apps/api/data/exports/
+apps/api/data/uploads/*
+apps/api/data/processed/*
+apps/api/data/exports/*
+!apps/api/data/uploads/.gitkeep
+!apps/api/data/processed/.gitkeep
+!apps/api/data/exports/.gitkeep
+
+# Database dumps (may contain password hashes)
+*.sql
+!apps/api/alembic/**/*.sql
+
+# Pytest temp dirs created when the shared Windows temp dir is unreadable
+.pytest-*/
+
+# Test-run artifacts recreated by apps/api/tests/conftest.py on every run
+output/
+
+# IDE / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

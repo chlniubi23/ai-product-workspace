@@ -1,0 +1,190 @@
+"use client";
+
+import Link from "next/link";
+import { useState } from "react";
+import { ArrowRight, Check, Eye, EyeOff, LockKeyhole, Sparkles } from "lucide-react";
+import { apiRequest, saveSession } from "@/lib/api";
+
+export default function LoginPage() {
+  const [mode, setMode] = useState<"login" | "register">("login");
+  const [showPassword, setShowPassword] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const submit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setLoading(true);
+    setError("");
+    const form = new FormData(event.currentTarget);
+    const payload =
+      mode === "login"
+        ? { email: String(form.get("email") || ""), password: String(form.get("password") || "") }
+        : {
+            email: String(form.get("email") || ""),
+            password: String(form.get("password") || ""),
+            name: String(form.get("name") || ""),
+            workspace_name: String(form.get("workspace_name") || "AI Product Workspace"),
+          };
+    try {
+      const result = await apiRequest<{ access_token: string }>(
+        mode === "login" ? "/auth/login" : "/auth/register",
+        { method: "POST", body: JSON.stringify(payload) },
+      );
+      saveSession(result);
+      window.location.href = "/";
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "登录失败，请重试");
+    } finally {
+      setLoading(false);
+    }
+  };
+  return (
+    <main className="login-shell">
+      <section className="login-aside">
+        <div className="login-brand">
+          <div className="brand-mark">
+            <Sparkles size={17} />
+          </div>
+          <div>
+            <div className="brand-name">AI Product Workspace</div>
+            <div className="brand-caption">让证据连接到决策</div>
+          </div>
+        </div>
+        <div className="login-hero">
+          <h1>
+            把产品问题，
+            <br />
+            变成下一步行动。
+          </h1>
+          <p>从数据质量、确定性分析到有证据的 AI 洞察，在一个可追溯的工作空间里完成产品决策准备。</p>
+          <div className="login-points">
+            <div className="login-point">
+              <Check size={16} />
+              数据、反馈和文档围绕项目统一沉淀
+            </div>
+            <div className="login-point">
+              <Check size={16} />
+              事实、推断与建议分层呈现
+            </div>
+            <div className="login-point">
+              <Check size={16} />
+              关键决策始终保留人工确认权
+            </div>
+          </div>
+        </div>
+        <div className="login-foot">本地部署模式</div>
+      </section>
+      <section className="login-form-wrap">
+        <form className="login-form" onSubmit={submit}>
+          <div className="login-mode" role="tablist" aria-label="账号操作">
+            <button
+              type="button"
+              className={mode === "login" ? "active" : ""}
+              onClick={() => setMode("login")}
+            >
+              登录
+            </button>
+            <button
+              type="button"
+              className={mode === "register" ? "active" : ""}
+              onClick={() => setMode("register")}
+            >
+              注册
+            </button>
+          </div>
+          <h2>{mode === "login" ? "欢迎回来" : "创建 Owner 账号"}</h2>
+          <p>
+            {mode === "login"
+              ? "登录你的本地工作空间，继续今天的产品工作。"
+              : "注册会同时创建一个初始工作空间。"}
+          </p>
+          {mode === "register" && (
+            <>
+              <div className="form-group">
+                <label htmlFor="name">姓名</label>
+                <input id="name" name="name" placeholder="你的姓名" required />
+              </div>
+              <div className="form-group">
+                <label htmlFor="workspace_name">工作空间名称</label>
+                <input
+                  id="workspace_name"
+                  name="workspace_name"
+                  defaultValue="AI Product Workspace"
+                  required
+                />
+              </div>
+            </>
+          )}
+          <div className="form-group">
+            <label htmlFor="email">邮箱</label>
+            <input id="email" name="email" type="email" placeholder="name@company.com" required />
+          </div>
+          <div className="form-group">
+            <label htmlFor="password">密码</label>
+            <div style={{ position: "relative" }}>
+              <input
+                id="password"
+                name="password"
+                type={showPassword ? "text" : "password"}
+                style={{ paddingRight: 37 }}
+                minLength={8}
+                required
+              />
+              <button
+                type="button"
+                aria-label={showPassword ? "隐藏密码" : "显示密码"}
+                onClick={() => setShowPassword((value) => !value)}
+                style={{
+                  position: "absolute",
+                  right: 10,
+                  top: 10,
+                  padding: 0,
+                  border: 0,
+                  background: "transparent",
+                  color: "#93a0b2",
+                }}
+              >
+                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
+          </div>
+          <div className="form-foot">
+            <label style={{ display: "flex", alignItems: "center", gap: 7 }}>
+              <input type="checkbox" defaultChecked style={{ accentColor: "#335ce7" }} />
+              记住我
+            </label>
+            <Link href="#">忘记密码？</Link>
+          </div>
+          {error && (
+            <div className="form-error" role="alert">
+              {error}
+            </div>
+          )}
+          <button className="login-submit" type="submit" disabled={loading}>
+            {loading ? (
+              "正在处理…"
+            ) : (
+              <>
+                <span>{mode === "login" ? "进入工作空间" : "创建工作空间"}</span>
+                <ArrowRight size={16} style={{ verticalAlign: "middle", marginLeft: 6 }} />
+              </>
+            )}
+          </button>
+          <div className="form-hint">
+            <LockKeyhole size={13} />
+            <span>这是本地账号登录。AI 请求只会由服务端安全转发，浏览器不会接触模型密钥。</span>
+          </div>
+          <p style={{ textAlign: "center", marginTop: 24, color: "#8793a5", fontSize: 11 }}>
+            {mode === "login" ? "还没有账号？" : "已有账号？"}{" "}
+            <button
+              type="button"
+              onClick={() => setMode(mode === "login" ? "register" : "login")}
+              style={{ border: 0, background: "none", padding: 0, color: "#335ce7", fontWeight: 650 }}
+            >
+              {mode === "login" ? "创建 Owner 账号" : "返回登录"}
+            </button>
+          </p>
+        </form>
+      </section>
+    </main>
+  );
+}
