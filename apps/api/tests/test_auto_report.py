@@ -11,13 +11,12 @@ from __future__ import annotations
 
 from io import BytesIO
 
+from conftest import audit_actions, auth, data_of, error_of, version_of
 from sqlalchemy import select
 
 from app import db as database
 from app.ai_context import assert_safe_ai_context
-from app.models import AIRun, AutoAnalysisReport
-
-from conftest import audit_actions, auth, data_of, error_of, version_of
+from app.models import AIRun
 
 CSV_EVENTS = (
     "user_id,event_time,event_name,channel\n"

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import (
@@ -38,7 +40,21 @@ from .routers import (
 )
 from .services.job_handlers import _register_job_handlers, job_executor
 
-app = FastAPI(title="AI Product Workspace API", version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    # Reading the property creates DATA_ROOT and its uploads/processed/exports
+    # subdirectories, so a fresh clone can accept an upload before any request.
+    _ = settings.data_path
+    init_db()
+    # A failed configured database must remain diagnosable through the health
+    # endpoint.  Do not let job recovery mask the real connection error.
+    if database.database_ready():
+        await job_executor.recover_pending()
+    yield
+
+
+app = FastAPI(title="AI Product Workspace API", version="1.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins or ["*"],
@@ -94,19 +110,6 @@ async def http_error_handler(_request: Request, exc: HTTPException) -> JSONRespo
 @app.exception_handler(RequestValidationError)
 async def validation_error_handler(_request: Request, exc: RequestValidationError) -> JSONResponse:
     return JSONResponse(status_code=400, content={"error": {"code": "VALIDATION_ERROR", "message": "Request validation failed", "details": _redact_validation_details(exc.errors())}, "meta": {"request_id": _request_id()}})
-
-
-@app.on_event("startup")
-async def startup() -> None:
-    # Reading the property creates DATA_ROOT and its uploads/processed/exports
-    # subdirectories, so a fresh clone can accept an upload before any request.
-    _ = settings.data_path
-    init_db()
-    # A failed configured database must remain diagnosable through the health
-    # endpoint.  Do not let job recovery mask the real connection error.
-    if not database.database_ready():
-        return
-    await job_executor.recover_pending()
 
 
 @app.get("/health")

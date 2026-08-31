@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
@@ -50,7 +50,10 @@ def new_id() -> str:
 
 
 def now() -> datetime:
-    return datetime.utcnow()
+    # Naive-UTC, byte-for-byte equivalent to the deprecated datetime.utcnow():
+    # every DATETIME column stores naive UTC and common.serialize() re-attaches
+    # the UTC marker on the way out, so the tzinfo must stay stripped here.
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class User(Base):

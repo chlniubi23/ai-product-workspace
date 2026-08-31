@@ -17,9 +17,9 @@ from app.config import settings
 from app.models import (
     AnalysisRun,
     DataColumn,
+    DataQualityReport,
     Dataset,
     DatasetVersion,
-    DataQualityReport,
     Insight,
     Project,
     Task,

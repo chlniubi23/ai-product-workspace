@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..ai_context import (
+    _FEEDBACK_CONTENT_KEYS,
     AI_OUTPUT_SCHEMA,
     AIOutputValidationError,
     assert_safe_ai_context,
@@ -287,30 +288,10 @@ def _ai_interpret_question(body: AIInterpretRequest) -> str:
     return "请解读这些分析结果，并指出与项目目标相关的事实、假设和建议。"
 
 
-_FEEDBACK_CONTEXT_KEYS = frozenset(
-    {
-        "feedback",
-        "feedback_item",
-        "feedback_items",
-        "feedback_text",
-        "feedback_content",
-        "comment",
-        "comments",
-        "comment_text",
-        "message",
-        "messages",
-        "message_text",
-        "review",
-        "reviews",
-        "review_text",
-        "sample",
-        "samples",
-        "content",
-        "content_text",
-        "verbatim",
-        "verbatims",
-    }
-)
+# Single source of truth for free-text feedback keys is the AI-context
+# firewall (``_FEEDBACK_CONTENT_KEYS``); this request-side scrubber extends it
+# with ``sample``/``samples`` and must never be narrower than the firewall.
+_FEEDBACK_CONTEXT_KEYS = _FEEDBACK_CONTENT_KEYS | {"sample", "samples"}
 
 
 def _drop_feedback_content(value: Any, *, key: str | None = None) -> Any:

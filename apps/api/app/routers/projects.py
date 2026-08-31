@@ -8,7 +8,6 @@ from sqlalchemy.orm import Session
 
 from ..auth import get_current_user
 from ..common import error, model_dict, ok, page_params, paged
-from ..config import settings
 from ..db import get_db
 from ..models import (
     AnalysisArtifact,
@@ -32,6 +31,7 @@ from ..models import (
 from ..schemas import DatasetDeleteRequest, LinkCreate, ProjectCreate, ProjectPatch, TaskCreate, TaskPatch
 from ..services.access import _check_assignee, membership, project_for, workspace_for_user
 from ..services.audit import audit
+from ..services.datasets import _safe_data_file
 from ..services.evidence import _linked_resource_scope
 
 router = APIRouter()
@@ -162,7 +162,11 @@ def _purge_project(db: Session, project: Project) -> dict[str, int]:
     for _, storage_path in version_rows:
         if not storage_path:
             continue
-        path = settings.data_path / storage_path
+        # _safe_data_file refuses any storage_path resolving outside DATA_ROOT
+        # (defense against a tampered row turning delete into arbitrary unlink).
+        path = _safe_data_file(str(storage_path))
+        if path is None:
+            continue
         try:
             path.unlink()
             removed_files += 1
