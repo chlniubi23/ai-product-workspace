@@ -71,16 +71,17 @@ AI_Product_Workspace/
     │   │   │   ├── ai_stages.py          #   _run_ai_stage 模板/_deepseek_answer/Copilot 编排胶水/AI 上下文投影
     │   │   │   ├── auto_report.py        #   项目级自动报告（pandas 聚合 + 确定性骨架）
     │   │   │   ├── documents.py          #   文档 payload + Markdown 渲染 + generate_document
+    │   │   │   ├── interview.py          #   AI 采访轮次生成/强制去重 + 第 7 步蒸馏（第四批）
     │   │   │   └── job_handlers.py       #   job_executor 唯一实例 + 全部 _handle_* job handler + _register_job_handlers 定义
     │   │   ├── routers/         #   路由层：APIRouter + @router.<method>("/api/v1/...")（路径全写）
     │   │   │   ├── auth.py / workspaces.py / projects.py / datasets.py / analysis.py
-    │   │   │   ├── insights.py / feedback.py / problems.py / decisions.py / documents.py
-    │   │   │   ├── jobs.py / copilot.py / ai.py
+    │   │   │   ├── insights.py / feedback.py / interview.py / problems.py / decisions.py
+    │   │   │   ├── documents.py / jobs.py / copilot.py / ai.py
     │   │   │   └── （/ai/draft-document 在 documents.py、/ai/cluster-feedback 在 feedback.py——别名路由跟随其调用的服务函数所在 router，避免 routers 互导）
     │   │   ├── analytics/       #   engine.py / quality.py（未改动；顶层 import pandas 属既有行为）
     │   │   └── infrastructure/  #   jobs.py / llm/deepseek.py（未改动）
-    │   ├── alembic/versions/    #   8 个迁移
-    │   ├── tests/               #   10 个测试文件，162 用例（含 route manifest 冻结测试）
+    │   ├── alembic/versions/    #   9 个迁移（0009 = interview_questions）
+    │   ├── tests/               #   12 个测试文件，179 用例（含 route manifest 冻结测试 + 采访/守护测试）
     │   └── pyproject.toml
     └── web/                     # Next.js 14 前端
         ├── middleware.ts        #   登录门禁 + legacy 路由重定向
@@ -88,16 +89,16 @@ AI_Product_Workspace/
         │   ├── (auth)/login/
         │   └── (workspace)/
         │       ├── page.tsx     #   ★ 工作台 = 流水线阶段 1–5
-        │       ├── data/page.tsx        #   719 行：数据管理
+        │       ├── data/page.tsx        #   数据管理
         │       ├── settings/page.tsx    #   workspace 设置 + 健康状态
-        │       └── stage6..stage12/     #   七个有序阶段页
+        │       └── stage6..stage11/     #   六个有序阶段页（第四批起 11 阶段：6=AI 采访、7=蒸馏+裁决、8=问题、9=方案、10=决策、11=PRD）
         ├── components/
         │   ├── layout/AppShell.tsx      #   侧边导航/布局
         │   ├── workflow/WorkflowFrame.tsx  # 阶段门控组件 + useWorkflowSnapshot
         │   └── analysis/                #   ChartRenderer(ECharts) / ReportMarkdown
         └── lib/
             ├── api.ts           #   fetch 封装 + 会话存取
-            ├── workflow.ts      #   ★ 快照加载（10 类列表）+ 12 阶段门控计算
+            ├── workflow.ts      #   ★ 快照加载（11 类列表）+ 11 阶段门控计算
             ├── navigation.ts    #   导航元数据 + legacy 路由别名
             ├── settings.ts      #   设置/健康 API 封装
             └── chartOption.ts / format.ts / upload.ts
@@ -132,6 +133,9 @@ AI_Product_Workspace/
 **新增于迁移 0007/0008**：
 `analysis_report_narrations`（分析叙述，与 AnalysisRun 故意分离以保确定性） / `auto_analysis_reports`（项目级自动报告）
 
+**新增于迁移 0009（第四批）**：
+`interview_questions`（AI 采访问题：round_number 0=手动补充/≥1=AI 轮次，status pending|answered|skipped，source ai|manual；蒸馏时 answered 行作为 stage 7 的上下文与 evidence 来源）
+
 关键模型语义（来自 docstring）：
 - `DatasetVersion.schema_reviewed_at`（用户看过字段角色）与 `schema_auto_accepted_at`（解析 job 代接受）**是两列**——UI 必须区分「人看过」和「系统猜的」。
 - `ProductProblem.source_insight_ids`：问题必须回链洞察才能 confirm，否则"凭直觉的问题"会流入决策。
@@ -141,7 +145,7 @@ AI_Product_Workspace/
 
 ---
 
-## 6. 核心业务流程：12 阶段流水线
+## 6. 核心业务流程：11 阶段流水线（第四批起；原 12 阶段，讨论并入采访）
 
 前端 `lib/workflow.ts` 的 `stepCompletion()`（约 217 行）是 12 个门控的**事实定义**：
 
@@ -153,14 +157,15 @@ AI_Product_Workspace/
 | 4 分析运行 | 工作台 | 存在 succeeded 的 AnalysisRun | `POST /analysis-runs`、`POST /analysis-runs/validate-config` |
 | 5 分析产物 | 工作台 | run 有 artifacts/result_summary | `GET /analysis-runs/{id}/artifacts` |
 | 5.5 AI 报告 | 工作台 | （非门控，独立 confirm） | `POST /projects/{id}/auto-report`、`POST /auto-reports/{id}/confirm` |
-| 6 洞察引擎 | stage6-insight | insights.length > 0 | `POST /ai/interpret`（产 draft）。**第二批起本步只落草稿**：保存洞察不传 status，后端默认 draft |
-| 7 决策副驾 | stage7-copilot | 存在 status=confirmed 的洞察 | `PATCH /insights/{id}`（第 7 步统一裁决采纳/否决；采纳**强制 evidence 非空**） |
-| 8 人机讨论 | stage8-discussion | copilot session turn_count>0 | `POST /copilot/sessions/{id}/messages`、SSE `GET /copilot/runs/{id}/events` |
-| 9 产品问题 | stage9-problem | problem.status=confirmed | `POST /ai/frame-problem`（草稿）→ `POST /problems`（落库，confirm 需 source_insight_ids） |
-| 10 方案讨论 | stage10-solution | solution.status=selected | `POST /ai/propose-solutions` → `POST /solutions/{id}/select`（**落选方案必须写 reject_reason**） |
-| 11 产品决策 | stage11-decision（无 AI） | decision.status=approved | `POST /decision-proposals/{id}/submit`（仅置 pending_approval + 建 pending 审批）→ **审批是独立动作**：`POST /approval-requests/{id}/approve|reject`（驳回必写理由；提案被编辑则审批返回 VERSION_CONFLICT）。同一账号可先提交再审批 |
-| 12 PRD | stage12-prd | 文档有版本（workflow 门控不变） | `POST /documents`、`/documents/generate`、`/documents/{id}/versions`、`/documents/{id}/submit`、`GET /documents/{id}/export`（.md 下载）。页面渲染门控=存在 approved 决策（第二批对齐） |
+| 6 AI 采访 | stage6-interview | 存在 ≥1 条 answered 采访问题或手动补充 | `POST /projects/{id}/interview/rounds`（AI 每轮 3-5 问，服务端强制去重）、`GET/POST/PATCH /interview-questions`（回答/跳过/手动补充）；下半区保留自由追问（Copilot chat，`POST /copilot/sessions/{id}/messages`）。**第四批起原"洞察引擎"+"人机讨论"合并为本步** |
+| 7 决策副驾 | stage7-copilot | 存在 status=confirmed 的洞察 | `POST /ai/distill-interview`（采访问答+分析产物 → 四段洞察**草稿**，证据引用 interview_question 或 analysis_artifact）→ 保存为草稿（不传 status）→ `PATCH /insights/{id}`（裁决采纳/否决；采纳**强制 evidence 非空**）。`/ai/interpret` 端点保留但 UI 不再使用 |
+| 8 产品问题 | stage8-problem | problem.status=confirmed | `POST /ai/frame-problem`（草稿）→ `POST /problems`（落库，confirm 需 source_insight_ids） |
+| 9 方案讨论 | stage9-solution | solution.status=selected | `POST /ai/propose-solutions` → `POST /solutions/{id}/select`（**落选方案必须写 reject_reason**） |
+| 10 产品决策 | stage10-decision（无 AI） | decision.status=approved | `POST /decision-proposals/{id}/submit`（仅置 pending_approval + 建 pending 审批）→ **审批是独立动作**：`POST /approval-requests/{id}/approve|reject`（驳回必写理由；提案被编辑则审批返回 VERSION_CONFLICT）。同一账号可先提交再审批 |
+| 11 PRD | stage11-prd | 文档有版本（workflow 门控不变） | `POST /documents`、`/documents/generate`、`/documents/{id}/versions`、`/documents/{id}/submit`、`GET /documents/{id}/export`（.md 下载）。页面渲染门控=存在 approved 决策 |
 
+> **第四批洞察层重构（2026-09-01 完成）**：第 6 步从「AI 倒草稿」改为「AI 采访式收集」（原第 8 步人机讨论并入本步下半区），第 7 步改为「蒸馏+裁决」（新增 `/ai/distill-interview`，采访答案可作为 evidence 引用，`_check_evidence_scope` 新增 `interview_question` 类型），流水线 12→11 阶段（9-12 重编号为 8-11，旧路由经 `legacyRouteAliases` 308 重定向）。`InterviewQuestion` 模型 + 迁移 0009；`STAGE_COUNT=11`。
+>
 > **第二批流程收敛（2026-08-30 完成，纯前端）**：第 6 步只产草稿、第 7 步统一裁决；第 11 步提交与审批分离（`submit()` 不再自动 approve，页面新增待审批区块，数据来自 `GET /approval-requests`）；第 12 步渲染门控从"有已确认洞察"改为"存在 approved 决策"。后端零改动。
 
 **上传后的自动管线**（`_handle_dataset_parse`，main.py 约 2413 行）：
@@ -189,7 +194,7 @@ AI_Product_Workspace/
 - `_copilot_orchestrator()`（约 4165 行）：构造 workspace 绑定的工具注册表，`resolve_version` 校验数据版本归属。
 - `_run_ai_stage()`（约 4763 行）：阶段 9/10 AI 起草的共享模板——feature flag 检查 → 预算预留 → provider 调用 → 结构化校验 → 事后预算复核 → AIRun 落账 → 审计。**未配 key 或 provider 故障一律降级为空草稿（`empty_ai_output`），绝不 500。** 支持三个可选参数自定义阶段契约：`response_schema`（替换提示词/解析用的 JSON schema）、`output_validator`（替换 `validate_ai_output`）、`empty_output`（降级时的空草稿形状）；缺省时行为与四段式契约完全一致。`/ai/frame-problem` 用它返回问题草稿对象、`/ai/propose-solutions` 返回 `{options: [...], limitations}`（均不再是四段式，前端 stage9/stage10 按此渲染）。
 - 预算体系：`_workspace_ai_budget`（workspace settings 的 per_request/daily/max_output，三者大小关系在 PATCH 时校验）+ `_workspace_token_usage`（当日 AIRun 累计；running 状态按满额预留防并发超卖）+ `_reject_ai_budget`（429 + 审计）。copilot 消息路径对 workspace 行加锁（`with_for_update`）。
-- AI 端点清单：`/ai/interpret`、`/ai/frame-problem`、`/ai/propose-solutions`、`/ai/draft-document`、`/ai/cluster-feedback`、`/ai/usage`、`/dataset-versions/{id}/report-narration`、`/projects/{id}/auto-report`。
+- AI 端点清单：`/ai/interpret`、`/ai/frame-problem`、`/ai/propose-solutions`、`/ai/distill-interview`（第四批：采访蒸馏，UI 在 stage7 使用；`/ai/interpret` 端点保留但 UI 不再用）、`/ai/draft-document`、`/ai/cluster-feedback`、`/ai/usage`、`/dataset-versions/{id}/report-narration`、`/projects/{id}/auto-report`。采访轮次走 `POST /projects/{id}/interview/rounds`（services/interview.py，复用 `_run_ai_stage` + `INTERVIEW_QUESTIONS_SCHEMA`，服务端按规范化文本强制去重）。
 - Copilot SSE 是**回放**而非实时流：事件先存 `AIRun.input_summary_json.events`，`GET /copilot/runs/{id}/events` 逐条吐出（`_sse`）。
 - Copilot 上下文中的洞察由**服务端**注入：`copilot_message` 按 `session.project_id` 查询 confirmed 洞察（created_at 倒序 ≤20 条），经 `extract_ai_insights` 消毒后并入 `copilot_context`；不信任前端传的 insight_ids。
 
@@ -198,9 +203,9 @@ AI_Product_Workspace/
 
 ---
 
-## 8. API 面貌（全部在 app/main.py）
+## 8. API 面貌（第三批起按 routers/ 域拆分）
 
-约 100+ 端点，按资源域：
+约 135 个端点（清单由 tests/test_route_manifest.py 冻结），按资源域：
 - **Auth**：register/login/refresh/me（注册即建 workspace；登录失败统一报错不泄露邮箱存在性；均写审计）
 - **Workspace**：list/patch/settings(GET,PATCH)/members/metrics 字典 CRUD（含 `/api/v1/settings`、`/api/v1/metrics` 别名）
 - **Audit**：`GET /audit-logs`（workspace 级，newest-first）
@@ -209,6 +214,7 @@ AI_Product_Workspace/
 - **Analysis**：validate-config、runs CRUD、rerun、artifacts
 - **Feedback**：items CRUD/import/imports、clusters generate/patch/link-task、notes GET/POST/PATCH（V1.1）
 - **Insights / Problems / Solutions / Decisions / Approvals / Documents**：按第 6 节流程
+- **Interview（第四批）**：`POST /projects/{id}/interview/rounds`、`GET/POST /interview-questions`、`PATCH /interview-questions/{id}`、`POST /ai/distill-interview`
 - **AI + Copilot + Jobs**：见第 7 节
 
 **V1.1 legacy 标记**：`_V11_LEGACY_API_PREFIXES`（workspaces/tasks/approval-requests/decision-proposals/jobs/copilot sessions/feedback-items/feedback-clusters）的响应带 `Deprecation: true`、`Sunset: 2027-01-01` 头（middleware `mark_legacy_api_surfaces`）。
@@ -220,7 +226,7 @@ AI_Product_Workspace/
 ## 9. 前端结构与数据流
 
 - **认证流**：login 页 `POST /auth/login` → `saveSession()`（localStorage + 镜像 cookie，cookie max-age 解析 JWT exp 对齐，`lib/api.ts:43`）→ middleware 放行；任意 401 统一 `clearSession()` + 跳 `/login`（`api.ts:22`）。
-- **工作台数据流**：`loadWorkflowSnapshot()`（`workflow.ts:298`）`Promise.allSettled` 并行拉 10 类列表（含第二批新增的 `/approval-requests`，仅 pending）+ `/me`，容错收集 loadErrors → `hydrateActiveVersion` 补拉 schema/质量报告 → `stepCompletion()` 算门控 → `WorkflowFrame` 渲染门控/进度。
+- **工作台数据流**：`loadWorkflowSnapshot()` `Promise.allSettled` 并行拉 11 类列表（含 `/approval-requests` 仅 pending、第四批新增的 `/interview-questions`）+ `/me`，容错收集 loadErrors → `hydrateActiveVersion` 补拉 schema/质量报告 → `stepCompletion()` 算门控（11 阶段；第 6 步=存在 answered 采访问题或手动补充）→ `WorkflowFrame` 渲染门控/进度。
 - **工作台上传流**（`app/(workspace)/page.tsx`）：选文件 → `upload-batch` → 轮询 job（`TERMINAL_JOB_STATUS`，POLL_LIMIT=150）→ 就绪后 `POST auto-report` → 渲染 ReportMarkdown + ECharts 图表 → confirm/重新生成。
 - **各阶段页**均为「门控包裹 + API 薄封装」模式；AI 起草按钮调用对应 `/ai/*` 端点，返回的 draft 填充表单，用户修改后走常规 POST/PATCH 落库。
 - **设置页**：workspace 设置（时区/AI 模型/输出上限/双层 token 预算/feature flags）+ `/health/ai`、`/health/ready` 健康面板。
@@ -231,10 +237,10 @@ AI_Product_Workspace/
 ## 10. 当前完成度
 
 **已实现且验证**：
-- 后端测试套件 **167 passed, 1 xfailed，0 警告**（2026-08-30 实测运行；第三批新增 route manifest 冻结测试，第四批新增 test_guardrails.py 守护测试：`_safe_data_file` 路径防越界、`models.now()` naive-UTC 语义、pandas 懒加载纪律、反馈键清单超集关系）。覆盖：RBAC 与 workspace 隔离、数据管线（上传/版本/清洗/质量）、分析引擎全类型、AI 降级边界（无 key 绝不 500、输出契约、上下文白名单、反馈原文不外泄）、决策链规则（证据强制/落选理由/审批失效）、项目级联删除、报告叙述消毒。
+- 后端测试套件 **179 passed, 1 xfailed，0 警告**（2026-09-01 实测运行；含 route manifest 冻结测试、test_guardrails.py 守护测试：`_safe_data_file` 路径防越界、`models.now()` naive-UTC 语义、pandas 懒加载纪律、反馈键清单超集关系；第四批新增 test_interview.py 12 个采访/蒸馏测试）。覆盖：RBAC 与 workspace 隔离、数据管线（上传/版本/清洗/质量）、分析引擎全类型、AI 降级边界（无 key 绝不 500、输出契约、上下文白名单、反馈原文不外泄）、决策链规则（证据强制/落选理由/审批失效）、项目级联删除、报告叙述消毒。
 - 8 个 Alembic 迁移可从零建库；`.env` 已配置 DeepSeek；前后端均可本地跑通。
-- 前端 12 阶段页面、工作台、数据管理、设置页齐全。
-- **12 阶段全链路已真实手动冒烟走通**（2026-08-30，真实 DeepSeek key：上传→工作台报告→洞察→讨论→问题→方案→决策→PRD 导出）。
+- 前端 11 阶段页面、工作台、数据管理、设置页齐全（第四批起）。
+- **全链路已真实手动冒烟走通**（12 阶段版 2026-08-30：上传→报告→洞察→讨论→问题→方案→决策→PRD；11 阶段版 2026-09-01：上传→报告→采访→蒸馏→裁决→问题→方案→决策→PRD）。
 - **`ruff check app tests` 零告警**（第四批清掉 tests 基线 3 条 + 连带 2 条；unittest 弃用告警从 2494 → 0）。
 
 **进行中（V1.1 迁移收尾）**：
