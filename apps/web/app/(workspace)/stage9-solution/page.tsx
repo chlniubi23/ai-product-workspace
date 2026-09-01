@@ -162,7 +162,7 @@ export default function Stage10SolutionPage() {
   return (
     <div className="page">
       <WorkflowHeader
-        step={10}
+        step={9}
         title="方案讨论"
         description="针对已确认的问题列出多个候选方案，比较取舍后选定一个。选定动作会把其他方案标记为未采纳，留下比较痕迹。"
         completion={completion}
@@ -174,14 +174,14 @@ export default function Stage10SolutionPage() {
           {error}
         </div>
       )}
-      <WorkflowGate step={10} completion={completion} loading={loading}>
+      <WorkflowGate step={9} completion={completion} loading={loading}>
         {confirmedProblems.length === 0 ? (
           <section className="card empty-state">
             <Lightbulb size={20} />
             <strong>还没有已确认的问题</strong>
-            <p>先在第 9 步确认一个问题。</p>
-            <Link className="btn btn-primary btn-sm" href="/stage9-problem">
-              前往第 9 步·问题定义 <ChevronRight size={13} />
+            <p>先在第 8 步确认一个问题。</p>
+            <Link className="btn btn-primary btn-sm" href="/stage8-problem">
+              前往第 8 步·产品问题 <ChevronRight size={13} />
             </Link>
           </section>
         ) : (
@@ -414,7 +414,7 @@ export default function Stage10SolutionPage() {
                   添加方案
                 </button>
                 {selectedOption && (
-                  <Link className="btn btn-subtle" href="/stage11-decision">
+                  <Link className="btn btn-subtle" href="/stage10-decision">
                     下一步·产品决策 <ChevronRight size={13} />
                   </Link>
                 )}

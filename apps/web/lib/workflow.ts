@@ -139,6 +139,20 @@ export type WorkflowDiscussion = {
   created_at?: string;
 };
 
+export type WorkflowInterviewQuestion = {
+  id: string;
+  project_id?: string;
+  round_number?: number;
+  topic?: string;
+  question_text?: string;
+  rationale?: string;
+  status?: string;
+  answer_text?: string;
+  source?: string;
+  created_at?: string;
+  answered_at?: string;
+};
+
 /** Pending approval request; the backend only ever lists status=pending rows. */
 export type WorkflowApproval = {
   id: string;
@@ -161,6 +175,7 @@ export type WorkflowSnapshot = {
   decisions: WorkflowDecision[];
   discussions: WorkflowDiscussion[];
   approvals: WorkflowApproval[];
+  interviewQuestions: WorkflowInterviewQuestion[];
   activeDataset?: WorkflowDataset;
   activeVersion?: WorkflowVersion;
   workspaceId: string;
@@ -169,7 +184,8 @@ export type WorkflowSnapshot = {
 };
 
 /** Number of pipeline stages; keep in sync with pipelineNavItems. */
-export const STAGE_COUNT = 12;
+/** Batch 4 merged the discussion stage into the interview; 11 stages since. */
+export const STAGE_COUNT = 11;
 export type StageCompletion = boolean[];
 
 /** All stages incomplete; used before the first snapshot arrives. */
@@ -240,17 +256,20 @@ export function stepCompletion(snapshot: WorkflowSnapshot): StageCompletion {
   const stage3 = Boolean(version?.quality_report);
   const stage4 = Boolean(succeededRun);
   const stage5 = Boolean(succeededRun && (succeededRun.artifacts?.length || succeededRun.result_summary));
-  const stage6 = snapshot.insights.length > 0;
+  // Stage 6 (AI interview) completes once an answer is on record -- an
+  // answered AI question or any manual supplement counts.
+  const stage6 = snapshot.interviewQuestions.some(
+    (question) => question.status === "answered" || question.source === "manual",
+  );
   const stage7 = snapshot.insights.some((insight) => insight.status === "confirmed");
-  const stage8 = snapshot.discussions.some((item) => (item.turn_count || 0) > 0);
-  const stage9 = snapshot.problems.some((problem) => problem.status === "confirmed");
-  const stage10 = snapshot.solutions.some((solution) => solution.status === "selected");
-  const stage11 = snapshot.decisions.some((decision) => decision.status === "approved");
-  const stage12 = snapshot.documents.some(
+  const stage8 = snapshot.problems.some((problem) => problem.status === "confirmed");
+  const stage9 = snapshot.solutions.some((solution) => solution.status === "selected");
+  const stage10 = snapshot.decisions.some((decision) => decision.status === "approved");
+  const stage11 = snapshot.documents.some(
     (document) => (document.versions?.length || 0) > 0 || Boolean(document.current_version),
   );
 
-  return [stage1, stage2, stage3, stage4, stage5, stage6, stage7, stage8, stage9, stage10, stage11, stage12];
+  return [stage1, stage2, stage3, stage4, stage5, stage6, stage7, stage8, stage9, stage10, stage11];
 }
 
 export function firstIncompleteStep(snapshot: WorkflowSnapshot): number {
@@ -324,6 +343,7 @@ export async function loadWorkflowSnapshot(): Promise<WorkflowSnapshot> {
     decisionsResult,
     discussionsResult,
     approvalsResult,
+    interviewQuestionsResult,
     meResult,
   ] = await Promise.allSettled([
     requestList<WorkflowProject>("/projects"),
@@ -338,6 +358,7 @@ export async function loadWorkflowSnapshot(): Promise<WorkflowSnapshot> {
     // The endpoint itself only returns status=pending rows; requestList
     // appends page_size=100.
     requestList<WorkflowApproval>("/approval-requests"),
+    requestList<WorkflowInterviewQuestion>("/interview-questions"),
     apiRequest<unknown>("/me"),
   ]);
   const read = <T>(result: PromiseSettledResult<T[]>, label: string): T[] => {
@@ -355,6 +376,7 @@ export async function loadWorkflowSnapshot(): Promise<WorkflowSnapshot> {
   const decisions = read(decisionsResult, "产品决策");
   const discussions = read(discussionsResult, "讨论记录");
   const approvals = read(approvalsResult, "待审批");
+  const interviewQuestions = read(interviewQuestionsResult, "采访问题");
   const activeDataset = latestDataset(datasets);
   const activeVersion = await hydrateActiveVersion(activeDataset);
   const workspaceId =
@@ -372,6 +394,7 @@ export async function loadWorkflowSnapshot(): Promise<WorkflowSnapshot> {
     decisions,
     discussions,
     approvals,
+    interviewQuestions,
     activeDataset,
     activeVersion,
     workspaceId,

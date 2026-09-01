@@ -126,7 +126,7 @@ export default function Stage9ProblemPage() {
   return (
     <div className="page">
       <WorkflowHeader
-        step={9}
+        step={8}
         title="问题定义"
         description="把讨论收敛成一句能被验证的问题陈述。确认问题必须引用至少一条已采纳洞察，避免凭感觉立项。"
         completion={completion}
@@ -138,7 +138,7 @@ export default function Stage9ProblemPage() {
           {error}
         </div>
       )}
-      <WorkflowGate step={9} completion={completion} loading={loading}>
+      <WorkflowGate step={8} completion={completion} loading={loading}>
         {confirmedInsights.length === 0 ? (
           <section className="card empty-state">
             <Target size={20} />
@@ -306,7 +306,7 @@ export default function Stage9ProblemPage() {
                   ))}
                 </div>
                 <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
-                  <Link className="btn btn-primary btn-sm" href="/stage10-solution">
+                  <Link className="btn btn-primary btn-sm" href="/stage9-solution">
                     下一步·方案讨论 <ChevronRight size={13} />
                   </Link>
                 </div>

@@ -69,7 +69,7 @@ export default function Stage12PrdPage() {
   return (
     <div className="page">
       <WorkflowHeader
-        step={12}
+        step={11}
         title="交付"
         description="选择已确认洞察生成可编辑的 Markdown，并附上证据清单。"
         completion={completion}
@@ -81,14 +81,14 @@ export default function Stage12PrdPage() {
           {error}
         </div>
       )}
-      <WorkflowGate step={12} completion={completion} loading={loading}>
+      <WorkflowGate step={11} completion={completion} loading={loading}>
         {!hasApprovedDecision ? (
           <section className="card empty-state">
             <FileText size={20} />
             <strong>还没有已批准的决策</strong>
-            <p>先在第 11 步完成产品决策。</p>
-            <Link className="btn btn-primary btn-sm" href="/stage11-decision">
-              前往第 11 步·产品决策 <ChevronRight size={13} />
+            <p>先在第 10 步完成产品决策。</p>
+            <Link className="btn btn-primary btn-sm" href="/stage10-decision">
+              前往第 10 步·产品决策 <ChevronRight size={13} />
             </Link>
           </section>
         ) : (

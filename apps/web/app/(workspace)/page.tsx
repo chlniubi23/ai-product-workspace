@@ -580,8 +580,8 @@ export default function WorkbenchPage() {
             <ReportMarkdown markdown={markdown} />
           </div>
           <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
-            <Link className="btn btn-primary btn-sm" href="/stage6-insight">
-              下一步·洞察引擎 <ChevronRight size={13} />
+            <Link className="btn btn-primary btn-sm" href="/stage6-interview">
+              下一步·AI 采访 <ChevronRight size={13} />
             </Link>
           </div>
         </section>

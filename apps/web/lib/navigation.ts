@@ -3,18 +3,19 @@
  *
  * The deterministic data layer (old stages 1-5) collapsed into the workbench:
  * upload -> auto analysis -> AI report happens on one page at "/".
- * The human-led decision chain (insight -> problem -> solution -> decision ->
- * PRD) keeps its ordered pages. `ai` marks where AI drafts require human
- * confirmation; `step` keeps the original numbering for the workflow gates.
+ * The human-led decision chain (interview -> insight adjudication -> problem
+ * -> solution -> decision -> PRD) keeps its ordered pages. `ai` marks where AI
+ * drafts require human confirmation; `step` keeps the numbering for the
+ * workflow gates. Batch 4 merged the old discussion stage into the interview,
+ * so the pipeline has 11 stages.
  */
 export const pipelineNavItems = [
-  { href: "/stage6-insight", label: "洞察引擎", step: 6, icon: "lightbulb", ai: true, phase: "insight" },
+  { href: "/stage6-interview", label: "AI 采访", step: 6, icon: "message", ai: true, phase: "insight" },
   { href: "/stage7-copilot", label: "决策副驾", step: 7, icon: "sparkles", ai: true, phase: "insight" },
-  { href: "/stage8-discussion", label: "人机讨论", step: 8, icon: "message", ai: true, phase: "insight" },
-  { href: "/stage9-problem", label: "产品问题", step: 9, icon: "target", ai: true, phase: "decision" },
-  { href: "/stage10-solution", label: "方案讨论", step: 10, icon: "route", ai: true, phase: "decision" },
-  { href: "/stage11-decision", label: "产品决策", step: 11, icon: "gavel", ai: false, phase: "decision" },
-  { href: "/stage12-prd", label: "PRD", step: 12, icon: "file", ai: true, phase: "decision" },
+  { href: "/stage8-problem", label: "产品问题", step: 8, icon: "target", ai: true, phase: "decision" },
+  { href: "/stage9-solution", label: "方案讨论", step: 9, icon: "route", ai: true, phase: "decision" },
+  { href: "/stage10-decision", label: "产品决策", step: 10, icon: "gavel", ai: false, phase: "decision" },
+  { href: "/stage11-prd", label: "PRD", step: 11, icon: "file", ai: true, phase: "decision" },
 ] as const;
 
 /** The two bands shown as dividers in the sidebar. */
@@ -54,10 +55,17 @@ export const legacyRouteAliases: Record<string, string> = {
   "/step2-quality": "/",
   "/analysis": "/",
   "/step3-analysis": "/",
-  "/insights": "/stage6-insight",
-  "/step4-insights": "/stage6-insight",
-  "/feedback": "/stage6-insight",
-  "/documents": "/stage12-prd",
-  "/step5-deliver": "/stage12-prd",
+  "/insights": "/stage6-interview",
+  "/step4-insights": "/stage6-interview",
+  "/feedback": "/stage6-interview",
+  "/documents": "/stage11-prd",
+  "/step5-deliver": "/stage11-prd",
   "/projects": "/",
+  // Batch 4: the discussion stage merged into the interview; 9-12 renumbered 8-11.
+  "/stage6-insight": "/stage6-interview",
+  "/stage8-discussion": "/stage6-interview",
+  "/stage9-problem": "/stage8-problem",
+  "/stage10-solution": "/stage9-solution",
+  "/stage11-decision": "/stage10-decision",
+  "/stage12-prd": "/stage11-prd",
 };

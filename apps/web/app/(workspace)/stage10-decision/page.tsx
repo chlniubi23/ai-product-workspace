@@ -190,7 +190,7 @@ export default function Stage11DecisionPage() {
   return (
     <div className="page">
       <WorkflowHeader
-        step={11}
+        step={10}
         title="产品决策"
         description="提交后进入待审批，批准或驳回（驳回必须写明理由）。同一账号可先提交再审批；用两个账号登录即可演示双人治理。"
         completion={completion}
@@ -202,14 +202,14 @@ export default function Stage11DecisionPage() {
           {error}
         </div>
       )}
-      <WorkflowGate step={11} completion={completion} loading={loading}>
+      <WorkflowGate step={10} completion={completion} loading={loading}>
         {!selectedSolution ? (
           <section className="card empty-state">
             <Gavel size={20} />
             <strong>还没有选定的方案</strong>
-            <p>先在第 10 步选定一个方案。</p>
-            <Link className="btn btn-primary btn-sm" href="/stage10-solution">
-              前往第 10 步·方案讨论 <ChevronRight size={13} />
+            <p>先在第 9 步选定一个方案。</p>
+            <Link className="btn btn-primary btn-sm" href="/stage9-solution">
+              前往第 9 步·方案讨论 <ChevronRight size={13} />
             </Link>
           </section>
         ) : (
@@ -368,7 +368,7 @@ export default function Stage11DecisionPage() {
                   ))}
                 </div>
                 <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
-                  <Link className="btn btn-primary btn-sm" href="/stage12-prd">
+                  <Link className="btn btn-primary btn-sm" href="/stage11-prd">
                     下一步·生成 PRD <ChevronRight size={13} />
                   </Link>
                 </div>
