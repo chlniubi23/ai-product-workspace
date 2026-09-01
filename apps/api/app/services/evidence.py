@@ -17,6 +17,7 @@ from ..models import (
     FeedbackItem,
     FeedbackNote,
     Insight,
+    InterviewQuestion,
     Project,
     Task,
 )
@@ -33,7 +34,7 @@ def _check_evidence_scope(db: Session, workspace_id: str, evidence: list[dict[st
         "insight", "decision", "decision_proposal", "feedback_cluster", "feedback_theme",
         "document", "analysis_artifact", "artifact", "analysis", "analysis_run",
         "dataset", "data", "dataset_version", "data_version", "feedback", "feedback_item",
-        "document_version", "task", "feedback_note",
+        "document_version", "task", "feedback_note", "interview_question",
     }
     for reference in evidence:
         raw_type, ref_id = reference.get("type"), reference.get("id")
@@ -93,6 +94,10 @@ def _check_evidence_scope(db: Session, workspace_id: str, evidence: list[dict[st
             owner_project = document.project_id if document else None
         elif ref_type == "task":
             item = db.get(Task, ref_id)
+            owner_workspace = item.workspace_id if item else None
+            owner_project = item.project_id if item else None
+        elif ref_type == "interview_question":
+            item = db.get(InterviewQuestion, ref_id)
             owner_workspace = item.workspace_id if item else None
             owner_project = item.project_id if item else None
         if ref_type in recognised_types and item is None:

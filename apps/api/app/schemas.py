@@ -411,6 +411,27 @@ class DocumentVersionCreate(BaseModel):
     version: int | None = Field(default=None, ge=1)
 
 
+class AIDistillInterviewRequest(BaseModel):
+    """Distill answered interview questions + analysis artifacts (stage 7)."""
+
+    project_id: str
+
+
+class InterviewQuestionCreate(BaseModel):
+    """Manual supplement for the stage-6 interview: a point title plus the
+    information the user wants on record (empty info leaves it pending)."""
+
+    project_id: str
+    topic: str = ""
+    question_text: str = Field(min_length=1)
+    answer_text: str = ""
+
+
+class InterviewQuestionPatch(BaseModel):
+    answer_text: str | None = None
+    status: Literal["answered", "skipped"] | None = None
+
+
 class CopilotSessionCreate(BaseModel):
     workspace_id: str
     project_id: str | None = None

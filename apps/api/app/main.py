@@ -33,6 +33,7 @@ from .routers import (
     documents,
     feedback,
     insights,
+    interview,
     jobs,
     problems,
     projects,
@@ -68,6 +69,7 @@ app.include_router(projects.router)
 app.include_router(datasets.router)
 app.include_router(analysis.router)
 app.include_router(insights.router)
+app.include_router(interview.router)
 app.include_router(feedback.router)
 app.include_router(problems.router)
 app.include_router(decisions.router)

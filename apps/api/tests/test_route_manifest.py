@@ -12,6 +12,7 @@ from app.main import app
 
 ROUTE_MANIFEST: list[tuple[str, tuple[str, ...], str]] = [
     ('/api/v1/ai/cluster-feedback', ('POST',), 'ai_cluster_feedback'),
+    ('/api/v1/ai/distill-interview', ('POST',), 'ai_distill_interview'),
     ('/api/v1/ai/draft-document', ('POST',), 'ai_draft_document'),
     ('/api/v1/ai/frame-problem', ('POST',), 'ai_frame_problem'),
     ('/api/v1/ai/interpret', ('POST',), 'ai_interpret'),
@@ -85,6 +86,9 @@ ROUTE_MANIFEST: list[tuple[str, tuple[str, ...], str]] = [
     ('/api/v1/insights', ('POST',), 'create_insight'),
     ('/api/v1/insights/{insight_id}', ('GET',), 'get_insight'),
     ('/api/v1/insights/{insight_id}', ('PATCH',), 'patch_insight'),
+    ('/api/v1/interview-questions', ('GET',), 'list_interview_questions'),
+    ('/api/v1/interview-questions', ('POST',), 'add_manual_question'),
+    ('/api/v1/interview-questions/{question_id}', ('PATCH',), 'patch_interview_question'),
     ('/api/v1/jobs/{job_id}', ('GET',), 'get_job'),
     ('/api/v1/jobs/{job_id}/cancel', ('POST',), 'cancel_job'),
     ('/api/v1/jobs/{job_id}/retry', ('POST',), 'retry_job'),
@@ -106,6 +110,7 @@ ROUTE_MANIFEST: list[tuple[str, tuple[str, ...], str]] = [
     ('/api/v1/projects/{project_id}', ('PATCH',), 'patch_project'),
     ('/api/v1/projects/{project_id}/auto-report', ('POST',), 'generate_auto_report'),
     ('/api/v1/projects/{project_id}/auto-reports', ('GET',), 'list_auto_reports'),
+    ('/api/v1/projects/{project_id}/interview/rounds', ('POST',), 'generate_round'),
     ('/api/v1/projects/{project_id}/overview', ('GET',), 'project_overview'),
     ('/api/v1/projects/{project_id}/tasks', ('GET',), 'list_tasks'),
     ('/api/v1/projects/{project_id}/tasks', ('POST',), 'create_task'),
@@ -140,6 +145,7 @@ ROUTE_MANIFEST: list[tuple[str, tuple[str, ...], str]] = [
     ('/openapi.json', ('GET', 'HEAD'), 'openapi'),
     ('/redoc', ('GET', 'HEAD'), 'redoc_html'),
 ]
+
 
 
 def _live_manifest() -> list[tuple[str, tuple[str, ...], str]]:

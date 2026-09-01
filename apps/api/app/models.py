@@ -626,6 +626,35 @@ class AnalysisReportNarration(Base):
     updated_at = Column(DateTime, default=now, onupdate=now, nullable=False)
 
 
+class InterviewQuestion(Base):
+    """One AI-interview question (or a manual supplement) for a project.
+
+    Stage 6 asks the model for a round of 3-5 grounded questions; the user
+    answers or skips each one and can add points manually at any time.
+    ``round_number`` 0 marks manual rows; AI rounds count up from 1.  A row
+    never blocks the pipeline by itself -- stage 7 distills answered rows into
+    insight drafts, and the usual draft/adjudication boundary applies there.
+    """
+
+    __tablename__ = "interview_questions"
+    id = Column(String(36), primary_key=True, default=new_id)
+    workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    round_number = Column(Integer, default=1, nullable=False)   # 0 = 手动补充
+    topic = Column(String(120), default="", nullable=False)
+    question_text = Column(Text, nullable=False)                # 手动补充时为要点标题
+    rationale = Column(Text, default="", nullable=False)        # AI 说明"为什么问这个"
+    # pending | answered | skipped
+    status = Column(String(20), default="pending", nullable=False)
+    answer_text = Column(Text, default="", nullable=False)
+    # ai | manual
+    source = Column(String(20), default="ai", nullable=False)
+    ai_run_id = Column(String(36), nullable=True)
+    created_by = Column(String(36), ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, default=now, nullable=False)
+    answered_at = Column(DateTime, nullable=True)
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
     id = Column(String(36), primary_key=True, default=new_id)

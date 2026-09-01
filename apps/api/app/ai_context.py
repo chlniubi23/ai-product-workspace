@@ -843,6 +843,66 @@ def validate_solution_drafts(value: Any) -> dict[str, Any]:
     }
 
 
+# Stage 6 contract: one AI-interview round.  The model proposes up to five
+# grounded questions; the server dedups against existing rows before persisting,
+# so the schema only enforces shape and length.
+INTERVIEW_QUESTIONS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["questions"],
+    "properties": {
+        "questions": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["topic", "question_text", "rationale"],
+                "properties": {
+                    "topic": {"type": "string"},
+                    "question_text": {"type": "string"},
+                    "rationale": {"type": "string"},
+                },
+            },
+        }
+    },
+}
+
+
+def validate_interview_questions(value: Any) -> dict[str, Any]:
+    """Validate and normalize one AI-interview round (3-5 questions requested,
+    up to 5 accepted; the route layers dedup on top of this)."""
+
+    if not isinstance(value, Mapping):
+        raise AIOutputValidationError("interview round must be a JSON object")
+    raw_questions = value.get("questions")
+    if not isinstance(raw_questions, list):
+        raise AIOutputValidationError("interview round 'questions' must be an array")
+    questions: list[dict[str, Any]] = []
+    for item in raw_questions[:5]:
+        if not isinstance(item, Mapping):
+            raise AIOutputValidationError("interview questions must be objects")
+        question_text = str(item.get("question_text") or "").strip()
+        if not question_text:
+            raise AIOutputValidationError("interview questions require non-empty question_text")
+        questions.append(
+            {
+                "topic": str(item.get("topic") or "").strip()[:120],
+                "question_text": question_text[:2000],
+                "rationale": str(item.get("rationale") or "").strip()[:2000],
+            }
+        )
+    if not questions:
+        raise AIOutputValidationError("interview round requires at least one question")
+    return {"questions": questions}
+
+
+def empty_interview_round(*, limitation: str | None = None) -> dict[str, Any]:
+    """Return a valid empty round for unavailable providers."""
+
+    return {"questions": [], "limitations": [limitation] if limitation else []}
+
+
 # Friendly aliases for callers/tests that use the wording from the V1.1 document.
 validate_structured_ai_output = validate_ai_output
 build_safe_ai_context = build_ai_context
@@ -855,6 +915,7 @@ __all__ = [
     "AI_OUTPUT_SCHEMA",
     "ALLOWED_CONTEXT_KEYS",
     "ALLOWED_CONTEXT_KEY_ORDER",
+    "INTERVIEW_QUESTIONS_SCHEMA",
     "PROBLEM_DRAFT_SCHEMA",
     "REPORT_OUTPUT_SCHEMA",
     "SOLUTION_DRAFTS_SCHEMA",
@@ -862,9 +923,11 @@ __all__ = [
     "build_ai_context",
     "build_safe_ai_context",
     "empty_ai_output",
+    "empty_interview_round",
     "empty_report_output",
     "extract_ai_insights",
     "validate_ai_output",
+    "validate_interview_questions",
     "validate_problem_draft",
     "validate_report_output",
     "validate_solution_drafts",
