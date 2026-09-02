@@ -85,6 +85,7 @@ export type WorkflowDocument = {
   project_id?: string;
   title?: string;
   status?: string;
+  document_type?: string;
   created_at?: string;
   updated_at?: string;
   current_version?: WorkflowDocumentVersion | null;
