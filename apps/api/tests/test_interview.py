@@ -376,3 +376,88 @@ def test_distill_system_prompt_carries_size_limits(client, owner, project, monke
     assert "每节最多 4 条" in system
     assert "不超过 80 字" in system
     assert "limitations 最多 3 条" in system
+
+
+# --------------------------------------------------------------------------
+# _normalize_distill_evidence: typed-reference normalization (pure function)
+# --------------------------------------------------------------------------
+
+
+class _FakeQuestion:
+    def __init__(self, id: str):
+        self.id = id
+        self.topic = "t"
+        self.question_text = "q"
+
+
+QID = "68723dd7-093a-4dbe-b6b1-bd43d0ecdbd4"
+ARTID = "8a627b11-659f-47c2-8478-9c9cbb9794ba"
+
+
+def _fake_questions():
+    return [_FakeQuestion(QID)]
+
+
+def _fake_artifacts():
+    return [{"id": ARTID, "artifact_type": "eda", "title": "EDA", "payload_json": {}}]
+
+
+def test_normalize_adds_missing_type_from_id_membership():
+    from app.services.interview import _normalize_distill_evidence
+
+    output = {"facts": [{"text": "f", "evidence": [{"id": QID}]}], "hypotheses": [], "recommendations": []}
+    normalized = _normalize_distill_evidence(output, _fake_questions(), _fake_artifacts())
+    assert normalized["facts"][0]["evidence"] == [{"type": "interview_question", "id": QID}]
+
+
+def test_normalize_corrects_wrong_type_by_id_membership():
+    from app.services.interview import _normalize_distill_evidence
+
+    output = {
+        "facts": [{"text": "f", "evidence": [{"type": "analysis_artifact", "id": QID}, {"type": "interview_question", "id": ARTID}]}],
+        "hypotheses": [],
+        "recommendations": [],
+    }
+    normalized = _normalize_distill_evidence(output, _fake_questions(), _fake_artifacts())
+    assert normalized["facts"][0]["evidence"] == [
+        {"type": "interview_question", "id": QID},
+        {"type": "analysis_artifact", "id": ARTID},
+    ]
+
+
+def test_normalize_extracts_uuid_from_strings_and_drops_unknown():
+    from app.services.interview import _normalize_distill_evidence
+
+    output = {
+        "facts": [
+            {"text": "f", "evidence": [f"引用 {QID}", ARTID.upper(), {"id": "not-in-project"}, 42, None]},
+        ],
+        "hypotheses": [],
+        "recommendations": [],
+    }
+    normalized = _normalize_distill_evidence(output, _fake_questions(), _fake_artifacts())
+    assert normalized["facts"][0]["evidence"] == [
+        {"type": "interview_question", "id": QID},
+        {"type": "analysis_artifact", "id": ARTID},
+    ]
+
+
+def test_normalize_dedupes_and_falls_back_when_all_dropped():
+    from app.services.interview import _normalize_distill_evidence
+
+    output = {
+        "facts": [{"text": "dup", "evidence": [{"id": QID}, QID, {"type": "interview_question", "id": QID}]}],
+        "hypotheses": [{"text": "all-dropped", "evidence": [{"id": "unknown"}, "garbage"]}],
+        "recommendations": [],
+    }
+    normalized = _normalize_distill_evidence(output, _fake_questions(), _fake_artifacts())
+    assert normalized["facts"][0]["evidence"] == [{"type": "interview_question", "id": QID}]
+    assert normalized["hypotheses"][0]["evidence"] == [{"type": "interview_question", "id": QID}]
+
+
+def test_normalize_without_fallback_leaves_evidence_empty():
+    from app.services.interview import _normalize_distill_evidence
+
+    output = {"facts": [{"text": "f", "evidence": [{"id": "unknown"}]}], "hypotheses": [], "recommendations": []}
+    normalized = _normalize_distill_evidence(output, [], [])
+    assert normalized["facts"][0]["evidence"] == []

@@ -237,7 +237,7 @@ async def distill_interview(
             "你是产品分析助手。把给定的采访问答（interview_answer 产物）与数据结论（分析产物）蒸馏成洞察草稿："
             "facts（有依据的事实）、hypotheses（待验证的假设）、recommendations（下一步建议）。"
             "每节最多 4 条；每条 text 不超过 80 字；每条的 evidence 只引 1 个最相关的 id；limitations 最多 3 条。"
-            "每条必须带 evidence 数组：引用采访问题 id（type=interview_question）或分析产物 id（type=analysis_artifact）。"
+            "每条必须带 evidence 数组，每项必须是 {\"type\": \"...\", \"id\": \"...\"} 对象，type 取 interview_question（采访问答）或 analysis_artifact（分析产物）。"
             "不要臆测未提供的信息。输出默认是 draft。"
         ),
         context=context,
@@ -251,21 +251,63 @@ async def distill_interview(
     }
 
 
+_UUID_RE = re.compile(
+    r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b"
+)
+
+
 def _normalize_distill_evidence(output: dict[str, Any], questions: list[InterviewQuestion], analysis_items: list[dict[str, Any]]) -> dict[str, Any]:
-    known_ids = {q.id for q in questions} | {item["id"] for item in analysis_items}
+    """Rewrite every evidence entry into a legal ``{type, id}`` reference.
+
+    The model routinely emits bare ``{"id": ...}`` objects, wrong types, or the
+    id as a plain string; the insight persistence layer rejects all of those.
+    The id's membership decides the type -- a question id is an
+    ``interview_question`` reference no matter what the model called it.
+    Entries pointing outside this project's known ids are dropped, and the
+    existing deterministic fallback only applies when everything was dropped.
+    """
+
+    # lowercase -> canonical id as stored in the DB (SQLite compares ids
+    # case-sensitively, so saved references must carry the stored spelling)
+    question_ids = {q.id.lower(): q.id for q in questions}
+    artifact_ids = {item["id"].lower(): item["id"] for item in analysis_items}
     fallback: dict[str, Any] | None = None
     if questions:
         fallback = {"type": "interview_question", "id": questions[0].id}
     elif analysis_items:
         fallback = {"type": "analysis_artifact", "id": analysis_items[0]["id"]}
+
+    def resolve(entry: Any) -> dict[str, Any] | None:
+        candidates: list[str] = []
+        if isinstance(entry, dict):
+            value = entry.get("id")
+            if isinstance(value, str):
+                candidates.append(value)
+        elif isinstance(entry, str):
+            candidates.append(entry)
+            candidates.extend(_UUID_RE.findall(entry))
+        for candidate in candidates:
+            key = candidate.lower()
+            if key in question_ids:
+                return {"type": "interview_question", "id": question_ids[key]}
+            if key in artifact_ids:
+                return {"type": "analysis_artifact", "id": artifact_ids[key]}
+        return None
+
     for section in ("facts", "hypotheses", "recommendations"):
         for claim in output.get(section, []):
-            evidence = [
-                entry
-                for entry in claim.get("evidence", [])
-                if isinstance(entry, dict) and entry.get("id") in known_ids
-            ]
-            if not evidence and fallback is not None:
-                evidence = [dict(fallback)]
-            claim["evidence"] = evidence
+            resolved: list[dict[str, Any]] = []
+            seen: set[tuple[str, str]] = set()
+            for entry in claim.get("evidence", []):
+                reference = resolve(entry)
+                if reference is None:
+                    continue
+                key = (reference["type"], reference["id"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                resolved.append(reference)
+            if not resolved and fallback is not None:
+                resolved = [dict(fallback)]
+            claim["evidence"] = resolved
     return output
