@@ -130,14 +130,6 @@ export type WorkflowDecision = {
   created_at?: string;
 };
 
-export type WorkflowDiscussion = {
-  id: string;
-  project_id?: string;
-  stage?: string;
-  turn_count?: number;
-  status?: string;
-  created_at?: string;
-};
 
 export type WorkflowInterviewQuestion = {
   id: string;
@@ -173,7 +165,6 @@ export type WorkflowSnapshot = {
   problems: WorkflowProblem[];
   solutions: WorkflowSolution[];
   decisions: WorkflowDecision[];
-  discussions: WorkflowDiscussion[];
   approvals: WorkflowApproval[];
   interviewQuestions: WorkflowInterviewQuestion[];
   activeDataset?: WorkflowDataset;
@@ -341,7 +332,6 @@ export async function loadWorkflowSnapshot(): Promise<WorkflowSnapshot> {
     problemsResult,
     solutionsResult,
     decisionsResult,
-    discussionsResult,
     approvalsResult,
     interviewQuestionsResult,
     meResult,
@@ -354,7 +344,6 @@ export async function loadWorkflowSnapshot(): Promise<WorkflowSnapshot> {
     requestList<WorkflowProblem>("/problems"),
     requestList<WorkflowSolution>("/solutions"),
     requestList<WorkflowDecision>("/decision-proposals"),
-    requestList<WorkflowDiscussion>("/discussions"),
     // The endpoint itself only returns status=pending rows; requestList
     // appends page_size=100.
     requestList<WorkflowApproval>("/approval-requests"),
@@ -374,7 +363,6 @@ export async function loadWorkflowSnapshot(): Promise<WorkflowSnapshot> {
   const problems = read(problemsResult, "产品问题");
   const solutions = read(solutionsResult, "候选方案");
   const decisions = read(decisionsResult, "产品决策");
-  const discussions = read(discussionsResult, "讨论记录");
   const approvals = read(approvalsResult, "待审批");
   const interviewQuestions = read(interviewQuestionsResult, "采访问题");
   const activeDataset = latestDataset(datasets);
@@ -392,7 +380,6 @@ export async function loadWorkflowSnapshot(): Promise<WorkflowSnapshot> {
     problems,
     solutions,
     decisions,
-    discussions,
     approvals,
     interviewQuestions,
     activeDataset,
