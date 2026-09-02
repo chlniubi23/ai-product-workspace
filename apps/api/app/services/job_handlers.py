@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
 from typing import Any
 
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..ai_context import REPORT_OUTPUT_SCHEMA, empty_report_output, validate_report_output
 from ..common import _require_pandas, model_dict, pd
 from ..config import settings
 from ..db import SessionLocal
@@ -17,15 +20,20 @@ from ..models import (
     AnalysisRun,
     DatasetVersion,
     Document,
+    DocumentVersion,
     FeedbackCluster,
     FeedbackClusterItem,
     FeedbackItem,
     FeedbackNote,
     Job,
     Project,
+    User,
+    Workspace,
     now,
 )
+from ..schemas import DocumentGenerate
 from ..services.audit import audit
+from .ai_stages import _run_ai_stage
 from .analysis_pipeline import (
     _analysis_artifacts,
     _analysis_result_summary,
@@ -40,6 +48,12 @@ from .datasets import (
     _quality_summary,
     _read_dataframe,
     _update_cleaning_operation_rows,
+)
+from .documents import (
+    _build_document_context,
+    _document_system_prompt,
+    _render_ai_document_markdown,
+    _render_document_markdown,
 )
 
 job_executor = JobExecutor(SessionLocal)
@@ -306,10 +320,72 @@ def _handle_document_generation(context: JobContext) -> JobResult:
     document = context.db.get(Document, context.input.get("document_id"))
     if document is None:
         raise JobExecutionError("NOT_FOUND", "Document not found", retryable=False)
-    context.progress(60, "确认文档草稿")
-    # The current endpoint creates a deterministic evidence-backed version before
-    # queueing. Keeping the handler idempotent makes retries safe and preserves it.
-    audit(context.db, document.workspace_id, context.input.get("_actor_id"), "document.generation_completed", "document", document.id, {"job_id": context.job_id})
+    payload = context.input if isinstance(context.input, dict) else {}
+    body = DocumentGenerate(
+        project_id=str(payload.get("project_id") or document.project_id),
+        document_type=str(payload.get("document_type") or document.document_type or "prd"),
+        title=str(payload.get("title") or document.title),
+        source_refs=list(payload.get("source_refs") or []),
+        template_options=dict(payload.get("template_options") or {}),
+    )
+    user = context.db.get(User, payload.get("_actor_id"))
+    if user is None:
+        raise JobExecutionError("NOT_FOUND", "Generating user no longer exists", retryable=False)
+    workspace = context.db.get(Workspace, document.workspace_id)
+    if workspace is None:
+        raise JobExecutionError("NOT_FOUND", "Workspace not found", retryable=False)
+
+    context.progress(20, "装配证据上下文")
+    doc_context = _build_document_context(body, context.db, user)
+
+    context.progress(45, "AI 撰写文档")
+    audience = str((doc_context["options"] or {}).get("audience") or "产品团队")[:120]
+    # Sync handler on a worker thread: no ambient event loop exists here, so
+    # asyncio.run() is safe (TestClient's inline background execution runs on
+    # a threadpool thread as well).
+    try:
+        ai_result = asyncio.run(
+            _run_ai_stage(
+                db=context.db,
+                user=user,
+                workspace=workspace,
+                feature_name="document_generation",
+                system_prompt=_document_system_prompt(body.document_type, audience),
+                context=doc_context["safe_context"],
+                flag_name="document_generation_enabled",
+                response_schema=REPORT_OUTPUT_SCHEMA,
+                output_validator=validate_report_output,
+                empty_output=dict(empty_report_output(limitation="AI provider is not configured.")),
+                min_output_tokens=8192,
+            )
+        )
+    except HTTPException as exc:
+        # Budget rejection (429) or a feature flag flip mid-flight: the AIRun
+        # bookkeeping already happened inside; fall back to the template.
+        ai_result = {"status": "failed", "error_code": str(getattr(exc, "detail", {}).get("code") if isinstance(exc.detail, dict) else "AI_REJECTED"), "output": {}}
+
+    context.progress(80, "渲染文档")
+    if ai_result.get("status") == "succeeded":
+        markdown = _render_ai_document_markdown(body, ai_result["output"], doc_context)
+    else:
+        # Deterministic fallback keeps the deliverable usable without a
+        # provider; the reason is recorded on the audit trail.
+        markdown, _ = _render_document_markdown(body, context.db, user)
+
+    latest = context.db.scalar(select(DocumentVersion.version_number).where(DocumentVersion.document_id == document.id).order_by(DocumentVersion.version_number.desc()).limit(1)) or 0
+    version = DocumentVersion(document_id=document.id, version_number=latest + 1, content_markdown=markdown, evidence_json=doc_context["evidence"], created_by=user.id)
+    context.db.add(version)
+    context.db.flush()
+    document.current_version_id = version.id
+    audit(
+        context.db,
+        document.workspace_id,
+        user.id,
+        "document.generation_completed",
+        "document",
+        document.id,
+        {"job_id": context.job_id, "ai_status": ai_result.get("status"), "ai_error_code": ai_result.get("error_code"), "version": version.version_number},
+    )
     context.db.commit()
     return JobResult(result_type="document", result_id=document.id)
 

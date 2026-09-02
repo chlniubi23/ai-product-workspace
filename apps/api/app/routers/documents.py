@@ -76,6 +76,8 @@ def generate_document(body: DocumentGenerate, background_tasks: BackgroundTasks,
         "document_generation",
         {
             "document_id": document.id,
+            "project_id": project.id,
+            "title": body.title,
             "source_refs": evidence,
             "template_options": body.template_options,
             "document_type": body.document_type,

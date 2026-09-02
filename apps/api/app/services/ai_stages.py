@@ -571,6 +571,7 @@ async def _run_ai_stage(
     response_schema: dict[str, Any] | None = None,
     output_validator: Callable[[Any], dict[str, Any]] | None = None,
     empty_output: dict[str, Any] | None = None,
+    min_output_tokens: int | None = None,
 ) -> dict[str, Any]:
     """Shared draft-generating AI call for the stage 9/10 endpoints.
 
@@ -579,7 +580,10 @@ async def _run_ai_stage(
     unset key degrades to an empty draft instead of a 500.  Callers may swap
     the default four-section contract for a stage-specific one via
     ``response_schema``/``output_validator``/``empty_output``; omitting them
-    keeps the historical behaviour.
+    keeps the historical behaviour.  ``min_output_tokens`` raises the first
+    attempt's token ceiling (still capped by ``per_request``) for callers
+    whose deliverable is inherently long -- the delivery document is the one
+    such stage; everything else keeps the workspace default.
     """
 
     schema = response_schema or AI_OUTPUT_SCHEMA
@@ -643,8 +647,9 @@ async def _run_ai_stage(
             # rendered as a bogus success; truncation now fails honestly.
             finish_reason: str | None = None
             retried = False
+            base_output_budget = max(budget["max_output"], min_output_tokens or 0)
             for attempt in (1, 2):
-                max_tokens = budget["max_output"] if attempt == 1 else min(budget["max_output"] * 2, budget["per_request"])
+                max_tokens = base_output_budget if attempt == 1 else min(base_output_budget * 2, budget["per_request"])
                 if attempt == 2:
                     retried = True
                     system_message += "\n只输出符合 Schema 的 JSON 对象，禁止任何截断或额外文字。"
