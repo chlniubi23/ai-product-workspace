@@ -236,6 +236,7 @@ async def distill_interview(
         system_prompt=(
             "你是产品分析助手。把给定的采访问答（interview_answer 产物）与数据结论（分析产物）蒸馏成洞察草稿："
             "facts（有依据的事实）、hypotheses（待验证的假设）、recommendations（下一步建议）。"
+            "每节最多 4 条；每条 text 不超过 80 字；每条的 evidence 只引 1 个最相关的 id；limitations 最多 3 条。"
             "每条必须带 evidence 数组：引用采访问题 id（type=interview_question）或分析产物 id（type=analysis_artifact）。"
             "不要臆测未提供的信息。输出默认是 draft。"
         ),

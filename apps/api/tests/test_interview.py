@@ -12,8 +12,18 @@ from conftest import auth, data_of
 from sqlalchemy import select
 
 from app import db as database
-from app.models import AIRun
+from app.models import AIRun, Project, User, Workspace
 from app.services.interview import _normalise_question_text
+
+
+def _run(coro):
+    import anyio
+
+    return anyio.run(lambda: coro)
+
+
+def _user(db, owner) -> User:
+    return db.get(User, owner["user"]["id"])
 
 
 def add_manual(client, user, project_id: str, question_text: str = "为什么华北的事件量最高？", answer_text: str = "") -> dict:
@@ -220,3 +230,149 @@ def test_normalise_question_text_is_punctuation_and_case_insensitive():
     assert _normalise_question_text("华北的事件量为何最高？") == _normalise_question_text("华北的事件量为何最高")
     assert _normalise_question_text("Why is retention DIPPING?") == _normalise_question_text("why is retention dipping")
     assert _normalise_question_text("？？？？") == ""
+
+
+# --------------------------------------------------------------------------
+# Truncation-aware retry in _run_ai_stage (fake adapter, no network)
+# --------------------------------------------------------------------------
+
+
+def _llm_result(content: str = "", finish_reason: str | None = "stop", structured: dict | None = None, tokens: int = 100):
+    from app.infrastructure.llm.deepseek import LlmResult
+
+    return LlmResult(
+        content=content,
+        finish_reason=finish_reason,
+        prompt_tokens=tokens,
+        completion_tokens=tokens,
+        structured=structured,
+    )
+
+
+class _FakeAdapter:
+    """Scripted DeepSeekAdapter replacement recording every call."""
+
+    configured = True
+
+    def __init__(self, results):
+        self._results = list(results)
+        self.calls: list[dict] = []
+
+    async def complete(self, *, messages, response_schema, request_metadata):
+        self.calls.append(
+            {
+                "system": messages[0].content,
+                "max_tokens": request_metadata.max_tokens,
+            }
+        )
+        return self._results.pop(0)
+
+
+def _workspace_of(client, owner):
+    return owner["workspace"]
+
+
+def _db_session():
+    from app import db as database
+
+    return database.SessionLocal()
+
+
+def _patch_adapter(monkeypatch, fake: _FakeAdapter) -> None:
+    import app.services.ai_stages as ai_stages
+
+    monkeypatch.setattr(ai_stages, "DeepSeekAdapter", lambda _settings: fake)
+
+
+GOOD_JSON = {
+    "facts": [{"text": "f1", "evidence": ["e1"]}],
+    "hypotheses": [{"text": "h1", "evidence": ["e1"]}],
+    "recommendations": [{"text": "r1", "evidence": ["e1"]}],
+    "limitations": ["l1"],
+}
+
+
+def test_truncated_then_success_retries_with_doubled_tokens(client, owner, project, monkeypatch):
+    """finish_reason=length on attempt 1 triggers one retry with 2x max_tokens."""
+
+    from app.services.interview import distill_interview
+
+    fake = _FakeAdapter(
+        [
+            _llm_result(content='{"facts": [', finish_reason="length"),
+            _llm_result(structured=GOOD_JSON, finish_reason="stop"),
+        ]
+    )
+    _patch_adapter(monkeypatch, fake)
+    with _db_session() as db:
+        ws = db.get(Workspace, owner["workspace"]["id"])
+        result = _run(distill_interview(db=db, user=_user(db, owner), workspace=ws, project=db.get(Project, project["id"])))
+
+    assert result["status"] == "succeeded"
+    assert len(fake.calls) == 2
+    assert fake.calls[0]["max_tokens"] == 4096
+    assert fake.calls[1]["max_tokens"] == 8192
+    assert "禁止任何截断" in fake.calls[1]["system"]
+    with _db_session() as db:
+        run = db.get(AIRun, result["run_id"])
+        meta = (run.input_summary_json or {}).get("provider_meta", {})
+        assert meta.get("retried") is True
+        assert meta.get("finish_reason") == "stop"
+
+
+def test_truncated_twice_fails_with_llm_truncated(client, owner, project, monkeypatch):
+    from app.services.interview import distill_interview
+
+    fake = _FakeAdapter(
+        [
+            _llm_result(content='{"facts": [', finish_reason="length"),
+            _llm_result(content='{"facts": [{"tex', finish_reason="length"),
+        ]
+    )
+    _patch_adapter(monkeypatch, fake)
+    with _db_session() as db:
+        ws = db.get(Workspace, owner["workspace"]["id"])
+        result = _run(distill_interview(db=db, user=_user(db, owner), workspace=ws, project=db.get(Project, project["id"])))
+
+    assert result["status"] == "failed"
+    assert result["error_code"] == "LLM_TRUNCATED"
+    assert result["output"]["limitations"] == ["AI 输出过长被截断"]
+    with _db_session() as db:
+        run = db.get(AIRun, result["run_id"])
+        assert (run.input_summary_json or {}).get("provider_meta", {}).get("finish_reason") == "length"
+
+
+def test_unparseable_json_fails_with_invalid_ai_output(client, owner, project, monkeypatch):
+    """A non-JSON payload with finish_reason=stop fails honestly after retry."""
+
+    from app.services.interview import distill_interview
+
+    fake = _FakeAdapter(
+        [
+            _llm_result(content="not json at all", finish_reason="stop"),
+            _llm_result(content="still not json", finish_reason="stop"),
+        ]
+    )
+    _patch_adapter(monkeypatch, fake)
+    with _db_session() as db:
+        ws = db.get(Workspace, owner["workspace"]["id"])
+        result = _run(distill_interview(db=db, user=_user(db, owner), workspace=ws, project=db.get(Project, project["id"])))
+
+    assert result["status"] == "failed"
+    assert result["error_code"] == "INVALID_AI_OUTPUT"
+    assert len(fake.calls) == 2
+
+
+def test_distill_system_prompt_carries_size_limits(client, owner, project, monkeypatch):
+    from app.services.interview import distill_interview
+
+    fake = _FakeAdapter([_llm_result(structured=GOOD_JSON, finish_reason="stop")])
+    _patch_adapter(monkeypatch, fake)
+    with _db_session() as db:
+        ws = db.get(Workspace, owner["workspace"]["id"])
+        _run(distill_interview(db=db, user=_user(db, owner), workspace=ws, project=db.get(Project, project["id"])))
+
+    system = fake.calls[0]["system"]
+    assert "每节最多 4 条" in system
+    assert "不超过 80 字" in system
+    assert "limitations 最多 3 条" in system

@@ -633,50 +633,84 @@ async def _run_ai_stage(
                 if response_schema is None
                 else " 返回 JSON，输出默认是 draft。Schema: "
             )
-            result = await adapter.complete(
-                messages=[
-                    ChatMessage("system", system_prompt + json_instruction + json.dumps(schema, ensure_ascii=True, separators=(",", ":"))),
-                    ChatMessage("user", json.dumps(context, ensure_ascii=False, separators=(",", ":"), default=str)),
-                ],
-                response_schema=schema,
-                request_metadata=AiRequestMetadata(
-                    workspace_id=workspace.id,
-                    user_id=user.id,
-                    feature_name=feature_name,
-                    request_fingerprint=request_fingerprint,
-                    max_tokens=budget["max_output"],
-                ),
-            )
-            raw = result.structured
-            if raw is None and result.content:
-                try:
-                    raw = json.loads(result.content)
-                except (TypeError, json.JSONDecodeError):
-                    raw = None
-            if raw is None:
-                structured = fallback_output("模型未返回结构化结果。", "Provider response was not structured JSON.")
-            else:
-                structured = output_validator(raw) if output_validator else validate_ai_output(raw)
-            result_status = "succeeded"
-            provider_request_id = result.provider_request_id
-            prompt_tokens = _token_count(result.prompt_tokens)
-            completion_tokens = _token_count(result.completion_tokens)
+            system_message = system_prompt + json_instruction + json.dumps(schema, ensure_ascii=True, separators=(",", ":"))
+            user_message = json.dumps(context, ensure_ascii=False, separators=(",", ":"), default=str)
+
+            # One attempt, then a single retry with a doubled token budget when
+            # the output came back truncated or unparseable.  Historically a
+            # truncated payload parsed as ``raw is None`` yet was still reported
+            # as ``succeeded`` with an empty draft, which the stage pages
+            # rendered as a bogus success; truncation now fails honestly.
+            finish_reason: str | None = None
+            retried = False
+            for attempt in (1, 2):
+                max_tokens = budget["max_output"] if attempt == 1 else min(budget["max_output"] * 2, budget["per_request"])
+                if attempt == 2:
+                    retried = True
+                    system_message += "\n只输出符合 Schema 的 JSON 对象，禁止任何截断或额外文字。"
+                result = await adapter.complete(
+                    messages=[
+                        ChatMessage("system", system_message),
+                        ChatMessage("user", user_message),
+                    ],
+                    response_schema=schema,
+                    request_metadata=AiRequestMetadata(
+                        workspace_id=workspace.id,
+                        user_id=user.id,
+                        feature_name=feature_name,
+                        request_fingerprint=request_fingerprint,
+                        max_tokens=max_tokens,
+                    ),
+                )
+                finish_reason = result.finish_reason
+                prompt_tokens += _token_count(result.prompt_tokens)
+                completion_tokens += _token_count(result.completion_tokens)
+                provider_request_id = result.provider_request_id
+
+                raw = result.structured
+                if raw is None and result.content:
+                    try:
+                        raw = json.loads(result.content)
+                    except (TypeError, json.JSONDecodeError):
+                        raw = None
+                truncated = (result.finish_reason or "") == "length"
+                if raw is not None and not truncated:
+                    structured = output_validator(raw) if output_validator else validate_ai_output(raw)
+                    result_status = "succeeded"
+                    break
+                if attempt == 1:
+                    continue
+
+            if result_status != "succeeded":
+                result_status = "failed"
+                if truncated:
+                    error_code = "LLM_TRUNCATED"
+                    structured = fallback_output("AI 输出过长被截断。", "AI 输出过长被截断")
+                else:
+                    error_code = "INVALID_AI_OUTPUT"
+                    structured = fallback_output("模型未返回结构化结果。", "Provider response was not structured JSON.")
+            run_metadata: dict[str, Any] = {"finish_reason": finish_reason, "retried": retried}
         except DeepSeekConfigurationError:
             error_code = "LLM_NOT_CONFIGURED"
+            run_metadata = {}
         except AIOutputValidationError:
             result_status = "failed"
             error_code = "INVALID_AI_OUTPUT"
             structured = fallback_output("模型返回格式无法验证。", "Provider response failed the structured output contract.")
+            run_metadata = {"retried": False}
         except DeepSeekProviderError:
             result_status = "failed"
             error_code = "LLM_PROVIDER_ERROR"
             structured = empty_ai_output(summary="模型服务暂时不可用。", limitation="Provider request failed; retry later or enter a manual draft.")
+            run_metadata = {}
         except Exception:
             result_status = "failed"
             error_code = "LLM_ERROR"
             structured = empty_ai_output(summary="AI 暂时不可用。", limitation="Unexpected provider failure; enter a manual draft.")
+            run_metadata = {}
     else:
         error_code = "LLM_NOT_CONFIGURED"
+        run_metadata = {}
 
     observed_tokens = prompt_tokens + completion_tokens
     if result_status == "succeeded":
@@ -690,7 +724,13 @@ async def _run_ai_stage(
     ai_run.latency_ms = int((time.perf_counter() - started) * 1000)
     ai_run.error_code = error_code
     ai_run.output_reference = ai_run.id
-    ai_run.input_summary_json = {"context": context, "draft": True, "structured_output": structured, "provider_request_id": provider_request_id}
+    ai_run.input_summary_json = {
+        "context": context,
+        "draft": True,
+        "structured_output": structured,
+        "provider_request_id": provider_request_id,
+        "provider_meta": run_metadata,
+    }
     audit(db, workspace.id, user.id, f"ai.{feature_name}", "ai_run", ai_run.id, {"status": result_status})
     db.commit()
     return {
