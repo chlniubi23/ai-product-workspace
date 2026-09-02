@@ -76,13 +76,13 @@ def _collect_source_refs(body: DocumentGenerate, db: Session, project: Project) 
             if item is not None and item.status != "confirmed":
                 raise error("INSIGHT_NOT_CONFIRMED", "Only confirmed insights can be referenced by a document", 409, {"insight_id": str(ref_id), "status": item.status})
             if item:
-                evidence_sections.extend([f"### Insight: {item.title}", "", item.content, ""])
+                evidence_sections.extend([f"### 洞察: {item.title}", "", item.content, ""])
         elif ref_type == "decision_proposal":
             item = db.get(DecisionProposal, ref_id)
             if item and (item.workspace_id != project.workspace_id or item.project_id != project.id):
                 item = None
             if item:
-                evidence_sections.extend([f"### Decision proposal: {item.title}", "", f"- Problem: {item.problem_statement}", f"- Action: {item.proposed_action}", f"- Validation: {item.validation_plan}", ""])
+                evidence_sections.extend([f"### 决策提案: {item.title}", "", f"- 问题: {item.problem_statement}", f"- 做法: {item.proposed_action}", f"- 验证: {item.validation_plan}", ""])
         elif ref_type == "analysis_artifact":
             item = db.get(AnalysisArtifact, ref_id)
             analysis_run = db.get(AnalysisRun, item.analysis_run_id) if item else None
@@ -93,13 +93,13 @@ def _collect_source_refs(body: DocumentGenerate, db: Session, project: Project) 
                 analysis_run = db.get(AnalysisRun, item.analysis_run_id)
                 if analysis_run is not None:
                     dataset_version_ids.add(str(analysis_run.dataset_version_id))
-                evidence_sections.extend([f"### Analysis: {item.title}", "", "```json", json.dumps(item.payload_json, ensure_ascii=False, indent=2, default=str), "```", ""])
+                evidence_sections.extend([f"### 分析产物: {item.title}", "", "```json", json.dumps(item.payload_json, ensure_ascii=False, indent=2, default=str), "```", ""])
         elif ref_type == "feedback_cluster":
             item = db.get(FeedbackCluster, ref_id)
             if item and (item.workspace_id != project.workspace_id or item.project_id != project.id):
                 item = None
             if item:
-                evidence_sections.extend([f"### Feedback theme: {item.name}", "", item.summary, ""])
+                evidence_sections.extend([f"### 反馈主题: {item.name}", "", item.summary, ""])
         if item is None:
             raise error("VALIDATION_ERROR", f"Document source reference {ref_type} '{ref_id}' was not found in this project", 400)
 
@@ -242,12 +242,12 @@ def _evidence_manifest(generation_timestamp: str, dataset_version_ids: set[str],
     """Immutable provenance block shared by the AI and fallback renderers."""
 
     return [
-        "## Evidence manifest",
+        "## 证据溯源",
         "",
-        f"- Generated at: {generation_timestamp}",
-        f"- Dataset version IDs: {', '.join(sorted(dataset_version_ids)) or 'none'}",
-        f"- Analysis run IDs: {', '.join(sorted(analysis_run_ids)) or 'none'}",
-        f"- Source refs: {json.dumps(evidence, ensure_ascii=False, sort_keys=True)}",
+        f"- 生成时间: {generation_timestamp}",
+        f"- 数据版本 ID: {', '.join(sorted(dataset_version_ids)) or '无'}",
+        f"- 分析运行 ID: {', '.join(sorted(analysis_run_ids)) or '无'}",
+        f"- 来源引用: {json.dumps(evidence, ensure_ascii=False, sort_keys=True)}",
         "",
     ]
 
@@ -289,7 +289,7 @@ def _render_ai_document_markdown(body: DocumentGenerate, ai_output: dict[str, An
     # The provenance manifest is deterministic and must never be overwritten by
     # model output; it is appended after every AI section.
     sections.extend(_evidence_manifest(generation_timestamp, context["dataset_version_ids"], context["analysis_run_ids"], context["evidence"]))
-    sections.extend(["## Draft status", "", "This document is a draft. Human editing, evidence review and explicit confirmation are required before publication.", ""])
+    sections.extend(["## 草稿状态", "", "本文档为 AI 生成的草稿：发布前需人工编辑、证据复核与明确确认。", ""])
     return "\n".join(sections)
 
 
@@ -299,114 +299,114 @@ def _render_document_markdown(body: DocumentGenerate, db: Session, user: User) -
     context = _build_document_context(body, db, user)
     generation_timestamp = serialize(now())
     options = context["options"]
-    period_label = str(options.get("period_label") or options.get("period") or "Current period")[:120]
-    audience = str(options.get("audience") or "Product team")[:120]
+    period_label = str(options.get("period_label") or options.get("period") or "本期")[:120]
+    audience = str(options.get("audience") or "产品团队")[:120]
     include_evidence = bool(options.get("include_evidence", True))
     include_acceptance = bool(options.get("include_acceptance_criteria", True))
     include_tracking = bool(options.get("include_tracking_plan", False))
     include_risks = bool(options.get("include_risks", True))
-    sections = [f"# {body.title}", "", f"_Draft for {audience} | {period_label}_", ""]
+    sections = [f"# {body.title}", "", f"_草稿 · 面向 {audience} | {period_label}_", ""]
     evidence_sections: list[str] = context["evidence_sections"]
 
     if body.document_type == "weekly_report":
         sections.extend([
-            "## This period",
+            "## 本期概览",
             "",
-            "Draft summary of confirmed metrics, insights, feedback and completed work.",
+            "概述本期已确认的指标、洞察、反馈与已完成工作。",
             "",
-            "## Key changes",
+            "## 关键变化",
             "",
-            "- Confirmed changes and metric movement: pending review.",
+            "- 已确认的变化与指标波动：待补充。",
             "",
-            "## Core issues and feedback",
+            "## 核心问题与反馈",
             "",
-            "- Prioritize issues supported by the evidence below.",
+            "- 优先处理下方证据支持的问题。",
             "",
-            "## Completed work",
+            "## 已完成工作",
             "",
-            "- Confirm completed tasks before publishing this report.",
+            "- 发布前请确认已完成事项。",
             "",
-            "## Next period plan",
+            "## 下期计划",
             "",
-            "- Convert approved decisions into owned tasks with due dates.",
+            "- 把已批准的决策转化为带截止日期的任务。",
             "",
         ])
         if include_risks:
-            sections.extend(["## Risks and open questions", "", "- Items without evidence remain open questions.", ""])
+            sections.extend(["## 风险与未决问题", "", "- 缺少证据的事项保持为未决问题。", ""])
     elif body.document_type == "retrospective":
         sections.extend([
-            "## Background and goal",
+            "## 背景与目标",
             "",
-            "Describe the product context, intended outcome and review period.",
+            "描述产品背景、预期结果与复盘周期。",
             "",
-            "## Facts and outcomes",
+            "## 事实与结果",
             "",
-            "Separate observed results from interpretation.",
+            "区分观察到的事实与主观解读。",
             "",
-            "## Root-cause hypotheses",
+            "## 根因假设",
             "",
-            "Record hypotheses with the evidence needed to validate them.",
+            "记录假设及验证其所需的证据。",
             "",
-            "## Decisions and improvements",
+            "## 决策与改进",
             "",
-            "List approved actions, owners and validation plans.",
+            "列出已批准的行动、负责人与验证计划。",
             "",
-            "## Follow-up",
+            "## 跟进事项",
             "",
-            "- Add follow-up tasks and due dates before the retrospective is finalized.",
+            "- 复盘定稿前补充跟进任务与截止日期。",
             "",
         ])
         if include_risks:
-            sections.extend(["## Risks and unresolved items", "", "- Mark unresolved assumptions explicitly.", ""])
+            sections.extend(["## 风险与未决项", "", "- 明确标注尚未解决的假设。", ""])
     else:
         sections.extend([
-            "## Requirement background",
+            "## 需求背景",
             "",
-            "Describe the user problem and the evidence that motivates this draft.",
+            "描述用户问题以及支撑本草案的证据。",
             "",
-            "## Problem and evidence",
+            "## 问题与证据",
             "",
-            "Summarize the confirmed problem, affected users and supporting evidence.",
+            "概述已确认的问题、受影响用户与支撑证据。",
             "",
-            "## Goals and non-goals",
+            "## 目标与非目标",
             "",
-            "- Goals: define the outcome this proposal should achieve.",
-            "- Non-goals: record explicitly excluded scope.",
+            "- 目标：说明本方案要达成的结果。",
+            "- 非目标：明确记录排除在外的范围。",
             "",
-            "## Target users and scenarios",
+            "## 目标用户与场景",
             "",
-            "Describe the target user, scenario and expected value.",
+            "描述目标用户、使用场景与预期价值。",
             "",
-            "## Feature scope",
+            "## 功能范围",
             "",
-            "Describe the in-scope functionality and explicit exclusions.",
+            "描述范围内功能与明确的排除项。",
             "",
-            "## User flow",
+            "## 用户流程",
             "",
-            "Describe the primary user steps and important decision points.",
+            "描述主要用户步骤与关键决策点。",
             "",
-            "## Page and interaction",
+            "## 页面与交互",
             "",
-            "Describe page states, inputs, outputs and interaction requirements.",
+            "描述页面状态、输入、输出与交互要求。",
             "",
-            "## Data and tracking",
+            "## 数据与埋点",
             "",
-            "Define the metric dictionary entries and events needed to evaluate the change.",
+            "定义评估本次改动所需的指标字典条目与事件。",
             "",
         ])
         if include_tracking:
             tracking_events = options.get("tracking_events") or options.get("events") or []
             if isinstance(tracking_events, list) and tracking_events:
-                sections.extend(["### Tracking plan", "", *[f"- {str(event)[:240]}" for event in tracking_events[:30]], ""])
+                sections.extend(["### 埋点计划", "", *[f"- {str(event)[:240]}" for event in tracking_events[:30]], ""])
             else:
-                sections.extend(["### Tracking plan", "", "- Add event names, properties and success metrics before implementation.", ""])
+                sections.extend(["### 埋点计划", "", "- 实现前补充事件名称、属性与成功指标。", ""])
         if include_acceptance:
-            sections.extend(["## Acceptance criteria", "", "- The user flow is testable with explicit inputs and expected outputs.", "- Results are tied to approved evidence and the relevant dataset version.", ""])
+            sections.extend(["## 验收标准", "", "- 用户流程可用明确的输入与预期输出验证。", "- 结果与已批准的证据及相应数据版本挂钩。", ""])
         if include_risks:
-            sections.extend(["## Risks and open questions", "", "- Record rollout risks, dependencies and items awaiting confirmation.", ""])
+            sections.extend(["## 风险与未决问题", "", "- 记录上线风险、依赖项与待确认事项。", ""])
 
     if include_evidence:
-        sections.extend(["## Evidence", "", *evidence_sections])
+        sections.extend(["## 证据清单", "", *evidence_sections])
     sections.extend(_evidence_manifest(generation_timestamp, context["dataset_version_ids"], context["analysis_run_ids"], context["evidence"]))
-    sections.extend(["## Draft status", "", "This document is a draft. Human editing, evidence review and explicit confirmation are required before publication.", ""])
+    sections.extend(["## 草稿状态", "", "本文档为草稿：发布前需人工编辑、证据复核与明确确认。", ""])
     return "\n".join(sections), context["evidence"]

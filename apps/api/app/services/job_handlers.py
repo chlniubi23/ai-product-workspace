@@ -373,7 +373,18 @@ def _handle_document_generation(context: JobContext) -> JobResult:
         markdown, _ = _render_document_markdown(body, context.db, user)
 
     latest = context.db.scalar(select(DocumentVersion.version_number).where(DocumentVersion.document_id == document.id).order_by(DocumentVersion.version_number.desc()).limit(1)) or 0
-    version = DocumentVersion(document_id=document.id, version_number=latest + 1, content_markdown=markdown, evidence_json=doc_context["evidence"], created_by=user.id)
+    ai_succeeded = ai_result.get("status") == "succeeded"
+    version = DocumentVersion(
+        document_id=document.id,
+        version_number=latest + 1,
+        content_markdown=markdown,
+        evidence_json=doc_context["evidence"],
+        created_by=user.id,
+        # Degradation visibility: the delivery page surfaces this so a
+        # template fallback never masquerades as AI output.
+        ai_status="succeeded" if ai_succeeded else "fallback",
+        ai_error_code=None if ai_succeeded else str(ai_result.get("error_code") or "AI_UNAVAILABLE")[:80],
+    )
     context.db.add(version)
     context.db.flush()
     document.current_version_id = version.id

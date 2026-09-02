@@ -225,7 +225,7 @@ def test_daily_valve_refuses_before_any_provider_spend(client, owner, project, m
 
     assert fake.calls == [], "the valve must refuse before any provider call"
     # the deliverable still exists as a template fallback
-    assert "Evidence manifest" in document["current_version"]["content_markdown"]
+    assert "证据溯源" in document["current_version"]["content_markdown"]
 
     run = latest_generation_run()
     assert run.status == "failed"

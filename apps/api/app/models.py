@@ -497,6 +497,10 @@ class DocumentVersion(Base):
     content_markdown = Column(Text, nullable=False)
     evidence_json = Column(JSON, default=list, nullable=False)
     ai_run_id = Column(String(36), nullable=True)
+    # NULL = legacy row; succeeded = AI-written; fallback = deterministic
+    # template (AI unavailable/failed) -- surfaces the degradation in the UI.
+    ai_status = Column(String(32), nullable=True)
+    ai_error_code = Column(String(80), nullable=True)
     created_by = Column(String(36), ForeignKey("users.id"), nullable=False)
     created_at = Column(DateTime, default=now, nullable=False)
     document = relationship("Document", back_populates="versions")

@@ -96,8 +96,8 @@ def test_document_generation_without_key_falls_back_to_template(client, owner, p
     # v1 template immediately, v2 fallback after the inline job run
     assert len(document["versions"]) >= 2
     content = document["versions"][-1]["content_markdown"]
-    assert "## Evidence manifest" in content
-    assert "Draft status" in content
+    assert "## 证据溯源" in content
+    assert "## 草稿状态" in content
 
     with database.SessionLocal() as db:
         run = db.scalar(select(AIRun).where(AIRun.feature_name == "document_generation").order_by(AIRun.created_at.desc()).limit(1))
@@ -188,8 +188,8 @@ def test_ai_document_renders_chinese_sections_and_keeps_manifest(client, owner, 
     assert "## 需求背景" in content or "需求背景" in content
     assert "旧版本用户缺乏升级引导" in content
     # the deterministic manifest survives after the AI sections
-    assert "## Evidence manifest" in content
-    assert content.index("需求背景") < content.index("## Evidence manifest")
+    assert "## 证据溯源" in content
+    assert content.index("需求背景") < content.index("## 证据溯源")
 
     with database.SessionLocal() as db:
         run = db.scalar(select(AIRun).where(AIRun.feature_name == "document_generation").order_by(AIRun.created_at.desc()).limit(1))
@@ -220,8 +220,8 @@ def test_truncated_ai_output_falls_back_to_template(client, owner, project, monk
 
     content = document["current_version"]["content_markdown"]
     # both attempts truncated -> honest failure -> deterministic template
-    assert "## Requirement background" in content
-    assert "## Evidence manifest" in content
+    assert "## 需求背景" in content
+    assert "## 证据溯源" in content
     assert len(fake.calls) == 2
     with database.SessionLocal() as db:
         run = db.scalar(select(AIRun).where(AIRun.feature_name == "document_generation").order_by(AIRun.created_at.desc()).limit(1))
