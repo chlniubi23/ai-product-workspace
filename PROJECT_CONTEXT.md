@@ -202,6 +202,13 @@ AI_Product_Workspace/
 ### 7.4 自动报告（`generate_auto_report`，约 5355 行）
 「数字先行，叙述在后」：pandas 算每数据集聚合（EDA/分布/相关性/趋势，`asyncio.to_thread` 中执行，单文件失败隔离为 read_failure）→ 聚合经 `build_ai_context` 消毒后作为唯一 AI 输入 → AI 只写叙述 → 确定性报告体与 AI 章节一并入库（`deterministic_json` + `sections_json`）→ 人工 confirm 独立动作。
 
+### 7.5 交付文档生成（第七批重做，AI 驱动）
+- **上下文装配**（`services/documents.py:_build_document_context`）：四类证据全部走 artifacts 通道——项目内 confirmed 洞察（≤20）、已回答采访问题（≤30）、approved 决策（≤10）、最新 auto-report 的每数据集聚合（≤5，deterministic_json.datasets 逐个展开）；经 `build_ai_context` 消毒（防火墙零改动）。`_collect_source_refs` 保留原 source_refs 校验并产出 manifest 所需的上游 id 集合；`_evidence_manifest` 是两条渲染路径共用的不可变溯源块（**AI 输出永不覆盖 manifest**）。
+- **job 链路**（`job_handlers._handle_document_generation`）：路由先落确定性模板 v1 并排队 job；handler 在 worker 线程 `asyncio.run(_run_ai_stage(...))`（feature=document_generation、`REPORT_OUTPUT_SCHEMA`、按 document_type 给中文章节结构 prompt、`min_output_tokens=8192`）——succeeded 则 AI 渲染中文 Markdown 追加 manifest 落 v2+；not_configured/failed/截断/预算拒绝（HTTPException 兜底）全部回退完整模板并在审计 detail 记录原因。job input 增加 `title`/`project_id`。
+- **max_tokens 机制**：`_run_ai_stage` 新增可选 `min_output_tokens`（缺省 None 行为不变）——metadata 的 max_tokens 原本在函数内部由 budget 锁定，调用方无法覆盖，这是任务授权的最小调整；首次尝试 = max(max_output, min_output_tokens)（仍受 per_request 硬顶），重试翻倍基于该值。
+- **实测成本**（deepseek-v4-flash，2026-09-02）：PRD 成功样本 prompt 1869 / completion 7032；周报成功样本 prompt 3746 / completion 7152——单次文档生成约 9-11k tokens；一次 LLM_PROVIDER_ERROR 降级为模板（前端如实提示）。
+- 前端 stage11 已重做：类型选择器（周报/PRD/复盘）+ job 轮询 + 可编辑 textarea + 保存新版本（`POST /documents/{id}/versions {content_markdown}`）+ 项目文档列表/版本历史回看 + 模板回退检测提示。AI 助手抽屉已从前端移除（AppShell），AI 横幅仅保留 WorkflowFrame 页面级一条；后端 copilot 端点与测试保留。
+
 ---
 
 ## 8. API 面貌（第三批起按 routers/ 域拆分）
@@ -238,7 +245,7 @@ AI_Product_Workspace/
 ## 10. 当前完成度
 
 **已实现且验证**：
-- 后端测试套件 **179 passed, 1 xfailed，0 警告**（2026-09-01 实测运行；含 route manifest 冻结测试、test_guardrails.py 守护测试：`_safe_data_file` 路径防越界、`models.now()` naive-UTC 语义、pandas 懒加载纪律、反馈键清单超集关系；第四批新增 test_interview.py 12 个采访/蒸馏测试）。覆盖：RBAC 与 workspace 隔离、数据管线（上传/版本/清洗/质量）、分析引擎全类型、AI 降级边界（无 key 绝不 500、输出契约、上下文白名单、反馈原文不外泄）、决策链规则（证据强制/落选理由/审批失效）、项目级联删除、报告叙述消毒。
+- 后端测试套件 **195 passed, 1 xfailed，0 警告**（2026-09-01 实测运行；含 route manifest 冻结测试、test_guardrails.py 守护测试：`_safe_data_file` 路径防越界、`models.now()` naive-UTC 语义、pandas 懒加载纪律、反馈键清单超集关系；第四批新增 test_interview.py 12 个采访/蒸馏测试）。覆盖：RBAC 与 workspace 隔离、数据管线（上传/版本/清洗/质量）、分析引擎全类型、AI 降级边界（无 key 绝不 500、输出契约、上下文白名单、反馈原文不外泄）、决策链规则（证据强制/落选理由/审批失效）、项目级联删除、报告叙述消毒。
 - 8 个 Alembic 迁移可从零建库；`.env` 已配置 DeepSeek；前后端均可本地跑通。
 - 前端 11 阶段页面、工作台、数据管理、设置页齐全（第四批起）。
 - **全链路已真实手动冒烟走通**（12 阶段版 2026-08-30：上传→报告→洞察→讨论→问题→方案→决策→PRD；11 阶段版 2026-09-01：上传→报告→采访→蒸馏→裁决→问题→方案→决策→PRD）。
