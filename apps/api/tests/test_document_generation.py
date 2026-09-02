@@ -300,3 +300,21 @@ def test_build_document_context_assembles_four_artifact_classes(client, owner, p
     # dataset_summary appears once an auto-report exists for the project
     assert types  # sanitizer output remains structured
     assert context["evidence"] == [{"type": "insight", "id": insight["id"]}]
+
+
+# --------------------------------------------------------------------------
+# Find-or-create (batch 8): regenerating reuses the same document
+# --------------------------------------------------------------------------
+
+
+def test_regenerating_same_type_reuses_one_document(client, owner, project):
+    ready = make_ready(client, owner, project)
+    insight = confirmed_insight(client, owner, ready)
+    ready["insight_id"] = insight["id"]
+
+    first = generate_doc(client, owner, ready, title="第一次生成")
+    second = generate_doc(client, owner, ready, title="第二次生成")
+
+    assert first["id"] == second["id"], "same project+type must reuse the document"
+    assert second["title"] == "第二次生成"
+    assert len(second["versions"]) >= 2

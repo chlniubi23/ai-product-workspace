@@ -62,11 +62,23 @@ def generate_document(body: DocumentGenerate, background_tasks: BackgroundTasks,
         db.commit()
         raise error("AI_FEATURE_DISABLED", "Document generation is disabled for this workspace", 403)
     _require_confirmed_insight_refs(db, project.workspace_id, body.source_refs, project.id)
+    # Find-or-create by (project, document_type): regenerating updates the
+    # title and appends a version to the same document instead of piling up
+    # same-type duplicates (batch 8).  Versions are still append-only for the
+    # audit trail.
+    document = db.scalar(
+        select(Document).where(Document.project_id == project.id, Document.document_type == body.document_type).order_by(Document.created_at.desc()).limit(1)
+    )
+    if document is not None:
+        document.title = body.title
+        db.flush()
+    else:
+        document = Document(workspace_id=project.workspace_id, project_id=project.id, document_type=body.document_type, title=body.title, status="draft", created_by=user.id)
+        db.add(document)
+        db.flush()
     markdown, evidence = _render_document_markdown(body, db, user)
-    document = Document(workspace_id=project.workspace_id, project_id=project.id, document_type=body.document_type, title=body.title, status="draft", created_by=user.id)
-    db.add(document)
-    db.flush()
-    version = DocumentVersion(document_id=document.id, version_number=1, content_markdown=markdown, evidence_json=evidence, created_by=user.id)
+    latest_version_number = db.scalar(select(func.max(DocumentVersion.version_number)).where(DocumentVersion.document_id == document.id)) or 0
+    version = DocumentVersion(document_id=document.id, version_number=latest_version_number + 1, content_markdown=markdown, evidence_json=evidence, created_by=user.id)
     db.add(version)
     db.flush()
     document.current_version_id = version.id
