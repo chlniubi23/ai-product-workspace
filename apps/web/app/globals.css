@@ -1670,6 +1670,31 @@ button {
   border-color: #9ab0ef;
   box-shadow: 0 0 0 3px #ebf0ff;
 }
+.field input,
+.field textarea,
+.field select {
+  width: 100%;
+  border: 1px solid #dfe4ed;
+  border-radius: 7px;
+  padding: 0 11px;
+  height: 39px;
+  color: var(--ink);
+  background: white;
+  font-size: 12px;
+  outline: 0;
+}
+.field textarea {
+  height: auto;
+  min-height: 95px;
+  padding: 10px 11px;
+  resize: vertical;
+}
+.field input:focus,
+.field textarea:focus,
+.field select:focus {
+  border-color: #9ab0ef;
+  box-shadow: 0 0 0 3px #ebf0ff;
+}
 .form-row {
   display: grid;
   grid-template-columns: 1fr 1fr;

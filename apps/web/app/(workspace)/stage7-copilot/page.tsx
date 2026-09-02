@@ -39,16 +39,31 @@ export default function Stage7CopilotPage() {
     setDistilling(true);
     setNotice("");
     try {
-      const result = await apiRequest<{ status?: string; output?: DistillResult; interview_answer_count?: number }>(
-        "/ai/distill-interview",
-        { method: "POST", body: JSON.stringify({ project_id: projectId }) },
+      const result = await apiRequest<{
+        status?: string;
+        error_code?: string | null;
+        output?: DistillResult;
+        interview_answer_count?: number;
+      }>("/ai/distill-interview", { method: "POST", body: JSON.stringify({ project_id: projectId }) });
+      const output = result?.output;
+      const hasClaims = Boolean(
+        output &&
+          ((output.facts?.length || 0) + (output.hypotheses?.length || 0) + (output.recommendations?.length || 0) > 0),
       );
-      if (result?.status === "succeeded" && result.output) {
-        setOutput(result.output);
+      if (result?.status === "succeeded" && hasClaims) {
+        setOutput(output || null);
         setNotice("洞察草稿已生成，请逐条检查引用后保存为草稿。");
       } else {
         setOutput(null);
-        setNotice("AI 蒸馏暂不可用，可手写结论或稍后再试。");
+        // A truncated/unparseable payload used to render as an empty "success";
+        // surface the real reason instead.
+        if (result?.error_code === "LLM_TRUNCATED") {
+          setNotice("AI 输出过长被截断，已自动重试仍失败。可稍后再试，或把采访回答写得更精炼。");
+        } else if (result?.error_code === "INVALID_AI_OUTPUT") {
+          setNotice("AI 返回格式异常，请重试。");
+        } else {
+          setNotice("AI 蒸馏暂不可用，可手写结论或稍后再试。");
+        }
       }
     } catch (distillError) {
       setNotice(distillError instanceof Error ? distillError.message : "蒸馏失败");
@@ -250,12 +265,15 @@ export default function Stage7CopilotPage() {
               <div className="card-kicker">自动引用最近一次分析产物，保存后同为草稿。</div>
             </div>
           </div>
-          <textarea
-            rows={2}
-            value={manualText}
-            onChange={(event) => setManualText(event.target.value)}
-            placeholder="记录你观察到的事实或下一步建议"
-          />
+          <label className="field">
+            <span className="field-label">手工结论</span>
+            <textarea
+              rows={3}
+              value={manualText}
+              onChange={(event) => setManualText(event.target.value)}
+              placeholder="记录你观察到的事实或下一步建议"
+            />
+          </label>
           <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
             <button className="btn" onClick={() => void saveManual()}>
               <Check size={14} />

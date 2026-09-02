@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { ChevronRight, MessageSquare, Send, Sparkles } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { ChevronRight, MessageSquare, Sparkles } from "lucide-react";
+import { useMemo, useState } from "react";
 import { apiRequest, accessToken } from "@/lib/api";
 import {
   WorkflowGate,
@@ -11,17 +11,6 @@ import {
   useWorkflowSnapshot,
 } from "@/components/workflow/WorkflowFrame";
 import { formatWorkflowDate, type WorkflowInterviewQuestion } from "@/lib/workflow";
-
-type CopilotMessage = {
-  id: string;
-  role?: string;
-  content_json?: { content?: string; status?: string } | null;
-  created_at?: string;
-};
-
-function messageText(message: CopilotMessage): string {
-  return message.content_json?.content?.trim() || "（这条消息没有正文）";
-}
 
 export default function Stage6InterviewPage() {
   const { snapshot, loading, error, completion, refresh } = useWorkflowSnapshot();
@@ -34,11 +23,6 @@ export default function Stage6InterviewPage() {
   const [manualInfo, setManualInfo] = useState("");
   const [answerDrafts, setAnswerDrafts] = useState<Record<string, string>>({});
 
-  // 自由追问（原人机讨论的 Copilot 聊天）状态
-  const [sessionId, setSessionId] = useState("");
-  const [messages, setMessages] = useState<CopilotMessage[]>([]);
-  const [chatDraft, setChatDraft] = useState("");
-
   const questions = useMemo(
     () => [...(snapshot?.interviewQuestions || [])].sort((a, b) => (a.created_at || "").localeCompare(b.created_at || "")),
     [snapshot],
@@ -46,30 +30,6 @@ export default function Stage6InterviewPage() {
   const answeredCount = questions.filter((q) => q.status === "answered").length;
   const pendingCount = questions.filter((q) => q.status === "pending").length;
   const projectId = snapshot?.activeDataset?.project_id;
-  const existingSession = useMemo(
-    () => (snapshot?.discussions || []).find((item) => (item.turn_count || 0) > 0) || snapshot?.discussions?.[0],
-    [snapshot],
-  );
-
-  useEffect(() => {
-    if (!sessionId && existingSession?.id) setSessionId(existingSession.id);
-  }, [existingSession, sessionId]);
-
-  useEffect(() => {
-    if (!sessionId || !accessToken()) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const data = await apiRequest<{ messages?: CopilotMessage[] }>(`/copilot/sessions/${sessionId}`);
-        if (!cancelled) setMessages(data?.messages || []);
-      } catch {
-        if (!cancelled) setMessages([]);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [sessionId, messages.length]);
 
   async function generateRound() {
     if (!projectId || !accessToken()) return;
@@ -162,53 +122,12 @@ export default function Stage6InterviewPage() {
     }
   }
 
-  async function sendChat() {
-    const text = chatDraft.trim();
-    if (!text || !accessToken()) return;
-    setBusy(true);
-    setNotice("");
-    try {
-      const id = sessionId || (await ensureSession());
-      await apiRequest(`/copilot/sessions/${id}/messages`, {
-        method: "POST",
-        body: JSON.stringify({
-          content: text,
-          context: { stage: "stage6-interview" },
-        }),
-      });
-      setChatDraft("");
-      setNotice("已发送。讨论结论要自己写进后续步骤。");
-      await refresh();
-    } catch (chatError) {
-      setNotice(chatError instanceof Error ? chatError.message : "发送失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function ensureSession(): Promise<string> {
-    if (sessionId) return sessionId;
-    const workspaceId = snapshot?.workspaceId;
-    if (!workspaceId) throw new Error("找不到工作区，请重新登录。");
-    const created = await apiRequest<{ id: string }>("/copilot/sessions", {
-      method: "POST",
-      body: JSON.stringify({
-        workspace_id: workspaceId,
-        project_id: snapshot?.activeDataset?.project_id || null,
-        page_context: { stage: "stage6-interview" },
-      }),
-    });
-    if (!created?.id) throw new Error("创建讨论会话失败。");
-    setSessionId(created.id);
-    return created.id;
-  }
-
   return (
     <div className="page">
       <WorkflowHeader
         step={6}
         title="AI 采访"
-        description="AI 基于数据结论每轮提出关键问题，你逐个回答或跳过，也可手动补充信息。下半区可以自由追问。"
+        description="AI 基于数据结论每轮提出关键问题，你逐个回答或跳过，也可手动补充信息。"
         completion={completion}
         loading={loading || busy}
       />
@@ -285,15 +204,16 @@ export default function Stage6InterviewPage() {
                         <p style={{ lineHeight: 1.6, margin: "8px 0 0", whiteSpace: "pre-wrap" }}>{question.answer_text}</p>
                       ) : question.status === "pending" ? (
                         <>
-                          <textarea
-                            rows={2}
-                            style={{ marginTop: 8 }}
-                            placeholder="写下你的回答…"
-                            value={answerDrafts[question.id] || ""}
-                            onChange={(event) =>
-                              setAnswerDrafts((prev) => ({ ...prev, [question.id]: event.target.value }))
-                            }
-                          />
+                          <label className="field" style={{ marginTop: 8 }}>
+                            <textarea
+                              rows={3}
+                              placeholder="写下你的回答…"
+                              value={answerDrafts[question.id] || ""}
+                              onChange={(event) =>
+                                setAnswerDrafts((prev) => ({ ...prev, [question.id]: event.target.value }))
+                              }
+                            />
+                          </label>
                           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 8 }}>
                             <button
                               className="btn btn-subtle btn-sm"
@@ -353,59 +273,6 @@ export default function Stage6InterviewPage() {
               <div style={{ display: "flex", justifyContent: "flex-end" }}>
                 <button className="btn btn-primary" disabled={busy || !manualText.trim()} onClick={() => void addManual()}>
                   补充要点
-                </button>
-              </div>
-            </section>
-
-            <section className="card card-pad" style={{ marginTop: 16 }}>
-              <div className="card-head">
-                <div>
-                  <h2 className="card-title">自由追问</h2>
-                  <div className="card-kicker">
-                    与 AI 自由讨论数据结论 · 已有 {messages.length} 条消息
-                  </div>
-                </div>
-                <span className="tag tag-blue">AI 辅助 · 可跳过</span>
-              </div>
-              <div className="list" style={{ marginTop: 8, marginBottom: 16 }}>
-                {messages.length === 0 ? (
-                  <p style={{ color: "var(--muted)" }}>
-                    还没有对话。可以就采访问题背后的数据现象继续追问。
-                  </p>
-                ) : (
-                  messages.map((message) => (
-                    <div
-                      className="card card-pad"
-                      key={message.id}
-                      style={{
-                        marginBottom: 10,
-                        background: message.role === "assistant" ? "var(--surface-2, #f7f8fb)" : "transparent",
-                      }}
-                    >
-                      <div className="card-kicker" style={{ marginBottom: 6 }}>
-                        {message.role === "assistant" ? "AI" : "我"}
-                      </div>
-                      <p style={{ lineHeight: 1.6, whiteSpace: "pre-wrap", margin: 0 }}>{messageText(message)}</p>
-                    </div>
-                  ))
-                )}
-              </div>
-              <label className="field">
-                <span className="field-label">提问</span>
-                <textarea
-                  rows={2}
-                  value={chatDraft}
-                  placeholder="例如：这些数据结论对采访方向有什么提示？"
-                  onChange={(event) => setChatDraft(event.target.value)}
-                />
-              </label>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-                <span style={{ color: "var(--muted)", fontSize: 13 }}>
-                  AI 只能看到聚合产物和洞察，拿不到原始明细数据。
-                </span>
-                <button className="btn btn-primary" disabled={busy || !chatDraft.trim()} onClick={() => void sendChat()}>
-                  <Send size={14} />
-                  发送
                 </button>
               </div>
             </section>
