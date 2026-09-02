@@ -120,9 +120,15 @@ def _workspace_token_usage(db: Session, workspace: Workspace, per_request_budget
             continue
         observed = _token_count(run.prompt_tokens) + _token_count(run.completion_tokens)
         if run.status == "running":
-            # A running provider call has no final usage yet. Reserve the whole
-            # per-request budget so concurrent requests cannot oversubscribe.
-            total += max(per_request_budget, observed)
+            # A running provider call has no final usage yet.  Reserve the
+            # worst case that was recorded before the call (batch 8) so
+            # concurrent requests cannot oversubscribe the daily valve; the
+            # daily total can be exceeded by at most one in-flight worst
+            # case, which is accepted.  Legacy running rows predate the
+            # record and fall back to the per-request budget.
+            summary = run.input_summary_json if isinstance(run.input_summary_json, dict) else {}
+            worst_case = _token_count((summary.get("budget") or {}).get("worst_case"))
+            total += worst_case if worst_case else max(per_request_budget, observed)
         elif observed:
             total += observed
         else:
@@ -141,6 +147,7 @@ def _reject_ai_budget(
     daily_used: int,
     observed_tokens: int = 0,
     reason: str = "Workspace AI token budget exceeded",
+    extra_details: dict[str, Any] | None = None,
 ) -> None:
     details = {
         "daily_used_tokens": daily_used,
@@ -148,6 +155,8 @@ def _reject_ai_budget(
         "per_request_token_budget": budget["per_request"],
         "observed_tokens": observed_tokens,
     }
+    if extra_details:
+        details.update(extra_details)
     ai_run.status = "failed"
     ai_run.error_code = "AI_BUDGET_EXCEEDED"
     ai_run.input_summary_json = {**(ai_run.input_summary_json or {}), "budget": details, "events": [{"type": "run.failed", "data": {"code": "AI_BUDGET_EXCEEDED", "retryable": False}}]}

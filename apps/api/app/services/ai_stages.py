@@ -63,6 +63,13 @@ from .workspace_settings import (
     _workspace_token_usage,
 )
 
+# Hard ceiling on any single provider call's output, in tokens.  Deliberately
+# a module constant, not a setting: "not unlimited" must not be configurable
+# away.  Normal calls stay at the workspace-derived max_output (default 4096);
+# the delivery document raises to 8192 and a truncation retry may reach this
+# cap, never beyond it.
+HARD_OUTPUT_CAP = 16384
+
 
 def _copilot_orchestrator(
     db: Session,
@@ -575,15 +582,17 @@ async def _run_ai_stage(
 ) -> dict[str, Any]:
     """Shared draft-generating AI call for the stage 9/10 endpoints.
 
-    Wraps the same budget reservation, feature-flag check, structured-output
-    validation and audit trail as /ai/interpret so a provider outage or an
-    unset key degrades to an empty draft instead of a 500.  Callers may swap
-    the default four-section contract for a stage-specific one via
-    ``response_schema``/``output_validator``/``empty_output``; omitting them
-    keeps the historical behaviour.  ``min_output_tokens`` raises the first
-    attempt's token ceiling (still capped by ``per_request``) for callers
-    whose deliverable is inherently long -- the delivery document is the one
-    such stage; everything else keeps the workspace default.
+    Budget model (batch 8): spend-then-account.  The only pre-call check is
+    the workspace daily valve (``ai_daily_token_budget``) projected with a
+    conservative worst case; the call itself is never throttled by
+    ``ai_per_request_token_budget`` and a completed result is never discarded
+    for budget reasons -- after the call we only record usage.  Output size is
+    bounded by ``HARD_OUTPUT_CAP`` instead.  Callers may swap the default
+    four-section contract for a stage-specific one via
+    ``response_schema``/``output_validator``/``empty_output``.
+    ``min_output_tokens`` raises the first attempt's token ceiling (still
+    capped by ``HARD_OUTPUT_CAP``) for callers whose deliverable is inherently
+    long -- the delivery document is the one such stage.
     """
 
     schema = response_schema or AI_OUTPUT_SCHEMA
@@ -617,9 +626,37 @@ async def _run_ai_stage(
         output = empty_ai_output(summary="AI 当前不可用，请手动填写。", limitation="AI feature is disabled for this workspace.")
         return {"run_id": ai_run.id, "status": "failed", "output": output, "error_code": "AI_FEATURE_DISABLED", "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}}
 
+    # ---- total valve: the only pre-call budget check (batch 8) ----
+    # A conservative prompt estimate plus the hard-capped output ceiling; if
+    # the daily budget cannot cover the worst case, refuse before any provider
+    # spend with actionable guidance.  This is the ONLY site that can produce
+    # AI_BUDGET_EXCEEDED in this module -- after the provider call we only
+    # account for usage, never reject.
+    desired_output = max(budget["max_output"], min_output_tokens or 0)
+    max_tokens = min(desired_output, HARD_OUTPUT_CAP)
+    context_json_len = len(json.dumps(context, ensure_ascii=False, default=str))
+    est_prompt = min(12000, max(1000, context_json_len // 2))
+    worst_case = est_prompt + max_tokens
     reserved_daily = _workspace_token_usage(db, workspace, budget["per_request"])
-    if reserved_daily > budget["daily"]:
-        _reject_ai_budget(db, workspace, user, ai_run, budget, daily_used=reserved_daily, reason="Workspace daily AI token budget has been exhausted")
+    if reserved_daily + worst_case > budget["daily"]:
+        details = {
+            "daily_remaining": max(0, budget["daily"] - reserved_daily),
+            "needed_tokens": worst_case,
+            "hint": f"今日 AI 额度剩余不足（本次预计约 {worst_case} tokens），请到设置调大「每日 token 预算」或明天再试",
+        }
+        _reject_ai_budget(
+            db,
+            workspace,
+            user,
+            ai_run,
+            budget,
+            daily_used=reserved_daily,
+            reason="今日 AI 额度剩余不足，请到设置调大「每日 token 预算」或明天再试",
+            extra_details=details,
+        )
+    # Record the worst case so concurrent reservations can account for this
+    # in-flight call (see _workspace_token_usage).
+    ai_run.input_summary_json = {**(ai_run.input_summary_json or {}), "budget": {"worst_case": worst_case, "max_tokens": max_tokens}}
     db.commit()
 
     structured = fallback_output("AI 当前不可用，请手动填写。", "AI provider is not configured.")
@@ -640,18 +677,25 @@ async def _run_ai_stage(
             system_message = system_prompt + json_instruction + json.dumps(schema, ensure_ascii=True, separators=(",", ":"))
             user_message = json.dumps(context, ensure_ascii=False, separators=(",", ":"), default=str)
 
-            # One attempt, then a single retry with a doubled token budget when
-            # the output came back truncated or unparseable.  Historically a
-            # truncated payload parsed as ``raw is None`` yet was still reported
-            # as ``succeeded`` with an empty draft, which the stage pages
-            # rendered as a bogus success; truncation now fails honestly.
+            # One attempt, then a single retry with a doubled token ceiling
+            # when the output came back truncated or unparseable.  The retry
+            # passes the daily valve only (projected with the observed prompt
+            # tokens); if it cannot fit, the already-paid first attempt is
+            # kept and the run fails honestly -- results are never discarded
+            # for budget reasons, and the retry itself is never force-spent.
             finish_reason: str | None = None
             retried = False
-            base_output_budget = max(budget["max_output"], min_output_tokens or 0)
-            for attempt in (1, 2):
-                max_tokens = base_output_budget if attempt == 1 else min(base_output_budget * 2, budget["per_request"])
+            truncated = False
+            attempt = 0
+            while attempt < 2:
+                attempt += 1
                 if attempt == 2:
+                    retry_tokens = min(desired_output * 2, HARD_OUTPUT_CAP)
+                    projected = _workspace_token_usage(db, workspace, budget["per_request"]) + prompt_tokens + retry_tokens
+                    if projected > budget["daily"]:
+                        break
                     retried = True
+                    max_tokens = retry_tokens
                     system_message += "\n只输出符合 Schema 的 JSON 对象，禁止任何截断或额外文字。"
                 result = await adapter.complete(
                     messages=[
@@ -683,8 +727,6 @@ async def _run_ai_stage(
                     structured = output_validator(raw) if output_validator else validate_ai_output(raw)
                     result_status = "succeeded"
                     break
-                if attempt == 1:
-                    continue
 
             if result_status != "succeeded":
                 result_status = "failed"
@@ -717,11 +759,9 @@ async def _run_ai_stage(
         error_code = "LLM_NOT_CONFIGURED"
         run_metadata = {}
 
+    # Spend-then-account: after the call only bookkeeping happens.  A
+    # completed result is never discarded for budget reasons.
     observed_tokens = prompt_tokens + completion_tokens
-    if result_status == "succeeded":
-        prior_daily = _workspace_token_usage(db, workspace, budget["per_request"], exclude_run_id=ai_run.id)
-        if observed_tokens > budget["per_request"] or prior_daily + observed_tokens > budget["daily"]:
-            _reject_ai_budget(db, workspace, user, ai_run, budget, daily_used=prior_daily + observed_tokens, observed_tokens=observed_tokens, reason="AI token budget exceeded for this workspace")
     ai_run = db.get(AIRun, ai_run.id) or ai_run
     ai_run.status = result_status
     ai_run.prompt_tokens = prompt_tokens or None
