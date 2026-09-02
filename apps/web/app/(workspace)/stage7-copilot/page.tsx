@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { Check, ChevronRight, Lightbulb, Sparkles, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { apiRequest, accessToken } from "@/lib/api";
 import {
   WorkflowGate,
@@ -165,6 +165,57 @@ export default function Stage7CopilotPage() {
     }
   }
 
+  // The snapshot's analysis-run list does not carry artifacts (relationship
+  // field), so fetch them once per succeeded run to label artifact references.
+  const [artifactTitles, setArtifactTitles] = useState<Map<string, string>>(new Map());
+  const artifactRunsFetched = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const succeeded = (snapshot?.analysisRuns || []).filter((run) => run.status === "succeeded" && run.id);
+    const pending = succeeded.filter((run) => !artifactRunsFetched.current.has(run.id));
+    if (!pending.length || !accessToken()) return;
+    let cancelled = false;
+    const next = new Map(artifactTitles);
+    void (async () => {
+      for (const run of pending) {
+        try {
+          const artifacts = await apiRequest<Array<{ id?: string; title?: string }>>(`/analysis-runs/${run.id}/artifacts`);
+          for (const artifact of artifacts || []) {
+            if (artifact.id && !next.has(artifact.id)) next.set(artifact.id, `分析产物 · ${artifact.title || artifact.id.slice(0, 8)}`);
+          }
+        } catch {
+          // labeling only; a failed fetch falls back to the short-uuid label
+        }
+        // mark only after resolution so StrictMode's discarded first mount
+        // does not poison the dedupe set
+        artifactRunsFetched.current.add(run.id);
+      }
+      if (!cancelled) setArtifactTitles(new Map(next));
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [snapshot]);
+
+  // id -> readable label for evidence references (interview answers first,
+  // then artifacts of succeeded analysis runs; unknown ids fall back to a
+  // shortened uuid).
+  const evidenceLabels = useMemo(() => {
+    const labels = new Map<string, string>();
+    for (const question of snapshot?.interviewQuestions || []) {
+      labels.set(question.id, `采访回答 · ${question.topic || (question.question_text || "").slice(0, 18)}`);
+    }
+    for (const [id, title] of artifactTitles) {
+      if (!labels.has(id)) labels.set(id, title);
+    }
+    return labels;
+  }, [snapshot, artifactTitles]);
+
+  function evidenceLabel(reference: { type?: string; id?: string }): string {
+    const label = reference.id ? evidenceLabels.get(reference.id) : undefined;
+    return label || `引用 ${(reference.id || "").slice(0, 8)}…`;
+  }
+
   const renderClaims = (title: string, claims: Claim[] | undefined) => (
     <section className="card card-pad">
       <div className="card-head">
@@ -178,10 +229,13 @@ export default function Stage7CopilotPage() {
           {claims.map((claim, index) => (
             <div className="list-row" key={`${title}-${index}`}>
               <div className="list-main">
-                <strong>{claim.text || "未返回内容"}</strong>
-                <small>
+                {/* inline overrides: .list-main strong is a nowrap ellipsis
+                    rule for the old full-width rows; these narrow grid cards
+                    need wrapping to stay readable. */}
+                <strong style={{ whiteSpace: "normal" }}>{claim.text || "未返回内容"}</strong>
+                <small style={{ whiteSpace: "normal" }}>
                   {claim.evidence?.length
-                    ? `引用 ${claim.evidence.map((item) => item.id).join("、")}`
+                    ? claim.evidence.map((item) => evidenceLabel(item)).join("、")
                     : "无数据支撑，不能确认"}
                 </small>
               </div>
