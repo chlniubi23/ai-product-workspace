@@ -25,6 +25,7 @@ export const pipelinePhases = [
 ] as const;
 
 export const utilityNavItems = [
+  { href: "/history", label: "历史", icon: "file" },
   { href: "/data", label: "数据", icon: "database" },
   { href: "/settings", label: "设置", icon: "settings" },
 ] as const;

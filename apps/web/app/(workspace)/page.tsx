@@ -20,10 +20,11 @@ import { apiRequest, pagedItems } from "@/lib/api";
 import { ChartRenderer } from "@/components/analysis/ChartRenderer";
 import { ReportMarkdown } from "@/components/analysis/ReportMarkdown";
 import { toChartOption } from "@/lib/chartOption";
+import { getActiveProjectId, setActiveProjectId } from "@/lib/workflow";
 import { formatDateTime, formatFileSize } from "@/lib/format";
 import { UPLOAD_ACCEPT_ATTR, UPLOAD_FORMAT_HINT, UPLOAD_MAX_MB } from "@/lib/upload";
 
-type Project = { id: string; name?: string; goal_statement?: string };
+type Project = { id: string; name?: string; goal_statement?: string; status?: string };
 
 type AutoReport = {
   id: string;
@@ -94,11 +95,16 @@ export default function WorkbenchPage() {
   // --------------------------------------------------------------- loading
   const loadProjects = useCallback(async () => {
     try {
-      const payload = await apiRequest<unknown>("/projects");
-      const items = pagedItems<Project>(payload);
-      setProjects(items);
-      setProjectId((current) => current || items[0]?.id || "");
-      return items;
+      const payload = await apiRequest<unknown>("/projects?include_archived=true");
+      const active = pagedItems<Project>(payload).filter((project) => project.status !== "archived");
+      setProjects(active);
+      // Restore the persisted choice when it is still an active project;
+      // otherwise fall back to the first one (batch 9).
+      const stored = getActiveProjectId();
+      const initial = (stored && active.find((project) => project.id === stored)?.id) || active[0]?.id || "";
+      setProjectId(initial);
+      setActiveProjectId(initial || null);
+      return active;
     } catch {
       return [];
     }
@@ -177,6 +183,7 @@ export default function WorkbenchPage() {
       setNewProjectName("");
       setProjects((current) => [...current, project]);
       setProjectId(project.id);
+      setActiveProjectId(project.id);
       setNotice(`已创建项目「${project.name || name}」`);
     } catch (cause) {
       setFailure(cause instanceof Error ? cause.message : "创建项目失败");
@@ -198,7 +205,9 @@ export default function WorkbenchPage() {
       await apiRequest(`/projects/${projectId}?confirm=${projectId}`, { method: "DELETE" });
       const remaining = projects.filter((project) => project.id !== projectId);
       setProjects(remaining);
-      setProjectId(remaining[0]?.id || "");
+      const nextId = remaining[0]?.id || "";
+      setProjectId(nextId);
+      setActiveProjectId(nextId || null);
       setReport(null);
       setHistory([]);
       setCharts([]);
@@ -359,6 +368,18 @@ export default function WorkbenchPage() {
 
   return (
     <div className="page">
+      {/* 无活跃项目时的引导（batch 9：一个项目 = 一次工作流） */}
+      {!projectId && (
+        <section className="card empty-state" style={{ marginBottom: 16 }}>
+          <h1 style={{ fontSize: 20, margin: 0 }}>新建项目，开始一次完整的数据分析工作流</h1>
+          <p style={{ color: "var(--muted)" }}>
+            上传 → 自动分析 → AI 采访 → 洞察裁决 → 问题 → 方案 → 决策 → 交付，全程围绕一个项目沉淀。
+          </p>
+          <Link className="btn btn-primary btn-sm" href="/history">
+            查看历史工作流
+          </Link>
+        </section>
+      )}
       {/* hero */}
       <section
         className="card card-pad"
@@ -382,7 +403,10 @@ export default function WorkbenchPage() {
               <select
                 id="workbench-project"
                 value={projectId}
-                onChange={(event) => setProjectId(event.target.value)}
+                onChange={(event) => {
+                  setProjectId(event.target.value);
+                  setActiveProjectId(event.target.value || null);
+                }}
                 disabled={!projects.length || phase === "running"}
                 style={{ flex: 1 }}
               >

@@ -35,6 +35,14 @@ export function useWorkflowSnapshot() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // Switching the active project (batch 9) re-scopes every list the snapshot
+  // carries; mounted stage pages re-read it instead of doing a full reload.
+  useEffect(() => {
+    const handler = () => void refresh();
+    window.addEventListener("apw-project-changed", handler);
+    return () => window.removeEventListener("apw-project-changed", handler);
+  }, [refresh]);
   const completion: StageCompletion = snapshot
     ? stepCompletion(snapshot)
     : Array.from({ length: STAGE_COUNT }, () => false);

@@ -6,6 +6,8 @@ export type WorkflowProject = {
   name?: string;
   goal_statement?: string;
   description?: string;
+  status?: string;
+  archived_at?: string;
   created_at?: string;
 };
 
@@ -168,6 +170,8 @@ export type WorkflowSnapshot = {
   decisions: WorkflowDecision[];
   approvals: WorkflowApproval[];
   interviewQuestions: WorkflowInterviewQuestion[];
+  archivedProjects: WorkflowProject[];
+  activeProject: WorkflowProject | null;
   activeDataset?: WorkflowDataset;
   activeVersion?: WorkflowVersion;
   workspaceId: string;
@@ -282,6 +286,30 @@ export function formatWorkflowDate(value?: string): string {
   return new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }).format(timestamp);
 }
 
+function projectScope(path: string, projectId: string | null): string {
+  return projectId ? `${path}?project_id=${projectId}` : path;
+}
+
+/** Currently focused project, persisted across reloads (batch 9). */
+export function getActiveProjectId(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage.getItem("apw_active_project") || null;
+  } catch {
+    return null;
+  }
+}
+
+export function setActiveProjectId(id: string | null): void {
+  try {
+    if (id) window.localStorage.setItem("apw_active_project", id);
+    else window.localStorage.removeItem("apw_active_project");
+  } catch {
+    /* storage unavailable (private mode); the in-memory choice still works */
+  }
+  window.dispatchEvent(new CustomEvent("apw-project-changed"));
+}
+
 async function requestList<T>(path: string): Promise<T[]> {
   // The backend page_params caps page_size at 100. Without this, the default
   // page of 20 hides older rows once records accumulate and the stage 6-12
@@ -321,11 +349,35 @@ async function hydrateActiveVersion(
   return hydrated;
 }
 
-/** Load only persisted records used by the twelve workflow gates. */
+/** Load only persisted records used by the eleven workflow gates, scoped to
+ * the active project (batch 9). */
 export async function loadWorkflowSnapshot(): Promise<WorkflowSnapshot> {
   const loadErrors: string[] = [];
+  const storedProjectId = getActiveProjectId();
+
+  // Resolve the focused project FIRST: the persisted id must exist and be
+  // active -- a deleted or archived project falls back to the first active
+  // one, and an empty workspace has no active project at all.  Resolving
+  // before the scoped fetches guarantees they never run against a stale id.
+  const allProjects = await apiRequest<unknown>("/projects?include_archived=true")
+    .then((payload) => pagedItems<WorkflowProject>(payload))
+    .catch(() => {
+      loadErrors.push("项目：加载失败");
+      return [] as WorkflowProject[];
+    });
+  const projects = allProjects.filter((project) => project.status !== "archived");
+  const archivedProjects = allProjects.filter((project) => project.status === "archived");
+  const storedActive = allProjects.find((project) => project.id === storedProjectId);
+  let activeProject: WorkflowProject | null;
+  if (storedActive && storedActive.status !== "archived") {
+    activeProject = storedActive;
+  } else {
+    activeProject = projects[0] ?? null;
+    if (storedProjectId !== activeProject?.id) setActiveProjectId(activeProject?.id ?? null);
+  }
+  const activeProjectId = activeProject?.id ?? null;
+
   const [
-    projectsResult,
     datasetsResult,
     runsResult,
     insightsResult,
@@ -337,18 +389,18 @@ export async function loadWorkflowSnapshot(): Promise<WorkflowSnapshot> {
     interviewQuestionsResult,
     meResult,
   ] = await Promise.allSettled([
-    requestList<WorkflowProject>("/projects"),
-    requestList<WorkflowDataset>("/datasets"),
-    requestList<WorkflowAnalysisRun>("/analysis-runs"),
-    requestList<WorkflowInsight>("/insights"),
-    requestList<WorkflowDocument>("/documents"),
-    requestList<WorkflowProblem>("/problems"),
-    requestList<WorkflowSolution>("/solutions"),
-    requestList<WorkflowDecision>("/decision-proposals"),
+    requestList<WorkflowDataset>(projectScope("/datasets", activeProjectId)),
+    requestList<WorkflowAnalysisRun>(projectScope("/analysis-runs", activeProjectId)),
+    requestList<WorkflowInsight>(projectScope("/insights", activeProjectId)),
+    requestList<WorkflowDocument>(projectScope("/documents", activeProjectId)),
+    requestList<WorkflowProblem>(projectScope("/problems", activeProjectId)),
+    requestList<WorkflowSolution>(projectScope("/solutions", activeProjectId)),
+    requestList<WorkflowDecision>(projectScope("/decision-proposals", activeProjectId)),
     // The endpoint itself only returns status=pending rows; requestList
-    // appends page_size=100.
+    // appends page_size=100.  Workspace-level on purpose: the stage-10 page
+    // maps target ids onto the project's own decisions.
     requestList<WorkflowApproval>("/approval-requests"),
-    requestList<WorkflowInterviewQuestion>("/interview-questions"),
+    requestList<WorkflowInterviewQuestion>(projectScope("/interview-questions", activeProjectId)),
     apiRequest<unknown>("/me"),
   ]);
   const read = <T>(result: PromiseSettledResult<T[]>, label: string): T[] => {
@@ -356,7 +408,6 @@ export async function loadWorkflowSnapshot(): Promise<WorkflowSnapshot> {
     loadErrors.push(`${label}：${result.reason instanceof Error ? result.reason.message : "加载失败"}`);
     return [];
   };
-  const projects = read(projectsResult, "项目");
   const datasets = read(datasetsResult, "数据集");
   const analysisRuns = read(runsResult, "分析运行");
   const insights = read(insightsResult, "洞察");
@@ -366,6 +417,7 @@ export async function loadWorkflowSnapshot(): Promise<WorkflowSnapshot> {
   const decisions = read(decisionsResult, "产品决策");
   const approvals = read(approvalsResult, "待审批");
   const interviewQuestions = read(interviewQuestionsResult, "采访问题");
+
   const activeDataset = latestDataset(datasets);
   const activeVersion = await hydrateActiveVersion(activeDataset);
   const workspaceId =
@@ -383,6 +435,8 @@ export async function loadWorkflowSnapshot(): Promise<WorkflowSnapshot> {
     decisions,
     approvals,
     interviewQuestions,
+    archivedProjects,
+    activeProject,
     activeDataset,
     activeVersion,
     workspaceId,

@@ -1,9 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { ChevronRight, Download, FileText, Sparkles } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Archive, ChevronRight, Download, FileText, Sparkles } from "lucide-react";
 import { useState } from "react";
 import { apiRequest, accessToken } from "@/lib/api";
+import { setActiveProjectId } from "@/lib/workflow";
 import {
   SnapshotMeta,
   WorkflowGate,
@@ -53,6 +55,7 @@ function fallbackNotice(aiErrorCode: string | null | undefined): string {
 
 export default function Stage11PrdPage() {
   const { snapshot, loading, error, completion, refresh } = useWorkflowSnapshot();
+  const router = useRouter();
   const [docType, setDocType] = useState<string>("prd");
   const [title, setTitle] = useState("产品需求文档");
   const [busy, setBusy] = useState(false);
@@ -60,6 +63,7 @@ export default function Stage11PrdPage() {
   const [progressNote, setProgressNote] = useState("");
   const [fallbackBanner, setFallbackBanner] = useState("");
   const [document, setDocument] = useState<DocumentRow | null>(null);
+  const [archiving, setArchiving] = useState(false);
   const [editorText, setEditorText] = useState("");
   const projectId = snapshot?.activeDataset?.project_id;
   const confirmed = snapshot?.insights.filter((insight) => insight.status === "confirmed") || [];
@@ -140,6 +144,25 @@ export default function Stage11PrdPage() {
     }
   }
 
+  async function archiveProject() {
+    if (!projectId || !accessToken()) return;
+    const confirmed = window.confirm(
+      "完成并归档当前项目？归档后项目转为只读历史（可在「历史」中回看全部产出或恢复），工作台将切换到其他活跃项目。",
+    );
+    if (!confirmed) return;
+    setArchiving(true);
+    setNotice("");
+    try {
+      await apiRequest(`/projects/${projectId}/archive`, { method: "POST" });
+      setActiveProjectId(null);
+      router.push("/history");
+    } catch (cause) {
+      // 归档后停留在本页的写路径会拿到 409 PROJECT_ARCHIVED，如实展示。
+      setNotice(cause instanceof Error ? cause.message : "归档失败");
+      setArchiving(false);
+    }
+  }
+
   function download() {
     const content = editorText;
     if (!content) return;
@@ -212,6 +235,16 @@ export default function Stage11PrdPage() {
                 <button className="btn" onClick={download}>
                   <Download size={14} />
                   导出 Markdown
+                </button>
+              )}
+              {document && (
+                <button
+                  className="btn btn-primary"
+                  disabled={archiving}
+                  onClick={() => void archiveProject()}
+                >
+                  <Archive size={14} />
+                  {archiving ? "归档中…" : "完成并归档"}
                 </button>
               )}
             </div>
