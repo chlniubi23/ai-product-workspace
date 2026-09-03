@@ -136,6 +136,9 @@ AI_Product_Workspace/
 **新增于迁移 0009（第四批）**：
 `interview_questions`（AI 采访问题：round_number 0=手动补充/≥1=AI 轮次，status pending|answered|skipped，source ai|manual；蒸馏时 answered 行作为 stage 7 的上下文与 evidence 来源）
 
+**新增于迁移 0010/0011（第七/九批）**：
+`document_versions.ai_status/ai_error_code`（版本产出来源：NULL=旧数据、succeeded=AI、fallback=模板回退，交付页据此显示提示条）/ `projects.archived_at`（第九批「一个项目=一次工作流」：归档时间戳，与 status="archived" 成对出现）
+
 关键模型语义（来自 docstring）：
 - `DatasetVersion.schema_reviewed_at`（用户看过字段角色）与 `schema_auto_accepted_at`（解析 job 代接受）**是两列**——UI 必须区分「人看过」和「系统猜的」。
 - `ProductProblem.source_insight_ids`：问题必须回链洞察才能 confirm，否则"凭直觉的问题"会流入决策。
@@ -162,7 +165,9 @@ AI_Product_Workspace/
 | 8 产品问题 | stage8-problem | problem.status=confirmed | `POST /ai/frame-problem`（草稿）→ `POST /problems`（落库，confirm 需 source_insight_ids） |
 | 9 方案讨论 | stage9-solution | solution.status=selected | `POST /ai/propose-solutions` → `POST /solutions/{id}/select`（**落选方案必须写 reject_reason**） |
 | 10 产品决策 | stage10-decision（无 AI） | decision.status=approved | `POST /decision-proposals/{id}/submit`（仅置 pending_approval + 建 pending 审批）→ **审批是独立动作**：`POST /approval-requests/{id}/approve|reject`（驳回必写理由；提案被编辑则审批返回 VERSION_CONFLICT）。同一账号可先提交再审批 |
-| 11 PRD | stage11-prd | 文档有版本（workflow 门控不变） | `POST /documents`、`/documents/generate`、`/documents/{id}/versions`、`/documents/{id}/submit`、`GET /documents/{id}/export`（.md 下载）。页面渲染门控=存在 approved 决策 |
+| 11 PRD | stage11-prd | 文档有版本（workflow 门控不变） | `POST /documents`、`/documents/generate`、`/documents/{id}/versions`、`/documents/{id}/submit`、`GET /documents/{id}/export`（.md 下载）；完成后 `POST /projects/{id}/archive` 归档。页面渲染门控=存在 approved 决策 |
+
+> **第九批「一个项目 = 一次工作流」（2026-09-03 完成）**：`Project` 增加 `archived_at`；新增 `POST /projects/{id}/archive|unarchive`（幂等、editor+、绕过自身守卫）。归档项目只读：`project_for` 对 editor+ 返回 409 `PROJECT_ARCHIVED`（viewer 读取不受影响），绕过 `project_for` 的编辑端点（insight/decision/document/dataset/task/feedback 的 patch/submit/approve/retry 等）逐一补 `_ensure_project_active` 守卫。前端：activeProjectId 持久化到 localStorage（`apw_active_project`，切换时派发 `apw-project-changed` 事件），快照按当前项目过滤（失效 id 回退到第一个活跃项目），新增 `/history` 列表页与 `/history/[projectId]` 只读回看页。
 
 > **第四批洞察层重构（2026-09-01 完成）**：第 6 步从「AI 倒草稿」改为「AI 采访式收集」（原第 8 步人机讨论并入本步下半区），第 7 步改为「蒸馏+裁决」（新增 `/ai/distill-interview`，采访答案可作为 evidence 引用，`_check_evidence_scope` 新增 `interview_question` 类型），流水线 12→11 阶段（9-12 重编号为 8-11，旧路由经 `legacyRouteAliases` 308 重定向）。`InterviewQuestion` 模型 + 迁移 0009；`STAGE_COUNT=11`。
 >
@@ -213,7 +218,7 @@ AI_Product_Workspace/
 
 ## 8. API 面貌（第三批起按 routers/ 域拆分）
 
-约 135 个端点（清单由 tests/test_route_manifest.py 冻结），按资源域：
+约 137 个端点（清单由 tests/test_route_manifest.py 冻结），按资源域：
 - **Auth**：register/login/refresh/me（注册即建 workspace；登录失败统一报错不泄露邮箱存在性；均写审计）
 - **Workspace**：list/patch/settings(GET,PATCH)/members/metrics 字典 CRUD（含 `/api/v1/settings`、`/api/v1/metrics` 别名）
 - **Audit**：`GET /audit-logs`（workspace 级，newest-first）
@@ -223,6 +228,7 @@ AI_Product_Workspace/
 - **Feedback**：items CRUD/import/imports、clusters generate/patch/link-task、notes GET/POST/PATCH（V1.1）
 - **Insights / Problems / Solutions / Decisions / Approvals / Documents**：按第 6 节流程
 - **Interview（第四批）**：`POST /projects/{id}/interview/rounds`、`GET/POST /interview-questions`、`PATCH /interview-questions/{id}`、`POST /ai/distill-interview`
+- **Archive（第九批）**：`POST /projects/{id}/archive`、`POST /projects/{id}/unarchive`（幂等，editor+）
 - **AI + Copilot + Jobs**：见第 7 节
 
 **V1.1 legacy 标记**：`_V11_LEGACY_API_PREFIXES`（workspaces/tasks/approval-requests/decision-proposals/jobs/copilot sessions/feedback-items/feedback-clusters）的响应带 `Deprecation: true`、`Sunset: 2027-01-01` 头（middleware `mark_legacy_api_surfaces`）。
@@ -238,6 +244,7 @@ AI_Product_Workspace/
 - **工作台上传流**（`app/(workspace)/page.tsx`）：选文件 → `upload-batch` → 轮询 job（`TERMINAL_JOB_STATUS`，POLL_LIMIT=150）→ 就绪后 `POST auto-report` → 渲染 ReportMarkdown + ECharts 图表 → confirm/重新生成。
 - **各阶段页**均为「门控包裹 + API 薄封装」模式；AI 起草按钮调用对应 `/ai/*` 端点，返回的 draft 填充表单，用户修改后走常规 POST/PATCH 落库。
 - **设置页**：workspace 设置（时区/AI 模型/输出上限/双层 token 预算/feature flags）+ `/health/ai`、`/health/ready` 健康面板。
+- **当前项目作用域（第九批）**：`getActiveProjectId/setActiveProjectId`（lib/workflow.ts）持久化到 localStorage `apw_active_project` 并派发 `apw-project-changed`；`loadWorkflowSnapshot` 先解析项目列表（include_archived）再发起作用域请求（insights/problems/solutions/decision-proposals/documents/datasets/analysis-runs/interview-questions 追加 `?project_id=`，approvals 保持 workspace 级）；持久化 id 失效（删除/归档）回退到第一个活跃项目。`useWorkflowSnapshot` 监听该事件自动刷新。`/history` 列表页 + `/history/[projectId]` 只读回看页（自拉九类列表，复用 ReportMarkdown 渲染报告与文档）。
 - **legacy 路由**：`legacyRouteAliases`（navigation.ts）由 middleware 308 重定向到新 IA。
 
 ---
@@ -245,7 +252,7 @@ AI_Product_Workspace/
 ## 10. 当前完成度
 
 **已实现且验证**：
-- 后端测试套件 **201 passed, 1 xfailed，0 警告**（2026-09-03 实测运行；含 route manifest 冻结测试、test_guardrails.py 守护测试、test_interview.py 采访/蒸馏测试、第七批 test_document_generation.py、第八批 test_budget_model.py 直花/硬顶/总阀门测试）。覆盖：RBAC 与 workspace 隔离、数据管线（上传/版本/清洗/质量）、分析引擎全类型、AI 降级边界（无 key 绝不 500、输出契约、上下文白名单、反馈原文不外泄）、决策链规则（证据强制/落选理由/审批失效）、项目级联删除、报告叙述消毒。
+- 后端测试套件 **211 passed, 1 xfailed，0 警告**（2026-09-03 实测运行；第九批新增 test_archive.py 9 个归档/守卫测试）；含 route manifest 冻结测试、test_guardrails.py 守护测试、test_interview.py 采访/蒸馏测试、第七批 test_document_generation.py、第八批 test_budget_model.py 直花/硬顶/总阀门测试）。覆盖：RBAC 与 workspace 隔离、数据管线（上传/版本/清洗/质量）、分析引擎全类型、AI 降级边界（无 key 绝不 500、输出契约、上下文白名单、反馈原文不外泄）、决策链规则（证据强制/落选理由/审批失效）、项目级联删除、报告叙述消毒。
 - 10 个 Alembic 迁移可从零建库（0010 = document_versions.ai_status/ai_error_code）；`.env` 已配置 DeepSeek；前后端均可本地跑通。
 - 前端 11 阶段页面、工作台、数据管理、设置页齐全（第四批起）。
 - **全链路已真实手动冒烟走通**（12 阶段版 2026-08-30：上传→报告→洞察→讨论→问题→方案→决策→PRD；11 阶段版 2026-09-01：上传→报告→采访→蒸馏→裁决→问题→方案→决策→PRD）。
@@ -288,6 +295,7 @@ AI_Product_Workspace/
 - 新增 API 端点：写到对应域的 `app/routers/<域>.py`（`router = APIRouter()` + `@router.<method>("/api/v1/...")` 路径全写），在 `main.py` 加 `app.include_router(...)`；请求模型进 `schemas.py`。`tests/test_route_manifest.py` 会冻结断言全部 (path, methods, name)——路由变更必须同步重生成该清单。
 - 新增业务逻辑：放到 `app/services/<域>.py`；被多个 router 共用的 helper 必须下沉 services（routers 之间禁止互导，services 禁止反向导入 routers）。`ok()/error()/model_dict/paged` 等信封工具在 `common.py`；`_require_pandas()` 是 pandas 懒加载哨兵（使用方在函数内 `pd = _require_pandas()`，运行时禁止模块顶层 import pandas）。
 - job handler：`app/services/job_handlers.py`，`job_executor` 全仓库唯一实例在此；新增 handler 后在 `_register_job_handlers()` 注册（main.py 末尾恰好调用一次）。
+- 归档语义（第九批）：归档只能走 `POST /projects/{id}/archive|unarchive`（ProjectPatch 不含 status）；归档项目的 editor+ 写路径全部 409 `PROJECT_ARCHIVED`（project_for 与各路由的 `_ensure_project_active` 守卫），viewer 读与 owner 删除不受限。前端「当前项目」持久化键为 localStorage `apw_active_project`。
 - 新增 AI 能力：服务逻辑进 `services/ai_stages.py`（复用 `_run_ai_stage()` 模板，可传 `response_schema`/`output_validator`/`empty_output` 定义阶段契约），路由壳进 `routers/ai.py`；上下文必须过 `build_ai_context`，AI 结果一律 draft；Copilot 的 insights 上下文由服务端注入，客户端传入的一律丢弃。
 - 分析类型扩展点：`analytics/engine.py`（计算）+ `services/analysis_pipeline.py`（`_analysis_artifacts` 持久化映射、`_analysis_config_validation`、`_auto_analysis_plan`）+ `deepseek.py` 工具白名单（若暴露给 Copilot）。
 - 前端新页面的惯例：`app/(workspace)/` 下建目录，用 `WorkflowFrame` 的 `WorkflowHeader/WorkflowGate` 包裹，门控逻辑改 `lib/workflow.ts` 的 `stepCompletion()`，导航加 `lib/navigation.ts`。
