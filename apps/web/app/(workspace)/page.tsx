@@ -66,11 +66,33 @@ const POLL_LIMIT = 150;
 
 const STATUS_META: Record<string, { label: string; tone: string }> = {
   succeeded: { label: "AI 生成 · 草稿", tone: "tag-amber" },
-  not_configured: { label: "确定性统计 · 未配置 AI", tone: "tag-slate" },
+  not_configured: { label: "确定性统计", tone: "tag-slate" },
   failed: { label: "AI 失败 · 仅统计", tone: "tag-rose" },
   confirmed: { label: "已确认", tone: "tag-green" },
   draft: { label: "草稿", tone: "tag-slate" },
 };
+
+/** Narration degradation is never silent: map the recorded error_code to an
+ * actionable Chinese message (batch 10). */
+function narrationFailureNotice(errorCode?: string | null, outcome?: string): string {
+  switch (errorCode) {
+    case "AI_BUDGET_EXCEEDED":
+      return "AI 解读未能生成：今日 AI 额度剩余不足本次解读所需，请到「设置」调大「每日 token 预算」或明天再试。";
+    case "LLM_NOT_CONFIGURED":
+      return "AI 解读未能生成：未配置模型服务（DEEPSEEK_API_KEY）。";
+    case "AI_FEATURE_DISABLED":
+      return "AI 解读未能生成：工作空间已关闭自动报告的 AI 功能。";
+    case "LLM_PROVIDER_ERROR":
+      return "AI 解读未能生成：模型服务暂时不可用，请稍后重试。";
+    case "LLM_TRUNCATED":
+    case "INVALID_AI_OUTPUT":
+      return "AI 解读未能生成：模型输出异常，请重试。";
+    default:
+      return outcome === "timeout"
+        ? "AI 解读耗时较长，可稍后重试或刷新页面查看最新状态。"
+        : "AI 解读未能生成，请重试。当前报告已包含确定性统计。";
+  }
+}
 
 export default function WorkbenchPage() {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -90,7 +112,17 @@ export default function WorkbenchPage() {
   const [confirming, setConfirming] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
   const [deletingProject, setDeletingProject] = useState(false);
+  const [narratingId, setNarratingId] = useState<string | null>(null);
+  const [narrationNotice, setNarrationNotice] = useState("");
   const reportAnchor = useRef<HTMLDivElement>(null);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   // --------------------------------------------------------------- loading
   const loadProjects = useCallback(async () => {
@@ -252,24 +284,60 @@ export default function WorkbenchPage() {
     return "timeout";
   }, []);
 
-  const generateReport = useCallback(
-    async (targetProjectId: string): Promise<AutoReport | null> => {
-      const result = await apiRequest<{ report?: AutoReport; status?: string; error_code?: string | null }>(
-        `/projects/${targetProjectId}/auto-report`,
-        { method: "POST" },
-      );
-      if (result.report?.id) {
-        const generated = result.report;
-        setReport(generated);
-        setHistory((current) => [generated, ...current.filter((item) => item.id !== generated.id)]);
-        if (result.status === "not_configured") {
-          setNotice("未配置 AI 服务，报告包含确定性统计；配置 DEEPSEEK_API_KEY 后可获得完整 AI 解读。");
-        }
-        return generated;
-      }
+  // Instant deterministic half (batch 10): the numbers are on screen in
+  // seconds, before any AI call happens.
+  const computeReport = useCallback(async (targetProjectId: string): Promise<AutoReport | null> => {
+    const result = await apiRequest<{ report?: AutoReport; status?: string }>(
+      `/projects/${targetProjectId}/auto-report/compute`,
+      { method: "POST" },
+    );
+    const computed = result.report ?? null;
+    if (computed?.id) {
+      setReport(computed);
+      setHistory((current) => [computed, ...current.filter((item) => item.id !== computed.id)]);
+      setNarrationNotice("");
+    }
+    return computed;
+  }, []);
+
+  const refreshReport = useCallback(async (reportId: string): Promise<AutoReport | null> => {
+    try {
+      const fresh = await apiRequest<AutoReport>(`/auto-reports/${reportId}`);
+      setReport((current) => (current?.id === fresh.id ? fresh : current));
+      setHistory((current) => current.map((item) => (item.id === fresh.id ? fresh : item)));
+      return fresh;
+    } catch {
       return null;
+    }
+  }, []);
+
+  // Async AI half (batch 10): queue a narration job and poll it. Leaving the
+  // page does not affect the server-side job; coming back, the report list
+  // already carries the latest status.
+  const narrateReport = useCallback(
+    async (targetReportId: string) => {
+      setNarratingId(targetReportId);
+      setNarrationNotice("");
+      try {
+        const result = await apiRequest<{ job?: { id?: string } }>(`/auto-reports/${targetReportId}/narrate`, {
+          method: "POST",
+        });
+        const jobId = result.job?.id || "";
+        const outcome = jobId ? await waitForJob(jobId) : "failed";
+        if (!mountedRef.current) return;
+        const fresh = await refreshReport(targetReportId);
+        if (!fresh || fresh.status !== "succeeded") {
+          setNarrationNotice(narrationFailureNotice(fresh?.error_code, outcome));
+        }
+      } catch (cause) {
+        if (mountedRef.current) {
+          setNarrationNotice(cause instanceof Error ? cause.message : "AI 解读失败，请重试。");
+        }
+      } finally {
+        if (mountedRef.current) setNarratingId(null);
+      }
     },
-    [],
+    [refreshReport, waitForJob],
   );
 
   const startUpload = async () => {
@@ -318,11 +386,13 @@ export default function WorkbenchPage() {
         return;
       }
 
-      setProgressNote("分析完成，正在生成 AI 分析报告…");
-      const generated = await generateReport(projectId);
+      setProgressNote("分析完成，正在计算数据概况…");
+      const computed = await computeReport(projectId);
       setPhase("idle");
       setFiles([]);
-      if (generated) {
+      if (computed) {
+        // Numbers are rendered; AI narration continues as a background job.
+        void narrateReport(computed.id);
         window.setTimeout(() => reportAnchor.current?.scrollIntoView({ behavior: "smooth" }), 120);
       } else {
         setFailure((current) => current || "报告生成失败，请稍后重试。");
@@ -338,8 +408,11 @@ export default function WorkbenchPage() {
     setRegenerating(true);
     setNotice("");
     try {
-      const generated = await generateReport(projectId);
-      if (generated) window.setTimeout(() => reportAnchor.current?.scrollIntoView({ behavior: "smooth" }), 120);
+      const computed = await computeReport(projectId);
+      if (computed) {
+        void narrateReport(computed.id);
+        window.setTimeout(() => reportAnchor.current?.scrollIntoView({ behavior: "smooth" }), 120);
+      }
     } catch (cause) {
       setNotice(cause instanceof Error ? cause.message : "重新生成失败");
     } finally {
@@ -588,6 +661,16 @@ export default function WorkbenchPage() {
             </div>
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
               <span className={`tag ${statusMeta?.tone || "tag-slate"}`}>{statusMeta?.label || report.status}</span>
+              {(report.status === "not_configured" || report.status === "failed") && !narratingId && !narrationNotice && (
+                <button
+                  className="btn btn-subtle btn-sm"
+                  onClick={() => void narrateReport(report.id)}
+                  title="对当前确定性报告补一次 AI 解读"
+                >
+                  <Sparkles size={13} />
+                  补生成 AI 解读
+                </button>
+              )}
               {report.status !== "confirmed" && (
                 <button className="btn btn-subtle btn-sm" onClick={confirmReport} disabled={confirming}>
                   <Check size={13} />
@@ -602,6 +685,35 @@ export default function WorkbenchPage() {
           </div>
           <div style={{ display: "grid", gap: 4 }}>
             <ReportMarkdown markdown={markdown} />
+            {narratingId === report.id && (
+              <div
+                className="card-kicker"
+                role="status"
+                style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}
+              >
+                <LoaderCircle size={13} className="animate-spin" />
+                AI 解读生成中…页面可以正常操作，离开本页不影响后台生成；返回后报告会显示最新状态。
+              </div>
+            )}
+            {narrationNotice && !narratingId && (
+              <div
+                role="alert"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  flexWrap: "wrap",
+                  marginTop: 8,
+                  color: "#b4443c",
+                }}
+              >
+                <span>{narrationNotice}</span>
+                <button className="btn btn-subtle btn-sm" onClick={() => void narrateReport(report.id)}>
+                  <LoaderCircle size={13} />
+                  重试 AI 解读
+                </button>
+              </div>
+            )}
           </div>
           <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
             <Link className="btn btn-primary btn-sm" href="/stage6-interview">
@@ -666,6 +778,7 @@ export default function WorkbenchPage() {
                 }}
                 onClick={() => {
                   setReport(item);
+                  setNarrationNotice("");
                   window.setTimeout(() => reportAnchor.current?.scrollIntoView({ behavior: "smooth" }), 80);
                 }}
               >
