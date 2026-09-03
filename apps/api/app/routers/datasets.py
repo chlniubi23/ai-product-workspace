@@ -16,7 +16,7 @@ from ..config import settings
 from ..db import get_db
 from ..models import CleaningOperation, DataColumn, Dataset, DatasetVersion, User, WorkspaceMember, now
 from ..schemas import CleaningRequest, DatasetDeleteRequest, SchemaPatch
-from ..services.access import _dataset_version_for, membership, project_for
+from ..services.access import _dataset_version_for, _ensure_project_active, membership, project_for
 from ..services.audit import audit
 from ..services.datasets import (
     _apply_cleaning,
@@ -230,7 +230,8 @@ def list_cleaning_operations(version_id: str, user: User = Depends(get_current_u
 
 @router.get("/api/v1/dataset-versions/{version_id}/preview")
 def preview_dataset(version_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db), page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)) -> dict[str, Any]:
-    version, _, _ = _dataset_version_for(db, user, version_id)
+    version, _, ds_project = _dataset_version_for(db, user, version_id)
+    _ensure_project_active(db, ds_project.id)
     path = settings.data_path / version.storage_path
     try:
         frame = _read_dataframe(path, version.file_name)
@@ -246,6 +247,7 @@ CONFIRMABLE_COLUMN_TYPES = {"string", "integer", "float", "boolean", "datetime",
 @router.patch("/api/v1/dataset-versions/{version_id}/schema")
 def patch_schema(version_id: str, body: SchemaPatch, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     version, _, project = _dataset_version_for(db, user, version_id, "editor")
+    _ensure_project_active(db, project.id)
     columns_by_name = {column.name: column for column in version.columns}
     for item in body.columns:
         name = item.get("name")
@@ -284,6 +286,7 @@ def mark_schema_reviewed(version_id: str, user: User = Depends(get_current_user)
     """
 
     version, _, project = _dataset_version_for(db, user, version_id, "editor")
+    _ensure_project_active(db, project.id)
     if version.schema_reviewed_at is None:
         version.schema_reviewed_at = datetime.now(UTC).replace(tzinfo=None)
         audit(db, project.workspace_id, user.id, "dataset.schema_reviewed", "dataset_version", version.id)
@@ -302,6 +305,7 @@ def quality_report(version_id: str, user: User = Depends(get_current_user), db: 
 @router.post("/api/v1/dataset-versions/{version_id}/cleaning-preview")
 def cleaning_preview(version_id: str, body: CleaningRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     version, _, _ = _dataset_version_for(db, user, version_id, "editor")
+    _ensure_project_active(db, version.project_id)
     path = settings.data_path / version.storage_path
     try:
         dataframe = _read_dataframe(path, version.file_name)
@@ -314,6 +318,7 @@ def cleaning_preview(version_id: str, body: CleaningRequest, user: User = Depend
 @router.post("/api/v1/dataset-versions/{version_id}/cleaning-operations")
 def cleaning_operations(version_id: str, body: CleaningRequest, background_tasks: BackgroundTasks, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     version, dataset, project = _dataset_version_for(db, user, version_id, "editor")
+    _ensure_project_active(db, version.project_id)
     if version.status not in {"ready", "confirmed"}:
         raise error("DATASET_NOT_READY", "Source dataset version is not ready for cleaning", 422)
     normalised_operations = _normalise_cleaning_operations(body.operations)
@@ -356,7 +361,9 @@ def delete_dataset(
     dataset = db.get(Dataset, dataset_id)
     if dataset is None or dataset.deleted_at is not None:
         raise error("NOT_FOUND", "Dataset not found", 404)
-    project_for(db, user, dataset.project_id, "owner")
+    # owner-level hard delete may target an archived project, so use the raw
+    # membership check instead of project_for here.
+    membership(db, user, dataset.workspace_id, "owner")
 
     confirmation = body.confirm if body is not None else confirm
     confirmed = confirmation is True

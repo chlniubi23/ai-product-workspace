@@ -17,7 +17,7 @@ from ..common import error, model_dict, ok, page_params, paged, serialize
 from ..db import get_db
 from ..models import AIRun, CopilotMessage, CopilotSession, Insight, User, Workspace
 from ..schemas import CopilotMessageCreate, CopilotSessionCreate
-from ..services.access import membership, project_for
+from ..services.access import _ensure_project_active, membership, project_for
 from ..services.ai_stages import _deepseek_answer
 from ..services.audit import audit
 from ..services.workspace_settings import (
@@ -194,6 +194,7 @@ def get_copilot_session(session_id: str, user: User = Depends(get_current_user),
     if session is None:
         raise error("NOT_FOUND", "Copilot session not found", 404)
     membership(db, user, session.workspace_id)
+    _ensure_project_active(db, session.project_id)
     if session.user_id != user.id:
         raise error("FORBIDDEN", "Copilot session belongs to another user", 403)
     return ok(model_dict(session, {"messages": [model_dict(message) for message in session.messages]}))

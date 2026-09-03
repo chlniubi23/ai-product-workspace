@@ -108,12 +108,14 @@ ROUTE_MANIFEST: list[tuple[str, tuple[str, ...], str]] = [
     ('/api/v1/projects/{project_id}', ('DELETE',), 'delete_project'),
     ('/api/v1/projects/{project_id}', ('GET',), 'get_project'),
     ('/api/v1/projects/{project_id}', ('PATCH',), 'patch_project'),
+    ('/api/v1/projects/{project_id}/archive', ('POST',), 'archive_project'),
     ('/api/v1/projects/{project_id}/auto-report', ('POST',), 'generate_auto_report'),
     ('/api/v1/projects/{project_id}/auto-reports', ('GET',), 'list_auto_reports'),
     ('/api/v1/projects/{project_id}/interview/rounds', ('POST',), 'generate_round'),
     ('/api/v1/projects/{project_id}/overview', ('GET',), 'project_overview'),
     ('/api/v1/projects/{project_id}/tasks', ('GET',), 'list_tasks'),
     ('/api/v1/projects/{project_id}/tasks', ('POST',), 'create_task'),
+    ('/api/v1/projects/{project_id}/unarchive', ('POST',), 'unarchive_project'),
     ('/api/v1/projects/{project_id}/workflow-status', ('GET',), 'project_workflow_status'),
     ('/api/v1/settings', ('GET',), 'get_settings_alias'),
     ('/api/v1/settings', ('PATCH',), 'patch_settings_alias'),
@@ -145,6 +147,7 @@ ROUTE_MANIFEST: list[tuple[str, tuple[str, ...], str]] = [
     ('/openapi.json', ('GET', 'HEAD'), 'openapi'),
     ('/redoc', ('GET', 'HEAD'), 'redoc_html'),
 ]
+
 
 
 

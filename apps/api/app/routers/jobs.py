@@ -9,7 +9,7 @@ from ..auth import get_current_user
 from ..common import error, ok
 from ..db import get_db
 from ..models import Job, User
-from ..services.access import membership
+from ..services.access import _ensure_project_active, membership
 from ..services.audit import audit
 from ..services.job_handlers import _job_payload, job_executor
 
@@ -33,9 +33,10 @@ def retry_job(job_id: str, background_tasks: BackgroundTasks, user: User = Depen
     if job is None:
         raise error("NOT_FOUND", "Job not found", 404)
     membership(db, user, job.workspace_id, "editor")
+    source = job.input_json if isinstance(job.input_json, dict) else {}
+    _ensure_project_active(db, source.get("project_id"))
     if job.status not in {"failed", "cancelled"}:
         raise error("INVALID_STATE", "Only failed or cancelled jobs can be retried", 409)
-    source = job.input_json if isinstance(job.input_json, dict) else {}
     if not bool(source.get("_retryable", True)) or not job_executor.has_handler(job.job_type):
         raise error("INVALID_STATE", "This job cannot be retried safely", 409)
     job.status = "queued"

@@ -13,7 +13,7 @@ from ..common import error, model_dict, ok, page_params, paged
 from ..db import get_db
 from ..models import Document, DocumentVersion, Project, User, Workspace, WorkspaceMember
 from ..schemas import DocumentCreate, DocumentGenerate, DocumentVersionCreate
-from ..services.access import membership, project_for
+from ..services.access import _ensure_project_active, membership, project_for
 from ..services.audit import audit
 from ..services.documents import _document_payload, _render_document_markdown
 from ..services.evidence import _require_confirmed_insight_refs
@@ -129,6 +129,7 @@ def create_document_version(document_id: str, body: DocumentVersionCreate, user:
     if document is None:
         raise error("NOT_FOUND", "Document not found", 404)
     membership(db, user, document.workspace_id, "editor")
+    _ensure_project_active(db, document.project_id)
     document_project = db.get(Project, document.project_id)
     _require_confirmed_insight_refs(db, document.workspace_id, body.evidence, document_project.id if document_project else document.project_id)
     latest = db.scalar(select(func.max(DocumentVersion.version_number)).where(DocumentVersion.document_id == document.id)) or 0
@@ -150,6 +151,7 @@ def submit_document(document_id: str, user: User = Depends(get_current_user), db
     if document is None:
         raise error("NOT_FOUND", "Document not found", 404)
     membership(db, user, document.workspace_id, "editor")
+    _ensure_project_active(db, document.project_id)
     document.status = "in_review"
     audit(db, document.workspace_id, user.id, "document.submitted", "document", document.id)
     db.commit()

@@ -11,7 +11,7 @@ from ..common import error, model_dict, ok, page_params, paged
 from ..db import get_db
 from ..models import AnalysisArtifact, AnalysisRun, User, WorkspaceMember
 from ..schemas import AnalysisCreate
-from ..services.access import _dataset_version_for, membership, project_for
+from ..services.access import _dataset_version_for, _ensure_project_active, membership, project_for
 from ..services.analysis_pipeline import (
     _analysis_config_validation,
     _analysis_request_config,
@@ -162,5 +162,6 @@ def rerun_analysis(run_id: str, background_tasks: BackgroundTasks, user: User = 
     if run is None:
         raise error("NOT_FOUND", "Analysis run not found", 404)
     membership(db, user, run.workspace_id, "editor")
+    _ensure_project_active(db, run.project_id)
     body = AnalysisCreate(project_id=run.project_id, dataset_version_id=run.dataset_version_id, analysis_type=run.analysis_type, config=run.config_json or {})
     return create_analysis(body, background_tasks, user, db)

@@ -11,7 +11,7 @@ from ..common import error, model_dict, ok, page_params, paged
 from ..db import get_db
 from ..models import ApprovalRequest, DecisionProposal, User, WorkspaceMember, now
 from ..schemas import ApprovalDecision, DecisionCreate, DecisionPatch
-from ..services.access import _task_for_project, membership, project_for
+from ..services.access import _ensure_project_active, _task_for_project, membership, project_for
 from ..services.audit import audit
 from ..services.evidence import _check_evidence_scope
 
@@ -59,6 +59,7 @@ def patch_decision(proposal_id: str, body: DecisionPatch, user: User = Depends(g
     if proposal is None:
         raise error("NOT_FOUND", "Decision proposal not found", 404)
     membership(db, user, proposal.workspace_id, "editor")
+    _ensure_project_active(db, proposal.project_id)
     if body.version is not None and body.version != proposal.version:
         raise error("VERSION_CONFLICT", "Proposal version is stale", 409)
     if body.evidence is not None:
@@ -79,6 +80,7 @@ def submit_decision(proposal_id: str, user: User = Depends(get_current_user), db
     if proposal is None:
         raise error("NOT_FOUND", "Decision proposal not found", 404)
     membership(db, user, proposal.workspace_id, "editor")
+    _ensure_project_active(db, proposal.project_id)
     if proposal.status not in {"draft", "rejected"}:
         raise error("INVALID_STATE", "Proposal cannot be submitted in current state", 409)
     proposal.status = "pending_approval"
@@ -102,6 +104,8 @@ def _decide_approval(approval_id: str, body: ApprovalDecision, user: User, db: S
         raise error("NOT_FOUND", "Approval request not found", 404)
     # Editors can process approvals inside a workspace; Viewer remains read-only.
     membership(db, user, request.workspace_id, "editor")
+    proposal = db.get(DecisionProposal, request.target_id) if request.target_type == "decision_proposal" else None
+    _ensure_project_active(db, proposal.project_id if proposal is not None else None)
     if request.status != "pending":
         raise error("INVALID_STATE", "Approval request is already decided", 409)
     if request.version != body.version:

@@ -27,9 +27,17 @@ from ..models import (
     TaskLink,
     User,
     WorkspaceMember,
+    now,
 )
 from ..schemas import DatasetDeleteRequest, LinkCreate, ProjectCreate, ProjectPatch, TaskCreate, TaskPatch
-from ..services.access import _check_assignee, membership, project_for, workspace_for_user
+from ..services.access import (
+    ARCHIVED_PROJECT_STATUS,
+    _check_assignee,
+    _ensure_project_active,
+    membership,
+    project_for,
+    workspace_for_user,
+)
 from ..services.audit import audit
 from ..services.datasets import _safe_data_file
 from ..services.evidence import _linked_resource_scope
@@ -37,12 +45,6 @@ from ..services.evidence import _linked_resource_scope
 router = APIRouter()
 
 
-
-
-# Deleting a project is a soft delete so an accidental delete stays recoverable.
-# Defined once here because the list filter, the delete handler, and the restore
-# handler must agree on the sentinel.
-ARCHIVED_PROJECT_STATUS = "archived"
 
 
 @router.get("/api/v1/projects")
@@ -81,12 +83,51 @@ def get_project(project_id: str, user: User = Depends(get_current_user), db: Ses
 @router.patch("/api/v1/projects/{project_id}")
 def patch_project(project_id: str, body: ProjectPatch, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     project = project_for(db, user, project_id, "editor")
-    for field in ("name", "description", "status", "goal_statement"):
+    # status is intentionally absent: archiving goes through the dedicated
+    # /archive and /unarchive endpoints (batch 9), never a generic PATCH.
+    for field in ("name", "description", "goal_statement"):
         value = getattr(body, field)
         if value is not None:
             setattr(project, field, value)
     audit(db, project.workspace_id, user.id, "project.updated", "project", project.id)
     db.commit()
+    return ok(model_dict(project))
+
+
+@router.post("/api/v1/projects/{project_id}/archive")
+def archive_project(project_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Finish a workflow: flip the project to read-only history (idempotent).
+
+    Editor+ by direct lookup -- project_for would refuse editor access to the
+    very project this endpoint is meant to archive.
+    """
+
+    project = db.get(Project, project_id)
+    if project is None:
+        raise error("NOT_FOUND", "Project not found", 404)
+    membership(db, user, project.workspace_id, "editor")
+    already = project.status == ARCHIVED_PROJECT_STATUS
+    if not already:
+        project.status = ARCHIVED_PROJECT_STATUS
+        project.archived_at = now()
+        audit(db, project.workspace_id, user.id, "project.archived", "project", project.id)
+        db.commit()
+    return ok(model_dict(project))
+
+
+@router.post("/api/v1/projects/{project_id}/unarchive")
+def unarchive_project(project_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Restore an archived project to the active workflow (idempotent)."""
+
+    project = db.get(Project, project_id)
+    if project is None:
+        raise error("NOT_FOUND", "Project not found", 404)
+    membership(db, user, project.workspace_id, "editor")
+    if project.status == ARCHIVED_PROJECT_STATUS:
+        project.status = "active"
+        project.archived_at = None
+        audit(db, project.workspace_id, user.id, "project.unarchived", "project", project.id)
+        db.commit()
     return ok(model_dict(project))
 
 
@@ -195,7 +236,12 @@ def delete_project(
     (main.py:1939) so an accidental call cannot destroy data.
     """
 
-    project = project_for(db, user, project_id, "owner")
+    # Owner-level hard delete bypasses project_for on purpose: deleting an
+    # archived project must stay possible (archive is not delete).
+    project = db.get(Project, project_id)
+    if project is None:
+        raise error("NOT_FOUND", "Project not found", 404)
+    membership(db, user, project.workspace_id, "owner")
     workspace_id = project.workspace_id
     name = project.name
 
@@ -371,6 +417,7 @@ def patch_task(task_id: str, body: TaskPatch, user: User = Depends(get_current_u
     if task is None:
         raise error("NOT_FOUND", "Task not found", 404)
     membership(db, user, task.workspace_id, "editor")
+    _ensure_project_active(db, task.project_id)
     _check_assignee(db, task.workspace_id, body.assignee_id)
     for field in ("title", "description", "priority", "status", "assignee_id", "due_at", "ai_summary"):
         value = getattr(body, field)
@@ -387,6 +434,7 @@ def delete_task(task_id: str, user: User = Depends(get_current_user), db: Sessio
     if task is None:
         raise error("NOT_FOUND", "Task not found", 404)
     membership(db, user, task.workspace_id, "editor")
+    _ensure_project_active(db, task.project_id)
     task.status = "archived"
     audit(db, task.workspace_id, user.id, "task.deleted", "task", task.id)
     db.commit()
@@ -399,6 +447,7 @@ def link_task(task_id: str, body: LinkCreate, user: User = Depends(get_current_u
     if task is None:
         raise error("NOT_FOUND", "Task not found", 404)
     membership(db, user, task.workspace_id, "editor")
+    _ensure_project_active(db, task.project_id)
     target_workspace, target_project = _linked_resource_scope(db, body.link_type, body.target_id)
     if target_workspace != task.workspace_id or (target_project is not None and target_project != task.project_id):
         raise error("FORBIDDEN", "Linked object is outside the task project", 403)
@@ -429,6 +478,7 @@ def unlink_task(task_id: str, link_id: str, user: User = Depends(get_current_use
     if task is None:
         raise error("NOT_FOUND", "Task not found", 404)
     membership(db, user, task.workspace_id, "editor")
+    _ensure_project_active(db, task.project_id)
     link = db.scalar(select(TaskLink).where(TaskLink.id == link_id, TaskLink.task_id == task_id))
     if link is None:
         raise error("NOT_FOUND", "Task link not found", 404)

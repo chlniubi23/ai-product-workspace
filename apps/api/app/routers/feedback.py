@@ -31,7 +31,7 @@ from ..schemas import (
     FeedbackNotePatch,
     FeedbackPatch,
 )
-from ..services.access import _dataset_version_for, membership, project_for
+from ..services.access import _dataset_version_for, _ensure_project_active, membership, project_for
 from ..services.audit import audit
 from ..services.datasets import _reject_unsupported_upload, _safe_name
 from ..services.job_handlers import _feedback_payload, _job, _job_payload, job_executor
@@ -122,6 +122,7 @@ def patch_feedback(feedback_id: str, body: FeedbackPatch, user: User = Depends(g
     if item is None:
         raise error("NOT_FOUND", "Feedback item not found", 404)
     membership(db, user, item.workspace_id, "editor")
+    _ensure_project_active(db, item.project_id)
     if body.labels is not None:
         item.labels_json = body.labels
     if body.status is not None:

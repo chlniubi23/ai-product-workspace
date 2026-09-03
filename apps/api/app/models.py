@@ -122,6 +122,9 @@ class Project(Base):
     name = Column(String(255), nullable=False)
     description = Column(Text, default="")
     status = Column(String(30), default="active", nullable=False)
+    # Non-null when the project has been archived (one finished workflow per
+    # project; archived projects are read-only history until restored).
+    archived_at = Column(DateTime, nullable=True)
     owner_id = Column(String(36), ForeignKey("users.id"), nullable=False)
     goal_statement = Column(Text, default="")
     created_at = Column(DateTime, default=now, nullable=False)

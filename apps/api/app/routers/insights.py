@@ -11,7 +11,7 @@ from ..common import error, model_dict, ok, page_params, paged
 from ..db import get_db
 from ..models import Insight, User, WorkspaceMember
 from ..schemas import InsightCreate, InsightPatch
-from ..services.access import _task_for_project, membership, project_for
+from ..services.access import _ensure_project_active, _task_for_project, membership, project_for
 from ..services.audit import audit
 from ..services.evidence import _check_evidence_scope, _require_nonempty_evidence
 
@@ -67,6 +67,7 @@ def patch_insight(insight_id: str, body: InsightPatch, user: User = Depends(get_
     if insight is None:
         raise error("NOT_FOUND", "Insight not found", 404)
     membership(db, user, insight.workspace_id, "editor")
+    _ensure_project_active(db, insight.project_id)
     candidate_evidence = body.evidence if body.evidence is not None else insight.evidence_json
     if body.status == "confirmed":
         candidate_evidence = _require_nonempty_evidence(candidate_evidence, subject="Confirmed insight")
