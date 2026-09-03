@@ -245,7 +245,7 @@ AI_Product_Workspace/
 ## 10. 当前完成度
 
 **已实现且验证**：
-- 后端测试套件 **195 passed, 1 xfailed，0 警告**（2026-09-01 实测运行；含 route manifest 冻结测试、test_guardrails.py 守护测试：`_safe_data_file` 路径防越界、`models.now()` naive-UTC 语义、pandas 懒加载纪律、反馈键清单超集关系；第四批新增 test_interview.py 12 个采访/蒸馏测试）。覆盖：RBAC 与 workspace 隔离、数据管线（上传/版本/清洗/质量）、分析引擎全类型、AI 降级边界（无 key 绝不 500、输出契约、上下文白名单、反馈原文不外泄）、决策链规则（证据强制/落选理由/审批失效）、项目级联删除、报告叙述消毒。
+- 后端测试套件 **201 passed, 1 xfailed，0 警告**（2026-09-03 实测运行；含 route manifest 冻结测试、test_guardrails.py 守护测试、test_interview.py 采访/蒸馏测试、第七批 test_document_generation.py、第八批 test_budget_model.py 直花/硬顶/总阀门测试）。覆盖：RBAC 与 workspace 隔离、数据管线（上传/版本/清洗/质量）、分析引擎全类型、AI 降级边界（无 key 绝不 500、输出契约、上下文白名单、反馈原文不外泄）、决策链规则（证据强制/落选理由/审批失效）、项目级联删除、报告叙述消毒。
 - 8 个 Alembic 迁移可从零建库；`.env` 已配置 DeepSeek；前后端均可本地跑通。
 - 前端 11 阶段页面、工作台、数据管理、设置页齐全（第四批起）。
 - **全链路已真实手动冒烟走通**（12 阶段版 2026-08-30：上传→报告→洞察→讨论→问题→方案→决策→PRD；11 阶段版 2026-09-01：上传→报告→采访→蒸馏→裁决→问题→方案→决策→PRD）。
@@ -265,19 +265,21 @@ AI_Product_Workspace/
 
 ## 11. 已知问题与技术债（按影响排序）
 
-1. **`main.py` 5970 行巨型单文件**：全部路由 + 业务规则 + job handlers + AI 编排胶水都在一个文件。可维护性/可测试性差，是最大的结构性技术债；后续功能开发会继续向它堆积。拆分（按资源域拆 router/service）应先于大型新功能。
+1. ~~**`main.py` 5970 行巨型单文件**~~（第三批已解决：拆为 149 行组装层 + `common.py` + 13 routers + 10 services，路由清单由 manifest 测试冻结）。
 2. **V1.1 迁移未收尾**：双套模型/API 并存（feedback_items+clusters vs feedback_notes；tasks/approvals 待淘汰），每个新功能都要处理新旧两轨。
 3. **两套并行 schema 机制**：Alembic 之外，`db.py:_repair_missing_columns()` 启动时给已存在表补列（无外键）。dev 便利但与迁移漂移风险。
 4. **JobExecutor 进程内限制**：单进程假设（多 worker 会重复执行/丢任务）；无自动重试退避（仅手动 `POST /jobs/{id}/retry`，且需 `_retryable` 标记）；长任务占 BackgroundTasks 线程。
-5. **AI 预算竞态窗口**：`with_for_update` 在 SQLite 是 no-op；仅 copilot 消息路径加行锁，`/ai/interpret` 等路径"预留→调用→结算"之间并发仍可能小幅超预算（已有"running 按满额预留"缓解）；`_workspace_token_usage` 每次全扫当日 AIRun，量大后变慢。
+5. **AI 预算并发窗口（第八批后残余）**：`with_for_update` 在 SQLite 是 no-op；running 行按各自 worst_case 预留后，daily 最多被在途调用突破一个 worst_case（已接受的设计）；`_workspace_token_usage` 每次全扫当日 AIRun，量大后变慢；copilot_message 的独立预检仍是旧 `reserved > daily` 形式，未统一到 worst_case 投影。
 6. **代码卫生（第四批已清理大半）**：~~`models.now()` 用已废弃 `datetime.utcnow()`~~（已改为 `datetime.now(UTC).replace(tzinfo=None)`，naive-UTC 语义不变、由 test_guardrails 锁定）；~~`@app.on_event("startup")`~~（已迁移 FastAPI lifespan，行为等价）；~~tests 基线 ruff 告警~~（已清零）。仍存在：`openai` SDK 不在 pyproject 依赖（实际依赖 httpx fallback 或需手动安装）；CORS 未配置时回退 `["*"]` 且 `allow_credentials=True`。
 7. **前端认证是软门禁**：middleware 只查 `apw_session=1` cookie 存在性（可伪造绕过页面守卫），真实鉴权仅在 API 层——设计上可接受但需明确这不是安全边界。JWT 在 localStorage（常规 XSS 暴露面），无服务端吊销。
 8. **SSE 非实时**：copilot 事件回放式，用户体验依赖轮询 job 状态；`DeepSeekAdapter.stream()` 是伪流（一次性 complete 后整体 yield）。
 9. **文件存储在本机磁盘**：`data/uploads|processed|exports`，无对象存储；`_purge_project` 物理删除不可恢复（有审计）。第四批起删除前经 `_safe_data_file` 做 DATA_ROOT 越界防护（防篡改行任意 unlink）。
 10. **测试基建的小脆弱点**：`tests/conftest.py` 必须在 import app 前设置环境变量（ruff 已按文件豁免 E402 并有注释）；测试库文件在 `output/test-runtime`（rebuild on each run）。
-11. **真实 key 下的 AI 输出可靠性（2026-08-30 冒烟观察，未修）**：`deepseek-v4-flash` 偶发返回无法解析为 JSON 的内容或被 `max_output` 截断——此时 `_run_ai_stage` 沿用既有"raw 为 None 即空草稿"语义把 run 标为 `succeeded` 但 output 为空形状，前端按"AI 起草不可用，可手写"降级（propose-solutions 冒烟中 2 次出现 1 次）；Copilot 编排的 plan 校验（`INVALID_ANALYSIS_PLAN`）在真实 key 下也出现过失败降级。降级路径本身行为正确，属模型输出质量/预算配置问题。
+11. **真实 key 下的 AI 输出可靠性（截断部分已于第五批修复）**：~~截断后仍标 succeeded + 空草稿~~（第五批起截断/解析失败 → `failed` + `LLM_TRUNCATED`/`INVALID_AI_OUTPUT` + 单次重试，前端如实提示；第八批蒸馏加 prompt 规模约束后正常输出约 2400 tokens）。残余：`deepseek-v4-flash` 仍偶发返回非 JSON 或 provider 错误（第七/八批冒烟各遇一次，降级路径行为正确）；Copilot 编排 plan 校验（`INVALID_ANALYSIS_PLAN`）真实 key 下偶发失败降级，未修。
 12. **项目删除与解析任务的竞态可泄漏上传文件（第四批冒烟实证，未修）**：真实 uvicorn 下上传后立即删除项目、若后台 `dataset_parse` job 尚未完成，`_purge_project` 返回 `files: 0` 且上传文件遗留在磁盘（复现：上传后 <1s 删除；等待解析完成再删则 `files: 1` 正常）。版本行会被级联删除，泄漏仅限磁盘文件。待办方向：删除时校验无 in-flight job，或解析完成后回收孤儿文件。
 13. **历史事故记录（已修复）**：第三批 Phase 2 的 AST 切割脚本曾把 `_purge_project` 中对 `_safe_data_file` 的调用连同注释一并丢弃（拆分后该函数一度成为无调用者的死代码，且删除路径失去越界防护，提交 42728e5..132a25e 期间生效）。第四批重新接线并由 test_guardrails 锁定；同时纠正第三批汇报中"死代码"的定性——根源是脚本丢行，不是基线死代码。
+14. **文档生成上下文丢失洞察正文（第八批冒烟实证，未修）**：`_build_document_context` 的洞察 payload 用 `content` 键，而 `content` 在 `_FEEDBACK_CONTENT_KEYS` 黑名单内——`build_ai_context` 装配时洞察正文被静默剥离，文档 AI 实际只能看到洞察标题/置信度/证据骨架（采访回答的 question/answer 键不受影响）。修复方向：洞察 payload 改用非保留键（如 `body`）或为洞察开专用通道；因涉防火墙（第八批禁改）未动。
+15. **设置项 `ai_per_request_token_budget` 已无拦截职责但仍在设置 UI 展示**（第八批起仅作 worst_case 预留的兜底参数），用户可能误以为它限流；建议后续在设置页标注或移除展示。
 
 ---
 
