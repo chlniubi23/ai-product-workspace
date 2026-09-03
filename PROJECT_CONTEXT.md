@@ -212,7 +212,7 @@ AI_Product_Workspace/
 - **job 链路**（`job_handlers._handle_document_generation`）：路由先落确定性模板（中文）并排队 job；handler 在 worker 线程 `asyncio.run(_run_ai_stage(...))`（feature=document_generation、`REPORT_OUTPUT_SCHEMA`、按 document_type 给中文章节结构 prompt、`min_output_tokens=8192`）——succeeded 则 AI 渲染中文 Markdown 追加溯源块落新版本；任何失败（not_configured/failed/截断/预算拒绝）回退完整中文模板。`DocumentVersion.ai_status/ai_error_code`（迁移 0010）记录产出来源：NULL=旧数据、succeeded=AI、fallback=模板——交付页按错误码显示中文提示条，**模板回退绝不静默**。`generate_document` 按 (project_id, document_type) find-or-create（第八批）：重生成复用同一文档追加版本、更新标题，不再堆积同名文档。job input 含 `title`/`project_id`。
 - **max_tokens 机制**：`_run_ai_stage` 的可选 `min_output_tokens` 抬高首次输出上限——首次 = max(max_output, min_output_tokens)，重试翻倍，**均受 `HARD_OUTPUT_CAP=16384` 硬顶**（第八批起不再受 per_request 约束）。
 - **实测成本**（deepseek-v4-flash，2026-09-02）：PRD 成功样本 prompt 1869 / completion 7087；周报成功样本 prompt 3746 / completion 7152——单次文档生成约 9-11k tokens；一次 LLM_PROVIDER_ERROR 降级为模板（前端如实提示）。
-- 前端 stage11 为极简交付页（第八批）：文档类型选择 + 标题 + 生成（job 轮询，旧内容在生成期间保持可见）+ 可编辑正文 + 导出 Markdown；`ai_status !== "succeeded"` 的版本在正文上方显示按错误码分类的中文提示条（预算阀门/provider 错误/未配置），**模板回退绝不静默**。保存新版本按钮与文档/版本列表已按第八批极简化移除（端点保留）；AI 助手抽屉已从前端移除（AppShell），AI 横幅仅保留 WorkflowFrame 页面级一条；后端 copilot 端点与测试保留。
+- 前端 stage11 为极简交付页（第八批；第九批补状态水合）：文档类型选择 + 标题 + 生成（job 轮询，旧内容在生成期间保持可见）+ 可编辑正文 + 导出 Markdown；**挂载/切项目/切文档类型时按 (project, document_type) 水合已生成文档（GET /documents?project_id=，同 type 取 created_at 最新），切页不丢失已生成内容**，恢复的内容在编辑框上方标注「内容恢复自最近生成的版本 {时间}」；`ai_status !== "succeeded"` 的版本在正文上方显示按错误码分类的中文提示条（预算阀门/provider 错误/未配置），**模板回退绝不静默**。保存新版本按钮与文档/版本列表已按第八批极简化移除（端点保留）；AI 助手抽屉已从前端移除（AppShell），AI 横幅仅保留 WorkflowFrame 页面级一条；后端 copilot 端点与测试保留。
 
 ---
 
