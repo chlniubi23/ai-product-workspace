@@ -6,22 +6,18 @@ import json
 import time
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..ai_context import (
     AI_OUTPUT_SCHEMA,
     PROBLEM_DRAFT_SCHEMA,
-    REPORT_OUTPUT_SCHEMA,
     SOLUTION_DRAFTS_SCHEMA,
     AIOutputValidationError,
-    assert_safe_ai_context,
-    build_ai_context,
     empty_ai_output,
     validate_ai_output,
     validate_problem_draft,
-    validate_report_output,
     validate_solution_drafts,
 )
 from ..auth import get_current_user
@@ -30,7 +26,6 @@ from ..config import settings
 from ..db import get_db
 from ..infrastructure.llm.deepseek import (
     AiRequestMetadata,
-    AnalysisPlanError,
     ChatMessage,
     DeepSeekAdapter,
     DeepSeekConfigurationError,
@@ -43,6 +38,7 @@ from ..models import (
     AnalysisRun,
     AutoAnalysisReport,
     Insight,
+    Project,
     SolutionOption,
     User,
     Workspace,
@@ -64,9 +60,11 @@ from ..services.auto_report import (
     _compute_report_aggregates_batch,
     _deterministic_report_parts,
     _latest_project_versions,
+    _narrate_report,
     _report_markdown,
 )
 from ..services.evidence import _validate_source_insights
+from ..services.job_handlers import _job, _job_payload, _narration_job_active, job_executor
 from ..services.workspace_settings import (
     _reject_ai_budget,
     _token_count,
@@ -325,21 +323,11 @@ async def report_narration(version_id: str, user: User = Depends(get_current_use
     )
 
 
-@router.post("/api/v1/projects/{project_id}/auto-report")
-async def generate_auto_report(project_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
-    """Generate a project-wide analysis report from deterministic aggregates.
+async def _compute_auto_report(project: Project, user: User, db: Session) -> AutoAnalysisReport:
+    """Deterministic half of the auto report (batch 10): pandas aggregates
+    plus the fallback body, persisted as ``not_configured``.  No AI call
+    happens here -- the numbers are on screen in seconds, zero tokens spent."""
 
-    Numbers first, prose second: pandas computes per-dataset aggregates (EDA,
-    distributions, correlations, trend), the provider call only narrates them,
-    and the deterministic body is persisted alongside the AI sections so the
-    report stays readable when AI is disabled or fails.  The report is stored
-    as a draft -- confirmation is a separate user action.
-    """
-
-    project = project_for(db, user, project_id, "editor")
-    workspace = db.get(Workspace, project.workspace_id)
-    if workspace is None:
-        raise error("NOT_FOUND", "Workspace not found", 404)
     versions = _latest_project_versions(db, project)
     if not versions:
         raise error("VALIDATION_ERROR", "No parsed dataset versions in this project; upload data first", 400)
@@ -378,235 +366,104 @@ async def generate_auto_report(project_id: str, user: User = Depends(get_current
         raise error("VALIDATION_ERROR", "Could not read any dataset file to analyse", 400)
 
     default_title, deterministic_summary, deterministic_sections, deterministic_findings = _deterministic_report_parts(project.name, aggregates)
-
-    budget = _workspace_ai_budget(workspace)
-    workspace_settings = _workspace_settings(workspace)
-    context = assert_safe_ai_context(
-        build_ai_context(
-            goal=project.goal_statement or "",
-            artifacts=[
-                {
-                    "id": item["dataset_version_id"],
-                    "artifact_type": "dataset_summary",
-                    "title": item.get("name"),
-                    "payload_json": item,
-                }
-                for item in aggregates
-            ],
-            question=(
-                "请基于这些聚合统计生成分章节的数据分析报告：先概述数据规模与质量，"
-                "再按维度分布、数值统计、时间趋势等主题分章展开，最后给出关键发现与建议。"
-                "所有数字必须来自给定统计，不得编造。"
-            ),
-        )
-    )
-    ai_run = AIRun(
-        workspace_id=workspace.id,
-        user_id=user.id,
-        feature_name="auto_report",
-        provider="deepseek",
-        model=budget["model"],
-        request_fingerprint=hashlib.sha256(json.dumps({"feature": "auto_report", "context": context}, ensure_ascii=True, sort_keys=True, default=str).encode("utf-8")).hexdigest(),
-        status="running",
-        input_summary_json={"context": context, "dataset_version_ids": [item["dataset_version_id"] for item in aggregates], "draft": True},
-    )
-    db.add(ai_run)
-    db.flush()
-    # Reserve before the report row exists: a budget rejection raises 429 and
-    # commits, so it must not leave a dangling draft report behind.  This
-    # matches the reservation order used by /ai/interpret and Copilot.
-    if bool(workspace_settings.get("feature_flags", {}).get("auto_report_enabled", True)):
-        reserved_daily = _workspace_token_usage(db, workspace, budget["per_request"])
-        if reserved_daily > budget["daily"]:
-            _reject_ai_budget(db, workspace, user, ai_run, budget, daily_used=reserved_daily, reason="Workspace daily AI token budget has been exhausted")
+    deterministic_limitations = ["分析维度由系统按列类型自动选择；相关性不代表因果。"]
     report = AutoAnalysisReport(
-        workspace_id=workspace.id,
+        workspace_id=project.workspace_id,
         project_id=project.id,
         title=default_title,
-        status="draft",
+        status="not_configured",
+        summary=deterministic_summary,
+        sections_json=deterministic_sections,
+        key_findings=deterministic_findings,
+        recommendations=[],
+        limitations=list(deterministic_limitations),
         dataset_version_ids=[item["dataset_version_id"] for item in aggregates],
         deterministic_json={"datasets": aggregates, "read_failures": read_failures},
+        content_markdown=_report_markdown(default_title, deterministic_summary, deterministic_sections, deterministic_findings, [], deterministic_limitations),
         generated_by=user.id,
     )
     db.add(report)
     db.flush()
+    return report
 
-    async def _fail_run(code: str) -> None:
-        ai_run.status = "failed"
-        ai_run.error_code = code
-        ai_run.latency_ms = 0
-        ai_run.output_reference = report.id
 
-    def _use_deterministic(limitation: str, code: str | None, status_value: str) -> dict[str, Any]:
-        output = validate_report_output(
-            {
-                "title": default_title,
-                "summary": deterministic_summary,
-                "sections": deterministic_sections,
-                "key_findings": deterministic_findings,
-                "recommendations": [],
-                "limitations": [limitation, "分析维度由系统按列类型自动选择；相关性不代表因果。"],
-            }
-        )
-        report.status = status_value
-        report.error_code = code
-        return output
+@router.post("/api/v1/projects/{project_id}/auto-report/compute")
+async def compute_auto_report(project_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Instant deterministic half of the auto report (batch 10).
 
-    provider_request_id: str | None = None
-    prompt_tokens = 0
-    completion_tokens = 0
-    output: dict[str, Any]
-    started = time.perf_counter()
+    Aggregates the latest version of every dataset in the project, persists a
+    ``not_configured`` report and returns immediately: zero AI calls, zero
+    tokens.  The AI interpretation is a separate step
+    (``POST /auto-reports/{id}/narrate``) so the browser renders the numbers
+    while narration runs as a background job.
+    """
 
-    if not bool(workspace_settings.get("feature_flags", {}).get("auto_report_enabled", True)):
-        await _fail_run("AI_FEATURE_DISABLED")
-        output = _use_deterministic("AI 功能已在此工作空间关闭，本报告仅包含确定性统计结果。", "AI_FEATURE_DISABLED", "failed")
-        audit(db, workspace.id, user.id, "report.feature_disabled", "ai_run", ai_run.id, {"feature": "auto_report"})
-    else:
-        adapter = DeepSeekAdapter(DeepSeekSettings.from_app_settings(settings))
-        if not adapter.configured:
-            await _fail_run("LLM_NOT_CONFIGURED")
-            output = _use_deterministic("AI 服务未配置，本报告仅包含确定性统计结果，未包含模型解读。", "LLM_NOT_CONFIGURED", "not_configured")
-        else:
-            system_prompt = (
-                "你是资深产品数据分析师，为产品团队撰写数据分析报告。只使用给定的聚合统计，"
-                "禁止编造任何未提供的数字，禁止输出或猜测原始行数据。要求："
-                "1) title 概括数据主题；2) summary 用 3-5 句话概述数据规模、质量与总体结论；"
-                "3) sections 分 3-6 个主题章节（如 数据概况、核心维度分布、数值统计、时间趋势、数据质量），"
-                "每章 content 用 Markdown，包含要点列表与具体数字，每章不超过 400 字；"
-                "4) key_findings 列出最重要的发现（最多 8 条），每条必须包含具体数字；"
-                "5) recommendations 给出可执行的下一步（最多 6 条），与发现一一对应；"
-                "6) limitations 写明分析局限（自动选列、聚合统计、相关性不代表因果）。"
-                "输出必须完整闭合 JSON，全部使用中文。Schema: "
-                + json.dumps(REPORT_OUTPUT_SCHEMA, ensure_ascii=True, separators=(",", ":"))
-            )
-            # A full Chinese report needs far more room than the conversational
-            # default; a truncated JSON body was the main cause of INVALID_AI_OUTPUT.
-            report_max_tokens = min(8192, budget["per_request"])
-            compact_retry = False
-            try:
-                result = await adapter.complete(
-                    messages=[
-                        ChatMessage("system", system_prompt),
-                        ChatMessage("user", json.dumps(context, ensure_ascii=False, separators=(",", ":"), default=str)),
-                    ],
-                    response_schema=REPORT_OUTPUT_SCHEMA,
-                    request_metadata=AiRequestMetadata(
-                        workspace_id=workspace.id,
-                        user_id=user.id,
-                        feature_name="auto_report",
-                        max_tokens=report_max_tokens,
-                    ),
-                )
-                raw = result.structured
-                if raw is None and result.content:
-                    try:
-                        raw = json.loads(result.content)
-                    except (TypeError, json.JSONDecodeError):
-                        raw = None
-                if raw is None and getattr(result, "finish_reason", None) == "length":
-                    # The report hit the token ceiling mid-JSON. One compact retry
-                    # costs a second call but usually salvages a complete answer.
-                    compact_retry = True
-                if raw is None and not compact_retry:
-                    raise AIOutputValidationError("Provider response was not structured JSON.")
-                if compact_retry:
-                    compact_system = (
-                        "你是数据分析师。基于给定聚合统计输出极简版报告 JSON：sections 最多 3 章、每章 content 不超过 200 字；"
-                        "key_findings 最多 4 条；recommendations 最多 3 条；limitations 最多 3 条。"
-                        "输出必须完整闭合 JSON，全部使用中文。Schema: "
-                        + json.dumps(REPORT_OUTPUT_SCHEMA, ensure_ascii=True, separators=(",", ":"))
-                    )
-                    result = await adapter.complete(
-                        messages=[
-                            ChatMessage("system", compact_system),
-                            ChatMessage("user", json.dumps(context, ensure_ascii=False, separators=(",", ":"), default=str)),
-                        ],
-                        response_schema=REPORT_OUTPUT_SCHEMA,
-                        request_metadata=AiRequestMetadata(
-                            workspace_id=workspace.id,
-                            user_id=user.id,
-                            feature_name="auto_report_compact",
-                            max_tokens=report_max_tokens,
-                        ),
-                    )
-                    raw = result.structured
-                    if raw is None and result.content:
-                        try:
-                            raw = json.loads(result.content)
-                        except (TypeError, json.JSONDecodeError):
-                            raw = None
-                    if raw is None:
-                        raise AIOutputValidationError("Provider response was not structured JSON.")
-                    # Both provider calls share the run's token accounting.
-                    prompt_tokens += _token_count(result.prompt_tokens)
-                    completion_tokens += _token_count(result.completion_tokens)
-                output = validate_report_output(raw)
-                report.status = "succeeded"
-                report.error_code = None
-                provider_request_id = result.provider_request_id
-                if not compact_retry:
-                    prompt_tokens = _token_count(result.prompt_tokens)
-                    completion_tokens = _token_count(result.completion_tokens)
-            except DeepSeekConfigurationError:
-                await _fail_run("LLM_NOT_CONFIGURED")
-                output = _use_deterministic("AI 服务未配置，本报告仅包含确定性统计结果。", "LLM_NOT_CONFIGURED", "not_configured")
-            except (AIOutputValidationError, AnalysisPlanError):
-                await _fail_run("INVALID_AI_OUTPUT")
-                output = _use_deterministic("模型返回格式无法验证，本报告仅包含确定性统计结果。", "INVALID_AI_OUTPUT", "failed")
-            except DeepSeekProviderError:
-                await _fail_run("LLM_PROVIDER_ERROR")
-                output = _use_deterministic("模型服务暂时不可用，本报告仅包含确定性统计结果。", "LLM_PROVIDER_ERROR", "failed")
-            except Exception:
-                await _fail_run("LLM_ERROR")
-                output = _use_deterministic("AI 暂时不可用，本报告仅包含确定性统计结果。", "LLM_ERROR", "failed")
-
-            observed_tokens = prompt_tokens + completion_tokens
-            if report.status == "succeeded":
-                prior_daily = _workspace_token_usage(db, workspace, budget["per_request"], exclude_run_id=ai_run.id)
-                if observed_tokens > budget["per_request"] or prior_daily + observed_tokens > budget["daily"]:
-                    _reject_ai_budget(db, workspace, user, ai_run, budget, daily_used=prior_daily + observed_tokens, observed_tokens=observed_tokens, reason="AI token budget exceeded for this workspace")
-
-    ai_run = db.get(AIRun, ai_run.id) or ai_run
-    ai_run.status = "succeeded" if report.status == "succeeded" else ai_run.status
-    ai_run.prompt_tokens = prompt_tokens or None
-    ai_run.completion_tokens = completion_tokens or None
-    ai_run.latency_ms = int((time.perf_counter() - started) * 1000)
-    ai_run.output_reference = report.id
-    ai_run.input_summary_json = {
-        "context": context,
-        "dataset_version_ids": [item["dataset_version_id"] for item in aggregates],
-        "draft": True,
-        "structured_output": output,
-        "provider_request_id": provider_request_id,
-    }
-    report.title = str(output.get("title") or default_title)[:255]
-    report.summary = str(output.get("summary") or "")
-    report.sections_json = list(output.get("sections") or [])
-    report.key_findings = list(output.get("key_findings") or [])
-    report.recommendations = list(output.get("recommendations") or [])
-    report.limitations = list(output.get("limitations") or [])
-    report.content_markdown = _report_markdown(
-        report.title, report.summary, report.sections_json, report.key_findings, report.recommendations, report.limitations
-    )
-    report.ai_run_id = ai_run.id
-    audit(
-        db,
-        workspace.id,
-        user.id,
-        "report.generated",
-        "auto_report",
-        report.id,
-        {"status": report.status, "datasets": len(aggregates), "prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens},
-    )
+    project = project_for(db, user, project_id, "editor")
+    workspace = db.get(Workspace, project.workspace_id)
+    if workspace is None:
+        raise error("NOT_FOUND", "Workspace not found", 404)
+    report = await _compute_auto_report(project, user, db)
+    audit(db, workspace.id, user.id, "report.computed", "auto_report", report.id, {"datasets": len(report.dataset_version_ids)})
     db.commit()
+    return ok({"report": _auto_report_payload(report), "status": report.status, "error_code": report.error_code})
+
+
+@router.post("/api/v1/auto-reports/{report_id}/narrate")
+def narrate_auto_report(report_id: str, background_tasks: BackgroundTasks, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Queue the AI narration for an existing report (batch 10).
+
+    Runs as an ``auto_report_narration`` job, so the browser stays free while
+    the provider call runs; the outcome is visible through the normal report
+    endpoints.  Narration fills the interpretation gap -- a report that
+    already carries AI prose (``succeeded``/``confirmed``) is rejected instead
+    of silently rewritten, and a second narrate while one is in flight is
+    rejected to avoid double spend.
+    """
+
+    report = db.get(AutoAnalysisReport, report_id)
+    if report is None:
+        raise error("NOT_FOUND", "Report not found", 404)
+    project_for(db, user, report.project_id, "editor")
+    if report.status in {"succeeded", "confirmed"}:
+        raise error("REPORT_ALREADY_NARRATED", "该报告已有 AI 解读；如需更新请重新生成报告", 409)
+    if _narration_job_active(db, report.id):
+        raise error("NARRATION_IN_PROGRESS", "AI 解读正在生成中，请稍候", 409)
+    job = _job(db, report.workspace_id, "auto_report_narration", {"report_id": report.id, "_actor_id": user.id}, result_type="auto_report", result_id=report.id)
+    audit(db, report.workspace_id, user.id, "report.narration_queued", "auto_report", report.id)
+    db.commit()
+    job_executor.schedule(background_tasks, job.id)
+    return ok({"report": _auto_report_payload(report), "job": _job_payload(job)})
+
+
+@router.post("/api/v1/projects/{project_id}/auto-report")
+async def generate_auto_report(project_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Backward-compatible combined flow: compute, then narrate in one request.
+
+    Batch 10 split this endpoint into ``/compute`` (instant, deterministic)
+    and ``/auto-reports/{id}/narrate`` (job-based AI); this path keeps both
+    steps serialised for existing clients.  Status semantics are unchanged --
+    ``succeeded`` means validated AI prose, ``not_configured`` means the
+    deterministic report only.  One deliberate shift: a budget-valve rejection
+    (429) now leaves the compute-only report behind instead of nothing, since
+    the aggregates cost nothing and stay usable.
+    """
+
+    project = project_for(db, user, project_id, "editor")
+    workspace = db.get(Workspace, project.workspace_id)
+    if workspace is None:
+        raise error("NOT_FOUND", "Workspace not found", 404)
+    report = await _compute_auto_report(project, user, db)
+    audit(db, workspace.id, user.id, "report.computed", "auto_report", report.id, {"datasets": len(report.dataset_version_ids)})
+    db.commit()
+    result = await _narrate_report(db, user, workspace, project, report)
+    usage = result.get("usage") or {}
     return ok(
         {
             "report": _auto_report_payload(report),
-            "run_id": ai_run.id,
+            "run_id": report.ai_run_id,
             "status": report.status,
             "error_code": report.error_code,
-            "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens},
+            "usage": {"prompt_tokens": usage.get("prompt_tokens") or 0, "completion_tokens": usage.get("completion_tokens") or 0},
         }
     )
 

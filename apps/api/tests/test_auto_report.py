@@ -135,7 +135,9 @@ def test_auto_report_provider_context_stays_aggregate_only(client, owner, projec
     data_of(_generate_report(client, owner, project["id"]))
 
     with database.SessionLocal() as db:
-        run = db.scalar(select(AIRun).where(AIRun.feature_name == "auto_report"))
+        # Batch 10 moved the provider call into the auto_report_narration
+        # stage; the combined endpoint still produces exactly one such run.
+        run = db.scalar(select(AIRun).where(AIRun.feature_name == "auto_report_narration"))
         assert run is not None
         context = run.input_summary_json["context"]
     # The exact payload a live provider would receive must satisfy the

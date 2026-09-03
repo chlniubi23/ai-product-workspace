@@ -18,6 +18,7 @@ from ..infrastructure.jobs import JobContext, JobExecutionError, JobExecutor, Jo
 from ..models import (
     AnalysisArtifact,
     AnalysisRun,
+    AutoAnalysisReport,
     DatasetVersion,
     Document,
     DocumentVersion,
@@ -41,6 +42,7 @@ from .analysis_pipeline import (
     _replace_version_columns,
     _run_auto_analyses,
 )
+from .auto_report import _narrate_report
 from .datasets import (
     _apply_cleaning,
     _column_schema,
@@ -442,6 +444,69 @@ def _mark_document_failed(db: Session, job: Job, code: str, message: str) -> Non
         document.status = "generation_failed"
 
 
+def _narration_job_active(db: Session, report_id: str) -> bool:
+    """True while a narration job for this report is queued or running.
+
+    Guards against double-spend: a second narrate call while one is in flight
+    would queue a duplicate provider call over the same aggregates.
+    """
+
+    rows = db.scalars(
+        select(Job).where(Job.job_type == "auto_report_narration", Job.status.in_(("queued", "running")))
+    ).all()
+    for job in rows:
+        source = job.input_json if isinstance(job.input_json, dict) else {}
+        if str(source.get("report_id") or "") == report_id:
+            return True
+    return False
+
+
+def _handle_auto_report_narration(context: JobContext) -> JobResult:
+    """AI narration of a computed auto report (batch 10).
+
+    Mirrors ``_handle_document_generation``: the deterministic report already
+    exists, the job only adds the AI interpretation.  The job succeeds even
+    when the AI stage degrades -- the report's own ``status``/``error_code``
+    carries the outcome, exactly like a document falling back to its template.
+    """
+
+    report = context.db.get(AutoAnalysisReport, context.input.get("report_id"))
+    if report is None:
+        raise JobExecutionError("NOT_FOUND", "Report not found", retryable=False)
+    user = context.db.get(User, context.input.get("_actor_id"))
+    if user is None:
+        raise JobExecutionError("NOT_FOUND", "Narrating user no longer exists", retryable=False)
+    project = context.db.get(Project, report.project_id)
+    workspace = context.db.get(Workspace, report.workspace_id)
+    if project is None or workspace is None:
+        raise JobExecutionError("NOT_FOUND", "Report project or workspace not found", retryable=False)
+
+    context.progress(25, "AI 解读报告")
+    try:
+        # Sync handler on a worker thread: no ambient event loop exists here,
+        # so asyncio.run() is safe (same pattern as document generation).
+        asyncio.run(_narrate_report(context.db, user, workspace, project, report))
+    except HTTPException as exc:
+        # Budget-valve rejection (429, pre-call, zero spend) or a feature flag
+        # flip mid-flight: the AIRun bookkeeping happened inside; keep the
+        # deterministic report and surface the reason on it.
+        code = str(exc.detail.get("code") or "AI_BUDGET_EXCEEDED") if isinstance(exc.detail, dict) else "AI_BUDGET_EXCEEDED"
+        report.error_code = code[:80]
+        context.db.commit()
+    context.progress(90, "写入报告")
+    return JobResult(result_type="auto_report", result_id=report.id)
+
+
+def _mark_auto_report_narration_failed(db: Session, job: Job, code: str, message: str) -> None:
+    report_id = (job.input_json or {}).get("report_id")
+    report = db.get(AutoAnalysisReport, report_id) if report_id else None
+    if report is not None and report.status not in {"succeeded", "confirmed"}:
+        # Unexpected handler failure: the deterministic body is untouched and
+        # the status simply stays "no AI prose", with the job's failure code.
+        report.status = "not_configured"
+        report.error_code = str(code)[:80]
+
+
 def _register_job_handlers() -> None:
     registrations = {
         "dataset_parse": (_handle_dataset_parse, _mark_dataset_parse_failed, None),
@@ -450,6 +515,7 @@ def _register_job_handlers() -> None:
         "feedback_import": (_handle_feedback_import, None, None),
         "feedback_cluster_generation": (_handle_feedback_clusters, _mark_feedback_clusters_failed, _mark_feedback_clusters_cancelled),
         "document_generation": (_handle_document_generation, _mark_document_failed, None),
+        "auto_report_narration": (_handle_auto_report_narration, _mark_auto_report_narration_failed, None),
     }
     for job_type, (handler, on_failure, on_cancel) in registrations.items():
         if not job_executor.has_handler(job_type):

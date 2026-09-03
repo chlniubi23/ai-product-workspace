@@ -6,10 +6,19 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..ai_context import (
+    REPORT_OUTPUT_SCHEMA,
+    assert_safe_ai_context,
+    build_ai_context,
+    empty_report_output,
+    validate_report_output,
+)
 from ..analytics.engine import AnalysisEngine
 from ..common import _require_pandas, model_dict
 from ..config import settings
-from ..models import AutoAnalysisReport, Dataset, DatasetVersion, Project
+from ..models import AutoAnalysisReport, Dataset, DatasetVersion, Project, User, Workspace
+from .ai_stages import _run_ai_stage
+from .audit import audit
 from .datasets import _read_dataframe
 
 # ---------------------------------------------------------------------------
@@ -241,3 +250,132 @@ def _auto_report_payload(report: AutoAnalysisReport) -> dict[str, Any]:
     # Convenience alias: the web client renders the markdown directly.
     payload["markdown"] = report.content_markdown
     return payload
+
+
+# ---------------------------------------------------------------------------
+# AI narration (batch 10): the async half of "compute first, narrate later"
+# ---------------------------------------------------------------------------
+
+_NARRATION_FEATURE = "auto_report_narration"
+
+
+def _auto_report_system_prompt() -> str:
+    """Narration prompt, shared verbatim by the legacy combined endpoint and
+    the ``auto_report_narration`` job handler.  The response schema itself is
+    appended by ``_run_ai_stage``."""
+
+    return (
+        "你是资深产品数据分析师，为产品团队撰写数据分析报告。只使用给定的聚合统计，"
+        "禁止编造任何未提供的数字，禁止输出或猜测原始行数据。要求："
+        "1) title 概括数据主题；2) summary 用 3-5 句话概述数据规模、质量与总体结论；"
+        "3) sections 分 3-6 个主题章节（如 数据概况、核心维度分布、数值统计、时间趋势、数据质量），"
+        "每章 content 用 Markdown，包含要点列表与具体数字，每章不超过 400 字；"
+        "4) key_findings 列出最重要的发现（最多 8 条），每条必须包含具体数字；"
+        "5) recommendations 给出可执行的下一步（最多 6 条），与发现一一对应；"
+        "6) limitations 写明分析局限（自动选列、聚合统计、相关性不代表因果）。"
+        "输出必须完整闭合 JSON，全部使用中文。"
+    )
+
+
+def _report_ai_context(goal: str, aggregates: list[dict[str, Any]]) -> dict[str, Any]:
+    """Allow-listed provider context, rebuilt from persisted aggregates.
+
+    The aggregates are the exact payloads stored in
+    ``deterministic_json.datasets``, so narration after the fact sees the same
+    numbers the compute step grounded the report on.
+    """
+
+    return assert_safe_ai_context(
+        build_ai_context(
+            goal=goal or "",
+            artifacts=[
+                {
+                    "id": item["dataset_version_id"],
+                    "artifact_type": "dataset_summary",
+                    "title": item.get("name"),
+                    "payload_json": item,
+                }
+                for item in aggregates
+            ],
+            question=(
+                "请基于这些聚合统计生成分章节的数据分析报告：先概述数据规模与质量，"
+                "再按维度分布、数值统计、时间趋势等主题分章展开，最后给出关键发现与建议。"
+                "所有数字必须来自给定统计，不得编造。"
+            ),
+        )
+    )
+
+
+async def _narrate_report(
+    db: Session,
+    user: User,
+    workspace: Workspace,
+    project: Project,
+    report: AutoAnalysisReport,
+) -> dict[str, Any]:
+    """Run the AI narration for a computed report and persist the outcome.
+
+    Success re-renders ``content_markdown`` with the deterministic sections
+    kept in front and the AI interpretation appended, upgrades the status to
+    ``succeeded`` and records ``ai_run_id``.  Any degraded outcome (not
+    configured, provider failure, invalid output) leaves the deterministic
+    body untouched: the status stays ``not_configured`` and only ``error_code``
+    records the reason.  A budget-valve rejection raises HTTPException(429)
+    from ``_run_ai_stage``'s pre-call check (batch 8 semantics) before any
+    provider spend -- callers keep the compute-only report in that case.
+    """
+
+    deterministic_json = report.deterministic_json if isinstance(report.deterministic_json, dict) else {}
+    aggregates = [item for item in deterministic_json.get("datasets") or [] if isinstance(item, dict)]
+    if not aggregates:
+        raise ValueError("report has no deterministic aggregates to narrate")
+
+    result = await _run_ai_stage(
+        db=db,
+        user=user,
+        workspace=workspace,
+        feature_name=_NARRATION_FEATURE,
+        system_prompt=_auto_report_system_prompt(),
+        context=_report_ai_context(project.goal_statement or "", aggregates),
+        flag_name="auto_report_enabled",
+        response_schema=REPORT_OUTPUT_SCHEMA,
+        output_validator=validate_report_output,
+        empty_output=dict(empty_report_output(limitation="AI provider is not configured.")),
+        min_output_tokens=8192,
+    )
+    if result.get("status") == "succeeded":
+        output = result["output"]
+        deterministic_sections = [section for section in (report.sections_json or []) if isinstance(section, dict)]
+        report.title = str(output.get("title") or report.title)[:255]
+        report.summary = str(output.get("summary") or "")
+        report.sections_json = deterministic_sections + list(output.get("sections") or [])
+        report.key_findings = list(output.get("key_findings") or [])
+        report.recommendations = list(output.get("recommendations") or [])
+        report.limitations = list(output.get("limitations") or [])
+        report.content_markdown = _report_markdown(
+            report.title, report.summary, report.sections_json, report.key_findings, report.recommendations, report.limitations
+        )
+        report.status = "succeeded"
+        report.error_code = None
+        report.ai_run_id = result.get("run_id")
+        audit(
+            db,
+            report.workspace_id,
+            user.id,
+            "report.narrated",
+            "auto_report",
+            report.id,
+            {
+                "feature": _NARRATION_FEATURE,
+                "prompt_tokens": (result.get("usage") or {}).get("prompt_tokens"),
+                "completion_tokens": (result.get("usage") or {}).get("completion_tokens"),
+            },
+        )
+    else:
+        # Numbers-first by construction: the deterministic body stays the
+        # report of record and only the failure reason is recorded.
+        report.status = "not_configured"
+        report.error_code = str(result.get("error_code") or "AI_UNAVAILABLE")[:80]
+        audit(db, report.workspace_id, user.id, "report.narration_degraded", "auto_report", report.id, {"error_code": report.error_code})
+    db.commit()
+    return result
