@@ -3,9 +3,9 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Archive, ChevronRight, Download, FileText, Sparkles } from "lucide-react";
-import { useState } from "react";
-import { apiRequest, accessToken } from "@/lib/api";
-import { setActiveProjectId } from "@/lib/workflow";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { apiRequest, accessToken, pagedItems } from "@/lib/api";
+import { formatWorkflowDate, setActiveProjectId } from "@/lib/workflow";
 import {
   SnapshotMeta,
   WorkflowGate,
@@ -16,6 +16,7 @@ import {
 type DocumentVersionRow = {
   id?: string;
   version_number?: number;
+  created_at?: string;
   content_markdown?: string;
   ai_status?: string | null;
   ai_error_code?: string | null;
@@ -25,6 +26,8 @@ type DocumentRow = {
   id: string;
   title?: string;
   status?: string;
+  document_type?: string;
+  created_at?: string;
   current_version?: DocumentVersionRow | null;
 };
 
@@ -65,6 +68,10 @@ export default function Stage11PrdPage() {
   const [document, setDocument] = useState<DocumentRow | null>(null);
   const [archiving, setArchiving] = useState(false);
   const [editorText, setEditorText] = useState("");
+  // Non-null when the editor content was restored from the persisted version
+  // (mount/type switch) rather than freshly generated in this mount.
+  const [hydratedAt, setHydratedAt] = useState<string | null>(null);
+  const hydrateSeq = useRef(0);
   const projectId = snapshot?.activeDataset?.project_id;
   const confirmed = snapshot?.insights.filter((insight) => insight.status === "confirmed") || [];
   const hasApprovedDecision =
@@ -92,20 +99,54 @@ export default function Stage11PrdPage() {
     return "timeout";
   }
 
-  async function loadDocument(docId: string): Promise<DocumentRow> {
-    const doc = await apiRequest<DocumentRow>(`/documents/${docId}`);
-    setDocument(doc);
-    const content = doc.current_version?.content_markdown || "";
-    setEditorText(content);
-    // Degradation is visible, never silent: a non-succeeded version shows why.
-    const aiStatus = doc.current_version?.ai_status;
-    if (aiStatus && aiStatus !== "succeeded") {
-      setFallbackBanner(fallbackNotice(doc.current_version?.ai_error_code));
-    } else {
-      setFallbackBanner("");
-    }
-    return doc;
-  }
+  /** Hydrate the page from the persisted (project, document_type) document.
+   * generate_document is find-or-create, so at most one document exists per
+   * type; the latest created_at wins if legacy data ever doubled up.  The
+   * not-found branch resets to the "未生成" state with generation available. */
+  const hydrateDocument = useCallback(
+    async (fromGeneration = false) => {
+      if (!projectId || !accessToken()) return;
+      const seq = ++hydrateSeq.current;
+      try {
+        const docs = pagedItems<DocumentRow>(
+          await apiRequest<unknown>(`/documents?project_id=${projectId}&page_size=100`),
+        );
+        if (seq !== hydrateSeq.current) return; // a newer hydration superseded us
+        const matching = docs
+          .filter((doc) => doc.document_type === docType)
+          .sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
+        const doc = matching[0];
+        if (doc) {
+          setDocument(doc);
+          setEditorText(doc.current_version?.content_markdown || "");
+          setTitle((current) => doc.title || current);
+          // Degradation stays visible across remounts.
+          const aiStatus = doc.current_version?.ai_status;
+          setFallbackBanner(
+            aiStatus && aiStatus !== "succeeded"
+              ? fallbackNotice(doc.current_version?.ai_error_code)
+              : "",
+          );
+          setHydratedAt(fromGeneration ? null : doc.current_version?.created_at || doc.created_at || null);
+        } else {
+          setDocument(null);
+          setEditorText("");
+          setFallbackBanner("");
+          setHydratedAt(null);
+        }
+      } catch {
+        /* 列表读取失败时保留现状：生成按钮仍可用 */
+      }
+    },
+    [projectId, docType],
+  );
+
+  // Re-hydrate whenever the page mounts onto a (project, document_type) pair:
+  // client-side navigation unmounts this component and loses local state, but
+  // the document is persisted server-side.
+  useEffect(() => {
+    void hydrateDocument();
+  }, [projectId, docType, hydrateDocument]);
 
   async function generate() {
     if (!projectId || !confirmed.length || !accessToken()) return;
@@ -133,7 +174,9 @@ export default function Stage11PrdPage() {
       if (jobId) {
         await waitForJob(jobId);
       }
-      await loadDocument(docId);
+      // Same fill path as hydration: after the inline job the persisted
+      // latest version is authoritative.
+      await hydrateDocument(true);
       setNotice("文档已就绪，可编辑后导出。");
       await refresh();
     } catch (cause) {
@@ -268,24 +311,31 @@ export default function Stage11PrdPage() {
             )}
 
             {document && (
-              <textarea
-                value={editorText}
-                onChange={(event) => setEditorText(event.target.value)}
-                style={{
-                  width: "100%",
-                  minHeight: 400,
-                  marginTop: 14,
-                  padding: 14,
-                  border: "1px solid var(--line)",
-                  borderRadius: 8,
-                  fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
-                  fontSize: 12.5,
-                  lineHeight: 1.7,
-                  resize: "vertical",
-                  background: "#fbfcfe",
-                }}
-                placeholder="文档内容"
-              />
+              <>
+                {hydratedAt && (
+                  <p style={{ color: "var(--muted)", fontSize: 12, margin: "10px 0 0" }}>
+                    内容恢复自最近生成的版本 {formatWorkflowDate(hydratedAt)}；编辑后请导出保存。
+                  </p>
+                )}
+                <textarea
+                  value={editorText}
+                  onChange={(event) => setEditorText(event.target.value)}
+                  style={{
+                    width: "100%",
+                    minHeight: 400,
+                    marginTop: 8,
+                    padding: 14,
+                    border: "1px solid var(--line)",
+                    borderRadius: 8,
+                    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+                    fontSize: 12.5,
+                    lineHeight: 1.7,
+                    resize: "vertical",
+                    background: "#fbfcfe",
+                  }}
+                  placeholder="文档内容"
+                />
+              </>
             )}
           </section>
         )}
