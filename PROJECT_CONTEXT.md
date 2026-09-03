@@ -1,6 +1,6 @@
 # PROJECT_CONTEXT — AI Product Workspace 项目事实基准
 
-> 本文档记录截至 2026-08-30 对本项目的实际代码阅读结论，作为后续规划与开发对话的事实基准。
+> 本文档记录截至 2026-09-03 对本项目的实际代码阅读结论，作为后续规划与开发对话的事实基准（批 1–8 的演进以各节内标注的批次说明为准）。
 > 所有结论均来自实际代码阅读与测试运行，不是推测。行号引用为写作时快照，代码变动后以函数/类名为准。
 
 ---
@@ -40,7 +40,7 @@
 - **鉴权**：HS256 JWT（`app/auth.py`），bcrypt 密码（>72 字节自动 pre-hash 标记 `bcrypt_sha256$`，兼容旧 pbkdf2 哈希并登录时升级）。JWT 存前端 localStorage；登录时镜像一个 `apw_session=1` cookie（max-age 对齐 JWT exp），Next.js middleware 只检查 cookie 存在性做**页面级软门禁**，真实鉴权在 API 层。
 - **异步任务**：无外部队列。`app/infrastructure/jobs.py` 的 `JobExecutor` 通过 FastAPI BackgroundTasks 在进程内执行 DB 持久化的 Job（状态机 queued→running→succeeded/failed/cancelled），启动时 `recover_pending()` 重放未完成 job。handler 通过 `_register_job_handlers()`（main.py 末尾）注册：`dataset_parse`、`dataset_cleaning`、`analysis_run`、`feedback_import`、`feedback_clusters`、`document_generation`。
 - **数据库**：生产 MySQL 8（docker-compose 只含 mysql 一个服务）；`DATABASE_URL` 未配置或 `ALLOW_SQLITE_FALLBACK=true` 时可回退 SQLite（`app/db.py`，fallback 状态通过 `/health/ready` 暴露）。`db.py` 还含 `_repair_missing_columns()` 运行时补列安全网（dev 便利，与 Alembic 并行的第二套 schema 机制）。
-- **迁移**：`apps/api/alembic/versions/0001..0008`，其中 `0005_v11_slim_schema` 在 `V11_DROP_LEGACY_TABLES=true` 时删除 legacy 表（默认只加不减）。
+- **迁移**：`apps/api/alembic/versions/0001..0010`（0010 = document_versions 的 ai_status/ai_error_code），其中 `0005_v11_slim_schema` 在 `V11_DROP_LEGACY_TABLES=true` 时删除 legacy 表（默认只加不减）。
 
 ---
 
@@ -117,7 +117,7 @@ AI_Product_Workspace/
 | LLM | DeepSeek `chat/completions`（OpenAI 兼容），`deepseek-chat` 默认模型 |
 | 前端 | Next.js 14.2 (App Router), React 18, TailwindCSS 3.4, ECharts 5.6, lucide-react |
 | 存储 | MySQL 8（生产）/ SQLite（dev+test） |
-| 测试 | pytest（后端 149 用例）；前端无测试框架 |
+| 测试 | pytest（后端 201 用例，2026-09-03）；前端无测试框架 |
 | Lint | ruff（line-length 120）、eslint + prettier（前端） |
 
 ---
@@ -147,7 +147,7 @@ AI_Product_Workspace/
 
 ## 6. 核心业务流程：11 阶段流水线（第四批起；原 12 阶段，讨论并入采访）
 
-前端 `lib/workflow.ts` 的 `stepCompletion()`（约 217 行）是 12 个门控的**事实定义**：
+前端 `lib/workflow.ts` 的 `stepCompletion()` 是 11 个门控的**事实定义**：
 
 | 阶段 | 页面 | 完成条件（门控） | 后端关键端点 |
 |---|---|---|---|
@@ -157,7 +157,7 @@ AI_Product_Workspace/
 | 4 分析运行 | 工作台 | 存在 succeeded 的 AnalysisRun | `POST /analysis-runs`、`POST /analysis-runs/validate-config` |
 | 5 分析产物 | 工作台 | run 有 artifacts/result_summary | `GET /analysis-runs/{id}/artifacts` |
 | 5.5 AI 报告 | 工作台 | （非门控，独立 confirm） | `POST /projects/{id}/auto-report`、`POST /auto-reports/{id}/confirm` |
-| 6 AI 采访 | stage6-interview | 存在 ≥1 条 answered 采访问题或手动补充 | `POST /projects/{id}/interview/rounds`（AI 每轮 3-5 问，服务端强制去重）、`GET/POST/PATCH /interview-questions`（回答/跳过/手动补充）；下半区保留自由追问（Copilot chat，`POST /copilot/sessions/{id}/messages`）。**第四批起原"洞察引擎"+"人机讨论"合并为本步** |
+| 6 AI 采访 | stage6-interview | 存在 ≥1 条 answered 采访问题或手动补充 | `POST /projects/{id}/interview/rounds`（AI 每轮 3-5 问，服务端强制去重）、`GET/POST/PATCH /interview-questions`（回答/跳过/手动补充）。**第四批起原"洞察引擎"+"人机讨论"合并为本步；第七批移除下半区自由追问** |
 | 7 决策副驾 | stage7-copilot | 存在 status=confirmed 的洞察 | `POST /ai/distill-interview`（采访问答+分析产物 → 四段洞察**草稿**，证据引用 interview_question 或 analysis_artifact）→ 保存为草稿（不传 status）→ `PATCH /insights/{id}`（裁决采纳/否决；采纳**强制 evidence 非空**）。`/ai/interpret` 端点保留但 UI 不再使用 |
 | 8 产品问题 | stage8-problem | problem.status=confirmed | `POST /ai/frame-problem`（草稿）→ `POST /problems`（落库，confirm 需 source_insight_ids） |
 | 9 方案讨论 | stage9-solution | solution.status=selected | `POST /ai/propose-solutions` → `POST /solutions/{id}/select`（**落选方案必须写 reject_reason**） |
@@ -168,12 +168,12 @@ AI_Product_Workspace/
 >
 > **第二批流程收敛（2026-08-30 完成，纯前端）**：第 6 步只产草稿、第 7 步统一裁决；第 11 步提交与审批分离（`submit()` 不再自动 approve，页面新增待审批区块，数据来自 `GET /approval-requests`）；第 12 步渲染门控从"有已确认洞察"改为"存在 approved 决策"。后端零改动。
 
-**上传后的自动管线**（`_handle_dataset_parse`，main.py 约 2413 行）：
+**上传后的自动管线**（`services/job_handlers.py:_handle_dataset_parse`）：
 解析 → 行列数/空表校验 → 质量评估 → 写字段字典 → **`schema_auto_accepted_at` 打点 + 内联跑 `_auto_analysis_plan`**（≤3 个：事件表选留存、指标表选趋势+异常，漏斗永不自动选；幂等，失败不拖垮解析）。
 
 **数据集版本链**：重名重传追加不可变新版本（BUG-015 修复语义）；清洗（`POST /dataset-versions/{id}/cleaning-operations`）经 `cleaning_preview` 预演后由 `dataset_cleaning` job 产出新版本，每个操作单独落 `cleaning_operations` 行（可追溯/可重放）。
 
-**删除语义**：数据集与项目删除均要求显式确认（`?confirm={id}` 或 body）；项目删除 `_purge_project`（main.py 约 1497 行）级联清理各资源并物理删除文件，全程审计。
+**删除语义**：数据集与项目删除均要求显式确认（`?confirm={id}` 或 body）；项目删除 `_purge_project`（`routers/projects.py`）级联清理各资源并经 `_safe_data_file` 越界防护后物理删除文件，全程审计。
 
 ---
 
@@ -190,24 +190,24 @@ AI_Product_Workspace/
 - `AnalysisPlan` pydantic 校验：steps ≤8、tool 必须在白名单、plan.project_id/dataset_id 不得越出请求范围、clarifying_question 与 steps 互斥。
 - `CopilotOrchestrator`：两段 provider 调用（plan → execute(只读工具) → answer），返回 `AskClarification` 或 `Completed` 状态。
 
-### 7.3 请求级编排（main.py）
-- `_copilot_orchestrator()`（约 4165 行）：构造 workspace 绑定的工具注册表，`resolve_version` 校验数据版本归属。
-- `_run_ai_stage()`（约 4763 行）：阶段 9/10 AI 起草的共享模板——feature flag 检查 → 预算预留 → provider 调用 → 结构化校验 → 事后预算复核 → AIRun 落账 → 审计。**未配 key 或 provider 故障一律降级为空草稿（`empty_ai_output`），绝不 500。** 支持三个可选参数自定义阶段契约：`response_schema`（替换提示词/解析用的 JSON schema）、`output_validator`（替换 `validate_ai_output`）、`empty_output`（降级时的空草稿形状）；缺省时行为与四段式契约完全一致。`/ai/frame-problem` 用它返回问题草稿对象、`/ai/propose-solutions` 返回 `{options: [...], limitations}`（均不再是四段式，前端 stage9/stage10 按此渲染）。
+### 7.3 请求级编排（services/ai_stages.py + routers/ai.py）
+- `_copilot_orchestrator()`（services/ai_stages.py）：构造 workspace 绑定的工具注册表，`resolve_version` 校验数据版本归属。
+- `_run_ai_stage()`（services/ai_stages.py）：interpret/蒸馏/采访/问题/方案/文档等 AI 起草端点的共享模板——feature flag 检查 → 总阀门 → provider 调用（含截断重试）→ 结构化校验 → AIRun 落账 → 审计。**未配 key 或 provider 故障一律降级为空草稿（`empty_ai_output`），绝不 500。** 支持可选参数自定义阶段契约：`response_schema`（替换提示词/解析用的 JSON schema）、`output_validator`（替换 `validate_ai_output`）、`empty_output`（降级时的空草稿形状）、`min_output_tokens`（抬高首次输出上限，文档生成用）。`/ai/frame-problem` 用它返回问题草稿对象、`/ai/propose-solutions` 返回 `{options: [...], limitations}`（均不再是四段式，前端 stage8/stage9 按此渲染）。
 - **预算体系（第八批重构：直花 + 硬顶 + 总阀门）**：`_run_ai_stage` 调用前只查日阀门（`_workspace_token_usage` 累计当日 running/succeeded 行 + 本调用 worst_case = est_prompt(≤12000) + max_tokens，超过 `ai_daily_token_budget` → 调用前拒绝、零消耗、details 含 daily_remaining/needed_tokens/中文 hint）；**调用后只记账、结果绝不因预算丢弃**（旧"调用后复核拒绝"已删除）。输出上限由模块常量 `HARD_OUTPUT_CAP=16384` 硬顶（普通调用=设置派生 max_output 默认 4096，文档 8192，重试翻倍至多 16384，不可配置）；`ai_per_request_token_budget` 不再拦截任何调用（设置与校验保留，仅退役拦截职责）。`_workspace_token_usage` 的 running 行按其记录的 worst_case 预留（旧行退回 per_request）。copilot 消息路径的独立预检与行锁保留。
-- **截断感知与单次重试（第五批）**：`_run_ai_stage` 检查 `LlmResult.finish_reason`；`finish_reason == "length"` 或 JSON 解析失败时自动重试一次（max_tokens 提为 min(max_output×2, per_request)，system 追加"禁止截断"指令），两次 tokens 累计入预算复核；仍失败则 `failed` + `LLM_TRUNCATED` / `INVALID_AI_OUTPUT`（语义变更：`raw is None` 不再标 succeeded，前端 stage7 按 error_code 显示中文文案、不再渲染空卡片）。AIRun `input_summary_json.provider_meta` 记 `{finish_reason, retried}` 元数据（不存原始响应内容）。`interview_distill` 的 prompt 带硬性规模约束（每节 ≤4 条、每条 ≤80 字、evidence 只引 1 个 id、limitations ≤3 条），正常输出 completion 约 2400 tokens，远低于 4096 上限。
+- **截断感知与单次重试（第五批，第八批并入硬顶/阀门语义）**：`_run_ai_stage` 检查 `LlmResult.finish_reason`；`finish_reason == "length"` 或 JSON 解析失败时自动重试一次（max_tokens = min(desired×2, `HARD_OUTPUT_CAP`)，system 追加"禁止截断"指令；重试前只过日阀门，放不下则保留已付费的首试、诚实失败），两次 tokens 累计记账；仍失败则 `failed` + `LLM_TRUNCATED` / `INVALID_AI_OUTPUT`（`raw is None` 不再标 succeeded，前端 stage7 按 error_code 显示中文文案、不再渲染空卡片）。AIRun `input_summary_json.provider_meta` 记 `{finish_reason, retried}` 元数据（不存原始响应内容）。`interview_distill` 的 prompt 带硬性规模约束（每节 ≤4 条、每条 ≤80 字、evidence 只引 1 个 id、limitations ≤3 条），正常输出 completion 约 2400 tokens。
 - AI 端点清单：`/ai/interpret`、`/ai/frame-problem`、`/ai/propose-solutions`、`/ai/distill-interview`（第四批：采访蒸馏，UI 在 stage7 使用；`/ai/interpret` 端点保留但 UI 不再用）、`/ai/draft-document`、`/ai/cluster-feedback`、`/ai/usage`、`/dataset-versions/{id}/report-narration`、`/projects/{id}/auto-report`。采访轮次走 `POST /projects/{id}/interview/rounds`（services/interview.py，复用 `_run_ai_stage` + `INTERVIEW_QUESTIONS_SCHEMA`，服务端按规范化文本强制去重）。
 - Copilot SSE 是**回放**而非实时流：事件先存 `AIRun.input_summary_json.events`，`GET /copilot/runs/{id}/events` 逐条吐出（`_sse`）。
 - Copilot 上下文中的洞察由**服务端**注入：`copilot_message` 按 `session.project_id` 查询 confirmed 洞察（created_at 倒序 ≤20 条），经 `extract_ai_insights` 消毒后并入 `copilot_context`；不信任前端传的 insight_ids。
 
-### 7.4 自动报告（`generate_auto_report`，约 5355 行）
+### 7.4 自动报告（`generate_auto_report`，routers/ai.py；聚合计算在 services/auto_report.py）
 「数字先行，叙述在后」：pandas 算每数据集聚合（EDA/分布/相关性/趋势，`asyncio.to_thread` 中执行，单文件失败隔离为 read_failure）→ 聚合经 `build_ai_context` 消毒后作为唯一 AI 输入 → AI 只写叙述 → 确定性报告体与 AI 章节一并入库（`deterministic_json` + `sections_json`）→ 人工 confirm 独立动作。
 
 ### 7.5 交付文档生成（第七批重做，AI 驱动）
 - **上下文装配**（`services/documents.py:_build_document_context`）：四类证据全部走 artifacts 通道——项目内 confirmed 洞察（≤20）、已回答采访问题（≤30）、approved 决策（≤10）、最新 auto-report 的每数据集聚合（≤5，deterministic_json.datasets 逐个展开）；经 `build_ai_context` 消毒（防火墙零改动）。`_collect_source_refs` 保留原 source_refs 校验并产出 manifest 所需的上游 id 集合；`_evidence_manifest` 是两条渲染路径共用的不可变溯源块（**AI 输出永不覆盖 manifest**）。
 - **job 链路**（`job_handlers._handle_document_generation`）：路由先落确定性模板（中文）并排队 job；handler 在 worker 线程 `asyncio.run(_run_ai_stage(...))`（feature=document_generation、`REPORT_OUTPUT_SCHEMA`、按 document_type 给中文章节结构 prompt、`min_output_tokens=8192`）——succeeded 则 AI 渲染中文 Markdown 追加溯源块落新版本；任何失败（not_configured/failed/截断/预算拒绝）回退完整中文模板。`DocumentVersion.ai_status/ai_error_code`（迁移 0010）记录产出来源：NULL=旧数据、succeeded=AI、fallback=模板——交付页按错误码显示中文提示条，**模板回退绝不静默**。`generate_document` 按 (project_id, document_type) find-or-create（第八批）：重生成复用同一文档追加版本、更新标题，不再堆积同名文档。job input 含 `title`/`project_id`。
-- **max_tokens 机制**：`_run_ai_stage` 新增可选 `min_output_tokens`（缺省 None 行为不变）——metadata 的 max_tokens 原本在函数内部由 budget 锁定，调用方无法覆盖，这是任务授权的最小调整；首次尝试 = max(max_output, min_output_tokens)（仍受 per_request 硬顶），重试翻倍基于该值。
-- **实测成本**（deepseek-v4-flash，2026-09-02）：PRD 成功样本 prompt 1869 / completion 7032；周报成功样本 prompt 3746 / completion 7152——单次文档生成约 9-11k tokens；一次 LLM_PROVIDER_ERROR 降级为模板（前端如实提示）。
-- 前端 stage11 已重做：类型选择器（周报/PRD/复盘）+ job 轮询 + 可编辑 textarea + 保存新版本（`POST /documents/{id}/versions {content_markdown}`）+ 项目文档列表/版本历史回看 + 模板回退检测提示。AI 助手抽屉已从前端移除（AppShell），AI 横幅仅保留 WorkflowFrame 页面级一条；后端 copilot 端点与测试保留。
+- **max_tokens 机制**：`_run_ai_stage` 的可选 `min_output_tokens` 抬高首次输出上限——首次 = max(max_output, min_output_tokens)，重试翻倍，**均受 `HARD_OUTPUT_CAP=16384` 硬顶**（第八批起不再受 per_request 约束）。
+- **实测成本**（deepseek-v4-flash，2026-09-02）：PRD 成功样本 prompt 1869 / completion 7087；周报成功样本 prompt 3746 / completion 7152——单次文档生成约 9-11k tokens；一次 LLM_PROVIDER_ERROR 降级为模板（前端如实提示）。
+- 前端 stage11 为极简交付页（第八批）：文档类型选择 + 标题 + 生成（job 轮询，旧内容在生成期间保持可见）+ 可编辑正文 + 导出 Markdown；`ai_status !== "succeeded"` 的版本在正文上方显示按错误码分类的中文提示条（预算阀门/provider 错误/未配置），**模板回退绝不静默**。保存新版本按钮与文档/版本列表已按第八批极简化移除（端点保留）；AI 助手抽屉已从前端移除（AppShell），AI 横幅仅保留 WorkflowFrame 页面级一条；后端 copilot 端点与测试保留。
 
 ---
 
@@ -246,7 +246,7 @@ AI_Product_Workspace/
 
 **已实现且验证**：
 - 后端测试套件 **201 passed, 1 xfailed，0 警告**（2026-09-03 实测运行；含 route manifest 冻结测试、test_guardrails.py 守护测试、test_interview.py 采访/蒸馏测试、第七批 test_document_generation.py、第八批 test_budget_model.py 直花/硬顶/总阀门测试）。覆盖：RBAC 与 workspace 隔离、数据管线（上传/版本/清洗/质量）、分析引擎全类型、AI 降级边界（无 key 绝不 500、输出契约、上下文白名单、反馈原文不外泄）、决策链规则（证据强制/落选理由/审批失效）、项目级联删除、报告叙述消毒。
-- 8 个 Alembic 迁移可从零建库；`.env` 已配置 DeepSeek；前后端均可本地跑通。
+- 10 个 Alembic 迁移可从零建库（0010 = document_versions.ai_status/ai_error_code）；`.env` 已配置 DeepSeek；前后端均可本地跑通。
 - 前端 11 阶段页面、工作台、数据管理、设置页齐全（第四批起）。
 - **全链路已真实手动冒烟走通**（12 阶段版 2026-08-30：上传→报告→洞察→讨论→问题→方案→决策→PRD；11 阶段版 2026-09-01：上传→报告→采访→蒸馏→裁决→问题→方案→决策→PRD）。
 - **`ruff check app tests` 零告警**（第四批清掉 tests 基线 3 条 + 连带 2 条；unittest 弃用告警从 2494 → 0）。
@@ -256,8 +256,7 @@ AI_Product_Workspace/
 - Copilot 的 `create_insight_draft` 等 4 个写工具在白名单中但**尚无服务端 handler**（`ReadOnlyToolRegistry.execute` 会拒绝）。
 
 **缺失项**：
-- **git 仓库还没有任何 commit**（全部文件 untracked 状态）。
-- 无根 README、无 CI 流水线。
+- git 仓库已初始化并按批提交（conventional commits，未配置远端、未 push）；无根 README、无 CI 流水线。
 - 前端零测试（无测试框架）。
 - 无国际化层（界面中文硬编码）。
 
