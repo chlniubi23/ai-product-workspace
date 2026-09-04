@@ -156,6 +156,45 @@ function lineOption(chart: ChartPayload) {
   };
 }
 
+function barOption(chart: ChartPayload, title: string) {
+  // group_comparison (batch 12) emits category rows as {name, value} where
+  // value is the share percentage; a missing or empty list falls back to the
+  // caller's table view.
+  const data = rowsOf(chart, "data")
+    .map((row) => ({ name: String(row.name ?? ""), value: num(row.value) ?? 0 }))
+    .filter((row) => row.name !== "");
+  if (!data.length) return null;
+  return {
+    color: PALETTE,
+    tooltip: { trigger: "axis", valueFormatter: (value: unknown) => `${num(value) ?? 0}%` },
+    grid: baseGrid({ top: 34, bottom: 72 }),
+    xAxis: {
+      type: "category",
+      data: data.map((row) => row.name),
+      name: title,
+      nameTextStyle: AXIS_LABEL,
+      axisLabel: { ...AXIS_LABEL, rotate: 28 },
+    },
+    yAxis: {
+      type: "value",
+      name: "占比 %",
+      nameTextStyle: AXIS_LABEL,
+      axisLabel: { ...AXIS_LABEL, formatter: "{value}%" },
+      splitLine: SPLIT_LINE,
+    },
+    series: [
+      {
+        name: title || "占比",
+        type: "bar",
+        barMaxWidth: 42,
+        itemStyle: { color: PALETTE[0] },
+        label: { show: true, position: "top", formatter: "{c}%", color: "#6b7789", fontSize: 11 },
+        data: data.map((row) => row.value),
+      },
+    ],
+  };
+}
+
 /** Build an echarts option from an artifact payload, or null if not chartable. */
 export function toChartOption(payload: unknown, title = ""): Record<string, unknown> | null {
   if (!payload || typeof payload !== "object") return null;
@@ -170,6 +209,8 @@ export function toChartOption(payload: unknown, title = ""): Record<string, unkn
       return retentionOption(shape);
     case "line_with_anomalies":
       return anomalyOption(shape);
+    case "bar":
+      return barOption(shape, title);
     case "line":
       return lineOption(shape);
     default:
