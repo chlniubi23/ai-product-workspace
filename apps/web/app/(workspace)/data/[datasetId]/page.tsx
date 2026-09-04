@@ -8,9 +8,7 @@ import {
   Database,
   History,
   MoreHorizontal,
-  Save,
   ShieldAlert,
-  SlidersHorizontal,
   Table2,
   Trash2,
 } from "lucide-react";
@@ -49,15 +47,7 @@ type Version = {
 };
 type Dataset = { id: string; name: string; project_id?: string; versions?: Version[] };
 type PreviewData = { columns: Column[]; rows: Record<string, unknown>[]; total: number };
-type CleaningSummary = {
-  estimated_deleted_rows?: number;
-  affected_fields?: string[];
-  sample_before?: Record<string, unknown>[];
-  sample_after?: Record<string, unknown>[];
-  risks?: string[];
-};
 
-const typeOptions = ["string", "integer", "float", "boolean", "datetime", "category"];
 const roleOptions = [
   ["", "未指定"],
   ["user_id", "用户 ID"],
@@ -69,12 +59,6 @@ const roleOptions = [
 ] as const;
 const requiredRoles = ["user_id", "event_time", "event_name"] as const;
 
-function editableType(value?: string) {
-  if (value === "number" || value === "numeric") return "float";
-  if (value === "categorical") return "category";
-  return typeOptions.includes(value || "") ? value! : "string";
-}
-
 export default function DatasetDetailPage({ params }: { params: { datasetId: string } }) {
   const [remote, setRemote] = useState<Dataset | null>(null);
   const [loading, setLoading] = useState(true);
@@ -83,11 +67,6 @@ export default function DatasetDetailPage({ params }: { params: { datasetId: str
   const [versionId, setVersionId] = useState<string>();
   const [preview, setPreview] = useState<PreviewData | null>(null);
   const [quality, setQuality] = useState<QualityReport | null>(null);
-  const [cleaning, setCleaning] = useState<CleaningSummary | null>(null);
-  const [operation, setOperation] = useState("drop_duplicates");
-  const [operationColumn, setOperationColumn] = useState("");
-  const [operationValue, setOperationValue] = useState("");
-  const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const load = useCallback(async () => {
     if (!accessToken()) return;
@@ -158,102 +137,6 @@ export default function DatasetDetailPage({ params }: { params: { datasetId: str
   const selectVersion = (id: string) => {
     setVersionId(id);
     setPreview(null);
-    setCleaning(null);
-  };
-  const saveColumn = async (column: Column, field: "mapping_role" | "confirmed_type", value: string) => {
-    if (!selected?.id || !accessToken()) {
-      notify("当前数据集没有可编辑版本");
-      return;
-    }
-    try {
-      await apiRequest(`/dataset-versions/${selected.id}/schema`, {
-        method: "PATCH",
-        body: JSON.stringify({ columns: [{ id: column.id, name: column.name, [field]: value || null }] }),
-      });
-      setRemote((current) =>
-        current
-          ? {
-              ...current,
-              versions: current.versions?.map((version) =>
-                version.id === selected.id
-                  ? {
-                      ...version,
-                      columns: version.columns?.map((item) =>
-                        (item.id && column.id ? item.id === column.id : item.name === column.name)
-                          ? { ...item, [field]: value || undefined }
-                          : item,
-                      ),
-                    }
-                  : version,
-              ),
-            }
-          : current,
-      );
-      notify("字段定义已保存");
-    } catch (cause) {
-      notify(cause instanceof Error ? cause.message : "字段保存失败");
-    }
-  };
-  const operations = () => {
-    if (operation === "drop_duplicates") return [{ operation }];
-    if (!operationColumn) return [];
-    if (operation === "fill_missing")
-      return [{ operation, columns: [operationColumn], value: operationValue }];
-    if (operation === "coerce_type")
-      return [{ operation, column: operationColumn, target_type: operationValue || "numeric" }];
-    return [{ operation, columns: [operationColumn] }];
-  };
-  const previewCleaning = async () => {
-    if (!selected?.id || !accessToken()) {
-      notify("登录后可预览清洗规则");
-      return;
-    }
-    const body = operations();
-    if (!body.length) {
-      notify("请选择受影响的字段");
-      return;
-    }
-    setBusy(true);
-    try {
-      setCleaning(
-        await apiRequest<CleaningSummary>(`/dataset-versions/${selected.id}/cleaning-preview`, {
-          method: "POST",
-          body: JSON.stringify({ operations: body }),
-        }),
-      );
-      notify("清洗预览已生成");
-    } catch (cause) {
-      notify(cause instanceof Error ? cause.message : "清洗预览失败");
-    } finally {
-      setBusy(false);
-    }
-  };
-  const applyCleaning = async () => {
-    if (!selected?.id || !accessToken()) {
-      notify("登录后可应用清洗规则");
-      return;
-    }
-    const body = operations();
-    if (!body.length) {
-      notify("请选择受影响的字段");
-      return;
-    }
-    setBusy(true);
-    try {
-      const result = await apiRequest<{ dataset_version?: Version }>(
-        `/dataset-versions/${selected.id}/cleaning-operations`,
-        { method: "POST", body: JSON.stringify({ operations: body }) },
-      );
-      if (result.dataset_version?.id) setVersionId(result.dataset_version.id);
-      await load();
-      setCleaning(null);
-      setActiveTab("versions");
-      notify("清洗完成，已创建新的不可变版本");
-    } catch (cause) {
-      notify(cause instanceof Error ? cause.message : "清洗应用失败");
-    } finally {
-      setBusy(false);
-    }
   };
   const removeDataset = async () => {
     if (!accessToken()) {
@@ -391,17 +274,10 @@ export default function DatasetDetailPage({ params }: { params: { datasetId: str
         >
           版本记录 <span style={{ color: "#9aa6b7" }}>{versions.length}</span>
         </button>
-        <button
-          className={`tab ${activeTab === "cleaning" ? "active" : ""}`}
-          onClick={() => setActiveTab("cleaning")}
-        >
-          清洗操作
-        </button>
       </div>
       {activeTab === "dictionary" && (
         <Dictionary
           columns={columns}
-          onSave={saveColumn}
           confirmedRequiredRoles={confirmedRequiredRoles}
           rolesComplete={rolesComplete}
         />
@@ -410,21 +286,6 @@ export default function DatasetDetailPage({ params }: { params: { datasetId: str
       {activeTab === "quality" && <Quality summary={summary} score={score} />}
       {activeTab === "versions" && (
         <Versions rows={versions} selected={selected?.id} onSelect={selectVersion} />
-      )}
-      {activeTab === "cleaning" && (
-        <Cleaning
-          columns={columns}
-          operation={operation}
-          setOperation={setOperation}
-          column={operationColumn}
-          setColumn={setOperationColumn}
-          value={operationValue}
-          setValue={setOperationValue}
-          preview={cleaning}
-          busy={busy}
-          onPreview={previewCleaning}
-          onApply={applyCleaning}
-        />
       )}
       {notice && (
         <div className="toast show" role="status">
@@ -436,12 +297,10 @@ export default function DatasetDetailPage({ params }: { params: { datasetId: str
 }
 function Dictionary({
   columns,
-  onSave,
   confirmedRequiredRoles,
   rolesComplete,
 }: {
   columns: Column[];
-  onSave: (column: Column, field: "mapping_role" | "confirmed_type", value: string) => void;
   confirmedRequiredRoles: number;
   rolesComplete: boolean;
 }) {
@@ -450,7 +309,9 @@ function Dictionary({
       <div className="card-head" style={{ padding: "15px 17px 0" }}>
         <div>
           <h2 className="card-title">数据字典</h2>
-          <div className="card-kicker">确认类型和字段角色后，分析模板会自动复用这些映射。</div>
+          <div className="card-kicker">
+            字段类型与角色由解析引擎自动推断（上传即确认），此处只读展示。
+          </div>
         </div>
         <span className={`tag ${rolesComplete ? "tag-green" : "tag-amber"}`}>
           {confirmedRequiredRoles}/3 个必需角色
@@ -459,7 +320,7 @@ function Dictionary({
       {!rolesComplete && (
         <div className="form-hint" style={{ margin: "12px 17px 0" }}>
           <ShieldAlert size={13} />
-          <span>请确认用户 ID、事件时间和事件名称后进入体检。</span>
+          <span>缺少用户 ID、事件时间或事件名称时，分析模板会按可用字段自动选择维度。</span>
         </div>
       )}
       {rolesComplete && (
@@ -478,8 +339,7 @@ function Dictionary({
         <thead>
           <tr>
             <th>字段</th>
-            <th>推断类型</th>
-            <th>确认类型</th>
+            <th>类型</th>
             <th>字段角色</th>
             <th>可空</th>
             <th>唯一率</th>
@@ -487,58 +347,36 @@ function Dictionary({
           </tr>
         </thead>
         <tbody>
-          {columns.map((column) => (
-            <tr key={column.id || column.name}>
-              <td>
-                <strong>{column.display_name || column.name}</strong>
-                <small style={{ display: "block", color: "#8793a5", fontSize: 9, marginTop: 3 }}>
-                  {column.name}
-                </small>
-              </td>
-              <td>
-                <span className="tag tag-slate">{column.inferred_type || "unknown"}</span>
-              </td>
-              <td>
-                <select
-                  aria-label={`${column.name}确认类型`}
-                  value={editableType(column.confirmed_type || column.inferred_type)}
-                  onChange={(event) => onSave(column, "confirmed_type", event.target.value)}
-                >
-                  {typeOptions.map((value) => (
-                    <option value={value} key={value}>
-                      {value}
-                    </option>
-                  ))}
-                </select>
-              </td>
-              <td>
-                <select
-                  aria-label={`${column.name}字段角色`}
-                  value={column.mapping_role || ""}
-                  onChange={(event) => onSave(column, "mapping_role", event.target.value)}
-                >
-                  {roleOptions.map(([value, label]) => (
-                    <option value={value} key={value}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
-              </td>
-              <td>
-                {column.nullable ? (
-                  <span className="tag tag-amber">是</span>
-                ) : (
-                  <span className="tag tag-green">否</span>
-                )}
-              </td>
-              <td>
-                {typeof column.unique_ratio === "number" ? `${Math.round(column.unique_ratio * 100)}%` : "-"}
-              </td>
-              <td>
-                <MoreHorizontal size={15} color="#a0aaba" />
-              </td>
-            </tr>
-          ))}
+          {columns.map((column) => {
+            const role = roleOptions.find(([value]) => value === (column.mapping_role || ""));
+            return (
+              <tr key={column.id || column.name}>
+                <td>
+                  <strong>{column.display_name || column.name}</strong>
+                  <small style={{ display: "block", color: "#8793a5", fontSize: 9, marginTop: 3 }}>
+                    {column.name}
+                  </small>
+                </td>
+                <td>
+                  <span className="tag tag-slate">{column.confirmed_type || column.inferred_type || "unknown"}</span>
+                </td>
+                <td>{role?.[1] || "未指定"}</td>
+                <td>
+                  {column.nullable ? (
+                    <span className="tag tag-amber">是</span>
+                  ) : (
+                    <span className="tag tag-green">否</span>
+                  )}
+                </td>
+                <td>
+                  {typeof column.unique_ratio === "number" ? `${Math.round(column.unique_ratio * 100)}%` : "-"}
+                </td>
+                <td>
+                  <MoreHorizontal size={15} color="#a0aaba" />
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
       {!columns.length && (
@@ -610,7 +448,7 @@ function Quality({ summary, score }: { summary?: QualitySummary; score: number }
         <div className="card-head">
           <div>
             <h2 className="card-title">质量报告</h2>
-            <div className="card-kicker">由服务端 Pandas 规则计算，可在清洗前复核。</div>
+            <div className="card-kicker">由服务端 Pandas 规则计算，数字可复现。</div>
           </div>
           <span className={`tag ${score >= 95 ? "tag-green" : "tag-amber"}`}>{score}/100</span>
         </div>
@@ -629,8 +467,8 @@ function Quality({ summary, score }: { summary?: QualitySummary; score: number }
       <div className="card card-pad">
         <div className="empty-state" style={{ minHeight: 170 }}>
           <ShieldAlert size={19} />
-          <strong>{score >= 95 ? "质量达标，可进入分析" : "存在风险，等待人工确认"}</strong>
-          <p>原始版本不可修改，应用清洗会创建带父版本的新版本。</p>
+          <strong>{score >= 95 ? "质量达标，可进入分析" : "存在风险，建议关注缺失与异常"}</strong>
+          <p>数据版本不可变；统计全部由确定性计算生成。</p>
         </div>
       </div>
     </section>
@@ -650,7 +488,7 @@ function Versions({
       <div className="card-head" style={{ padding: "15px 17px 0" }}>
         <div>
           <h2 className="card-title">版本记录</h2>
-          <div className="card-kicker">每次上传或清洗都会生成不可变版本，可回溯父版本。</div>
+          <div className="card-kicker">每次上传都会生成不可变版本，可回溯父版本。</div>
         </div>
         <span className="tag tag-blue">{rows.length || 1} 个版本</span>
       </div>
@@ -712,134 +550,5 @@ function Versions({
         </div>
       )}
     </section>
-  );
-}
-function Cleaning({
-  columns,
-  operation,
-  setOperation,
-  column,
-  setColumn,
-  value,
-  setValue,
-  preview,
-  busy,
-  onPreview,
-  onApply,
-}: {
-  columns: Column[];
-  operation: string;
-  setOperation: (value: string) => void;
-  column: string;
-  setColumn: (value: string) => void;
-  value: string;
-  setValue: (value: string) => void;
-  preview: CleaningSummary | null;
-  busy: boolean;
-  onPreview: () => void;
-  onApply: () => void;
-}) {
-  const requiresColumn = operation !== "drop_duplicates";
-  return (
-    <div style={{ marginTop: 15 }}>
-      <section className="card card-pad">
-        <div className="card-head">
-          <div>
-            <h2 className="card-title">清洗操作</h2>
-            <div className="card-kicker">先预览影响，再应用并创建新版本。原始版本保持不变。</div>
-          </div>
-          <SlidersHorizontal size={17} color="#4968d6" />
-        </div>
-        <div className="form-row">
-          <div className="form-group">
-            <label htmlFor="cleaning-operation">操作</label>
-            <select
-              id="cleaning-operation"
-              value={operation}
-              onChange={(event) => setOperation(event.target.value)}
-            >
-              <option value="drop_duplicates">删除重复行</option>
-              <option value="drop_missing">删除字段缺失行</option>
-              <option value="fill_missing">填充字段缺失值</option>
-              <option value="coerce_type">转换字段类型</option>
-              <option value="strip_strings">清理字符串空格</option>
-            </select>
-          </div>
-          <div className="form-group">
-            <label htmlFor="cleaning-column">字段</label>
-            <select
-              id="cleaning-column"
-              value={column}
-              onChange={(event) => setColumn(event.target.value)}
-              disabled={!requiresColumn}
-            >
-              <option value="">{requiresColumn ? "选择字段" : "全部字段"}</option>
-              {columns.map((item) => (
-                <option value={item.name} key={item.name}>
-                  {item.display_name || item.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          {(operation === "fill_missing" || operation === "coerce_type") && (
-            <div className="form-group">
-              <label htmlFor="cleaning-value">{operation === "fill_missing" ? "填充值" : "目标类型"}</label>
-              {operation === "coerce_type" ? (
-                <select id="cleaning-value" value={value} onChange={(event) => setValue(event.target.value)}>
-                  <option value="numeric">numeric</option>
-                  <option value="datetime">datetime</option>
-                  <option value="boolean">boolean</option>
-                  <option value="categorical">categorical</option>
-                </select>
-              ) : (
-                <input
-                  id="cleaning-value"
-                  value={value}
-                  onChange={(event) => setValue(event.target.value)}
-                  placeholder="例如：unknown"
-                />
-              )}
-            </div>
-          )}
-        </div>
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
-          <button className="btn" disabled={busy} onClick={onPreview}>
-            <Table2 size={14} />
-            {busy ? "处理中…" : "预览影响"}
-          </button>
-          <button className="btn btn-primary" disabled={busy || !preview} onClick={onApply}>
-            <Save size={14} />
-            应用并创建版本
-          </button>
-        </div>
-      </section>
-      {preview && (
-        <section className="card card-pad" style={{ marginTop: 15 }}>
-          <div className="card-head">
-            <div>
-              <h2 className="card-title">预览结果</h2>
-              <div className="card-kicker">服务端返回预计删除行数、影响字段和样本变化。</div>
-            </div>
-            <span className={`tag ${preview.risks?.length ? "tag-amber" : "tag-green"}`}>
-              {preview.estimated_deleted_rows || 0} 行将被删除
-            </span>
-          </div>
-          <div className="grid grid-3">
-            <div>
-              <small className="metric-label">影响字段</small>
-              <strong>{preview.affected_fields?.join("、") || "-"}</strong>
-            </div>
-            <div>
-              <small className="metric-label">风险提示</small>
-              <strong>{preview.risks?.join("；") || "未发现"}</strong>
-            </div>
-            <div>
-              <small className="metric-label">样本对比</small>
-              <strong>{preview.sample_after?.length || 0} 行</strong>
-            </div>
-          </div>
-        </section>
-      )}
-    </div>
   );
 }

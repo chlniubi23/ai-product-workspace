@@ -9,7 +9,6 @@ import {
   FileSpreadsheet,
   FileUp,
   MoreHorizontal,
-  Plus,
   Search,
   Target,
   Trash2,
@@ -17,6 +16,7 @@ import {
   X,
 } from "lucide-react";
 import { accessToken, apiRequest } from "@/lib/api";
+import { getActiveProjectId } from "@/lib/workflow";
 import { UPLOAD_ACCEPT_ATTR, UPLOAD_FORMAT_HINT } from "@/lib/upload";
 
 type DatasetVersion = {
@@ -79,21 +79,18 @@ function toDatasetRow(
 export default function DataPage() {
   const router = useRouter();
   const [items, setItems] = useState<DatasetRow[]>([]);
-  const [projects, setProjects] = useState<Array<{ id: string; name: string; goal_statement?: string }>>([]);
+  const [activeProject, setActiveProject] = useState<{ id: string; name: string; goal_statement?: string } | null>(
+    null,
+  );
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [activeTab, setActiveTab] = useState("datasets");
   const [showUpload, setShowUpload] = useState(false);
-  const [uploadProjectId, setUploadProjectId] = useState("");
   const [file, setFile] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [query, setQuery] = useState("");
   const [riskOnly, setRiskOnly] = useState(false);
   const [notice, setNotice] = useState("");
-  const [showProjectForm, setShowProjectForm] = useState(false);
-  const [projectName, setProjectName] = useState("");
-  const [projectGoal, setProjectGoal] = useState("");
-  const [projectBusy, setProjectBusy] = useState(false);
   const loadDatasets = async () => {
     if (!accessToken()) return;
     setLoadError("");
@@ -104,9 +101,11 @@ export default function DataPage() {
         ),
         apiRequest<Array<{ id: string; name: string; goal_statement?: string }>>("/projects"),
       ]);
-      setProjects(projects);
-      setUploadProjectId((current) =>
-        current && projects.some((project) => project.id === current) ? current : projects[0]?.id || "",
+      // 上传绑定当前活跃项目（batch 11：项目切换统一在工作台完成）；
+      // 失效的持久化 id 回退到第一个项目，与快照的解析规则一致。
+      const storedId = getActiveProjectId();
+      setActiveProject(
+        projects.find((project) => project.id === storedId) || projects[0] || null,
       );
       const names = Object.fromEntries(projects.map((project) => [project.id, project.name]));
       setItems(rows.map((row) => toDatasetRow(row, names)));
@@ -117,32 +116,6 @@ export default function DataPage() {
       setLoading(false);
     }
   };
-  const createProject = async () => {
-    const name = projectName.trim();
-    const goal = projectGoal.trim();
-    if (!name || !goal) {
-      setNotice("项目名称和目标问题不能为空");
-      return;
-    }
-    setProjectBusy(true);
-    try {
-      const project = await apiRequest<{ id: string; name: string; goal_statement?: string }>("/projects", {
-        method: "POST",
-        body: JSON.stringify({ name, goal_statement: goal }),
-      });
-      setProjects((current) => [project, ...current]);
-      setUploadProjectId(project.id);
-      setProjectName("");
-      setProjectGoal("");
-      setShowProjectForm(false);
-      setNotice("项目已创建，可以继续上传数据");
-    } catch (cause) {
-      setNotice(cause instanceof Error ? cause.message : "项目创建失败");
-    } finally {
-      setProjectBusy(false);
-      window.setTimeout(() => setNotice(""), 2600);
-    }
-  };
   useEffect(() => {
     const token = accessToken();
     if (token) {
@@ -150,13 +123,17 @@ export default function DataPage() {
     } else {
       setLoading(false);
     }
+    // 项目切换（工作台）后数据页跟随刷新。
+    const handler = () => void loadDatasets();
+    window.addEventListener("apw-project-changed", handler);
+    return () => window.removeEventListener("apw-project-changed", handler);
   }, []);
   const upload = async () => {
     if (!selectedFile) return;
     try {
-      if (!uploadProjectId) throw new Error("请先创建一个项目");
+      if (!activeProject?.id) throw new Error("请先到工作台创建并选择一个项目");
       const body = new FormData();
-      body.append("project_id", uploadProjectId);
+      body.append("project_id", activeProject.id);
       body.append("dataset_name", selectedFile.name.replace(/\.[^.]+$/, ""));
       body.append("file", selectedFile);
       const result = await apiRequest<UploadResult>("/datasets/upload", { method: "POST", body });
@@ -221,7 +198,7 @@ export default function DataPage() {
       <div className="page-heading">
         <div>
           <h1>接数据</h1>
-          <p>先确定要回答的问题，再上传 CSV/XLSX 并确认字段定义。</p>
+          <p>先确定要回答的问题，再上传 CSV/XLSX——字段类型由解析引擎自动推断。</p>
         </div>
         <button className="btn btn-primary" onClick={() => setShowUpload(true)}>
           <UploadCloud size={15} />
@@ -232,71 +209,27 @@ export default function DataPage() {
         <div className="card-head">
           <div>
             <h2 className="card-title">项目上下文</h2>
-            <div className="card-kicker">数据、分析和后续解读都会沿用这个目标问题。</div>
+            <div className="card-kicker">
+              数据、分析和后续解读都会沿用这个目标问题；切换或新建项目请到工作台。
+            </div>
           </div>
           <Target size={17} color="#66758d" />
         </div>
-        <div className="form-row" style={{ alignItems: "end" }}>
-          <div className="form-group" style={{ flex: 1 }}>
-            <label htmlFor="pipeline-project">选择已有项目</label>
-            <select
-              id="pipeline-project"
-              value={uploadProjectId}
-              onChange={(event) => setUploadProjectId(event.target.value)}
-              disabled={!projects.length}
-            >
-              <option value="">{projects.length ? "选择项目" : "暂无项目"}</option>
-              {projects.map((project) => (
-                <option value={project.id} key={project.id}>
-                  {project.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <button className="btn" onClick={() => setShowProjectForm((current) => !current)}>
-            <Plus size={14} />
-            {showProjectForm ? "收起新建" : "新建项目"}
-          </button>
-        </div>
-        {uploadProjectId && (
-          <div className="form-hint" style={{ marginTop: 8 }}>
-            <Target size={13} />
-            <span>
-              {projects.find((project) => project.id === uploadProjectId)?.goal_statement ||
-                "该项目尚未填写目标问题，可到上下文页补充。"}
-            </span>
-          </div>
-        )}
-        {showProjectForm && (
-          <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid var(--line)" }}>
-            <div className="form-row">
-              <div className="form-group">
-                <label htmlFor="pipeline-project-name">项目名称</label>
-                <input
-                  id="pipeline-project-name"
-                  value={projectName}
-                  onChange={(event) => setProjectName(event.target.value)}
-                  placeholder="例如：新用户增长"
-                />
-              </div>
-              <div className="form-group">
-                <label htmlFor="pipeline-project-goal">目标问题</label>
-                <input
-                  id="pipeline-project-goal"
-                  value={projectGoal}
-                  onChange={(event) => setProjectGoal(event.target.value)}
-                  placeholder="例如：新用户 D7 留存为什么在掉？"
-                />
-              </div>
+        {activeProject ? (
+          <div>
+            <strong>{activeProject.name}</strong>
+            <div className="form-hint" style={{ marginTop: 8 }}>
+              <Target size={13} />
+              <span>
+                {activeProject.goal_statement || "该项目尚未填写目标问题，可到工作台补充。"}
+              </span>
             </div>
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-              <button className="btn" onClick={() => setShowProjectForm(false)} disabled={projectBusy}>
-                取消
-              </button>
-              <button className="btn btn-primary" onClick={() => void createProject()} disabled={projectBusy}>
-                {projectBusy ? "保存中…" : "创建并选择"}
-              </button>
-            </div>
+          </div>
+        ) : (
+          <div className="empty-state" style={{ minHeight: 90 }}>
+            <Target size={17} />
+            <strong>暂无活跃项目</strong>
+            <p>请先到工作台创建并选择一个项目，再上传数据。</p>
           </div>
         )}
       </section>
@@ -304,7 +237,9 @@ export default function DataPage() {
         <div className="card metric-card">
           <div className="metric-label">数据集</div>
           <div className="metric-value">{loading ? "-" : items.length}</div>
-          <div className="metric-change change-neutral">{projects.length} 个项目已关联</div>
+          <div className="metric-change change-neutral">
+            {activeProject ? `当前项目：${activeProject.name}` : "未关联项目"}
+          </div>
         </div>
         <div className="card metric-card">
           <div className="metric-label">可分析版本</div>
@@ -467,9 +402,7 @@ export default function DataPage() {
       )}
       {showUpload && (
         <UploadModal
-          projects={projects}
-          projectId={uploadProjectId}
-          setProjectId={setUploadProjectId}
+          activeProjectName={activeProject?.name}
           file={file}
           setFile={(name) => setFile(name)}
           onFile={setSelectedFile}
@@ -487,18 +420,14 @@ export default function DataPage() {
 }
 
 function UploadModal({
-  projects,
-  projectId,
-  setProjectId,
+  activeProjectName,
   file,
   setFile,
   onFile,
   onUpload,
   onClose,
 }: {
-  projects: Array<{ id: string; name: string }>;
-  projectId: string;
-  setProjectId: (value: string) => void;
+  activeProjectName?: string;
   file: string | null;
   setFile: (name: string | null) => void;
   onFile: (file: File | null) => void;
@@ -530,23 +459,11 @@ function UploadModal({
             <X size={16} />
           </button>
         </div>
-        <div className="form-group">
-          <label htmlFor="upload-project">关联项目</label>
-          <select
-            id="upload-project"
-            value={projectId}
-            onChange={(event) => setProjectId(event.target.value)}
-            disabled={!projects.length}
-          >
-            <option value="">{projects.length ? "选择项目" : "暂无可用项目"}</option>
-            {projects.map((project) => (
-              <option value={project.id} key={project.id}>
-                {project.name}
-              </option>
-            ))}
-          </select>
+        <div className="form-hint" style={{ marginTop: 0 }}>
+          <Target size={13} />
+          <span>关联项目：{activeProjectName || "暂无活跃项目（请先到工作台选择）"}</span>
         </div>
-        <label className="dropzone" style={{ cursor: "pointer" }}>
+        <label className="dropzone" style={{ cursor: "pointer", marginTop: 12 }}>
           <input
             type="file"
             accept={UPLOAD_ACCEPT_ATTR}
@@ -567,13 +484,13 @@ function UploadModal({
         </label>
         <div className="form-hint" style={{ marginTop: 14 }}>
           <Trash2 size={13} />
-          <span>原始文件保存在受控本地目录，数据版本不可变，清洗会创建新版本。</span>
+          <span>原始文件保存在受控本地目录，数据版本不可变。</span>
         </div>
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
           <button className="btn" onClick={onClose}>
             取消
           </button>
-          <button className="btn btn-primary" disabled={!file || !projectId} onClick={onUpload}>
+          <button className="btn btn-primary" disabled={!file || !activeProjectName} onClick={onUpload}>
             <UploadCloud size={14} />
             开始解析
           </button>
@@ -644,7 +561,7 @@ function QualityOverview({ rows }: { rows: DatasetRow[] }) {
           <li className="toggle-row">
             <div className="toggle-copy">
               <strong>异常值 IQR 检测</strong>
-              <p>应用于所有数值字段</p>
+              <p>对数值列做四分位距检测，只提示不修改数据</p>
             </div>
           </li>
         </ul>
