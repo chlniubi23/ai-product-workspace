@@ -23,7 +23,9 @@ type Column = {
   mapping_role?: string;
   nullable?: boolean;
   unique_ratio?: number;
+  source?: string;
 };
+type ExtractionReportRow = { source_column?: string; metric?: string; coverage?: number };
 type QualitySummary = {
   missing_values?: Record<string, number>;
   duplicate_rows?: number;
@@ -44,6 +46,7 @@ type Version = {
   parent_version_id?: string;
   columns?: Column[];
   quality_report?: QualityReport;
+  schema_json?: { text_metric_extraction?: ExtractionReportRow[] };
 };
 type Dataset = { id: string; name: string; project_id?: string; versions?: Version[] };
 type PreviewData = { columns: Column[]; rows: Record<string, unknown>[]; total: number };
@@ -118,6 +121,16 @@ export default function DatasetDetailPage({ params }: { params: { datasetId: str
   const confirmedRequiredRoles = requiredRoles.filter((role) => confirmedRoles.has(role)).length;
   const rolesComplete = Boolean(selected?.id && confirmedRequiredRoles === requiredRoles.length);
   const selectedReport = selected?.quality_report;
+  // Batch 14: coverage per derived column ("{source}__{metric}") from the
+  // extraction report persisted at parse time.
+  const coverageByColumn = useMemo(() => {
+    const rows = selected?.schema_json?.text_metric_extraction || [];
+    return Object.fromEntries(
+      rows
+        .filter((row) => row.source_column && row.metric)
+        .map((row) => [`${row.source_column}__${row.metric}`, row.coverage ?? 0]),
+    );
+  }, [selected?.schema_json]);
   useEffect(() => {
     if (!selected?.id || !accessToken()) return;
     setQuality(selectedReport || null);
@@ -280,6 +293,7 @@ export default function DatasetDetailPage({ params }: { params: { datasetId: str
           columns={columns}
           confirmedRequiredRoles={confirmedRequiredRoles}
           rolesComplete={rolesComplete}
+          coverageByColumn={coverageByColumn}
         />
       )}
       {activeTab === "preview" && <Preview data={preview} fallback={summary?.sample} />}
@@ -299,10 +313,12 @@ function Dictionary({
   columns,
   confirmedRequiredRoles,
   rolesComplete,
+  coverageByColumn,
 }: {
   columns: Column[];
   confirmedRequiredRoles: number;
   rolesComplete: boolean;
+  coverageByColumn: Record<string, number>;
 }) {
   return (
     <section className="card table-wrap" style={{ marginTop: 15 }}>
@@ -359,6 +375,14 @@ function Dictionary({
                 </td>
                 <td>
                   <span className="tag tag-slate">{column.confirmed_type || column.inferred_type || "unknown"}</span>
+                  {column.source === "extracted" && (
+                    <span className="tag tag-blue" style={{ marginLeft: 4 }}>
+                      抽取
+                      {coverageByColumn[column.name] !== undefined
+                        ? ` ${Math.round(coverageByColumn[column.name] * 100)}%`
+                        : ""}
+                    </span>
+                  )}
                 </td>
                 <td>{role?.[1] || "未指定"}</td>
                 <td>
