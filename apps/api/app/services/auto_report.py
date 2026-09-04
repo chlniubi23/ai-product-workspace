@@ -68,6 +68,7 @@ def _compute_report_aggregates(snapshot: dict[str, Any]) -> dict[str, Any]:
     numeric_column = next((name for name, kind in schema_types.items() if kind in {"integer", "float"}), None)
 
     columns: list[dict[str, Any]] = []
+    row_total = int(eda_payload.get("row_count") or 0)
     for item in list(eda_payload.get("columns") or [])[:30]:
         entry: dict[str, Any] = {
             "name": str(item.get("name")),
@@ -82,13 +83,20 @@ def _compute_report_aggregates(snapshot: dict[str, Any]) -> dict[str, Any]:
                 for key in ("count", "mean", "median", "std", "min", "max")
                 if stats.get(key) is not None
             }
-        top_values = item.get("top_values")
-        if isinstance(top_values, list) and top_values:
-            entry["categories"] = [
-                {"value": str(row.get("value")), "count": int(row.get("count") or 0), "rate": round(float(row.get("rate") or 0), 4)}
-                for row in top_values[:5]
-                if isinstance(row, Mapping)
-            ]
+        # Batch 13: a near-unique column (report_id, 20 rows / 20 unique) only
+        # produces "top value: 1 row (5%)" noise in per-value distributions and
+        # in the digest's concentration rule. Keep its missing statistics, drop
+        # the top-values breakdown, and mark it so narration knows why.
+        if row_total >= 10 and entry["unique_count"] >= 0.9 * row_total:
+            entry["identifier"] = True
+        else:
+            top_values = item.get("top_values")
+            if isinstance(top_values, list) and top_values:
+                entry["categories"] = [
+                    {"value": str(row.get("value")), "count": int(row.get("count") or 0), "rate": round(float(row.get("rate") or 0), 4)}
+                    for row in top_values[:5]
+                    if isinstance(row, Mapping)
+                ]
         columns.append(entry)
 
     aggregates: dict[str, Any] = {

@@ -222,28 +222,50 @@ def _build_document_context(body: DocumentGenerate, db: Session, user: User) -> 
                         "payload_json": dataset,
                     }
                 )
-        # Batch 12: the rule-based findings digest rides along as its own
-        # evidence class, so the document covers the data side's distilled
-        # points instead of leaving them to the model's own reading.
-        findings = deterministic.get("findings")
-        if isinstance(findings, list):
-            for index, item in enumerate(findings[:_DOC_FINDING_LIMIT], start=1):
-                if not isinstance(item, dict):
-                    continue
+        # Batch 13: prefer the persisted finding artifacts -- real ids make the
+        # document's citations traceable; the report's own digest is the
+        # fallback when a project has no landed finding artifacts yet.
+        finding_artifacts = db.scalars(
+            select(AnalysisArtifact)
+            .join(AnalysisRun, AnalysisRun.id == AnalysisArtifact.analysis_run_id)
+            .where(
+                AnalysisRun.project_id == project.id,
+                AnalysisRun.status == "succeeded",
+                AnalysisArtifact.artifact_type == "finding",
+            )
+            .order_by(AnalysisArtifact.created_at.desc())
+            .limit(_DOC_FINDING_LIMIT)
+        ).all()
+        if finding_artifacts:
+            for item in finding_artifacts:
                 artifacts.append(
                     {
-                        "id": f"finding-{index}",
+                        "id": item.id,
                         "artifact_type": "finding",
-                        "title": str(item.get("statement") or "")[:200],
-                        "payload_json": {
-                            "kind": str(item.get("kind") or ""),
-                            "dataset": str(item.get("dataset") or ""),
-                            "severity": int(item.get("severity") or 1),
-                            "rate": item.get("value"),
-                            "metrics": [str(column) for column in item.get("columns") or []],
-                        },
+                        "title": item.title,
+                        "payload_json": item.payload_json,
                     }
                 )
+        else:
+            findings = deterministic.get("findings")
+            if isinstance(findings, list):
+                for index, item in enumerate(findings[:_DOC_FINDING_LIMIT], start=1):
+                    if not isinstance(item, dict):
+                        continue
+                    artifacts.append(
+                        {
+                            "id": f"finding-{index}",
+                            "artifact_type": "finding",
+                            "title": str(item.get("statement") or "")[:200],
+                            "payload_json": {
+                                "kind": str(item.get("kind") or ""),
+                                "dataset": str(item.get("dataset") or ""),
+                                "severity": int(item.get("severity") or 1),
+                                "rate": item.get("value"),
+                                "metrics": [str(column) for column in item.get("columns") or []],
+                            },
+                        }
+                    )
 
     options = body.template_options if isinstance(body.template_options, dict) else {}
     safe_context = build_ai_context(

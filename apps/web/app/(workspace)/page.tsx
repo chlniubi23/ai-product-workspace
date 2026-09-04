@@ -41,6 +41,7 @@ type AutoReport = {
   error_code?: string | null;
   created_at?: string;
   confirmed_at?: string | null;
+  superseded_at?: string | null;
 };
 
 type BatchUploadResult = {
@@ -660,6 +661,7 @@ export default function WorkbenchPage() {
               </div>
             </div>
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              {report.superseded_at && <span className="tag tag-slate">已取代</span>}
               <span className={`tag ${statusMeta?.tone || "tag-slate"}`}>{statusMeta?.label || report.status}</span>
               {(report.status === "not_configured" || report.status === "failed") && !narratingId && !narrationNotice && (
                 <button
@@ -787,6 +789,9 @@ export default function WorkbenchPage() {
                   <strong style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {item.title || "数据分析报告"}
                   </strong>
+                  <span className={`tag ${item.superseded_at ? "tag-slate" : "tag-green"}`}>
+                    {item.superseded_at ? "已取代" : "当前生效"}
+                  </span>
                   <span className={`tag ${(STATUS_META[item.status] || STATUS_META.draft).tone}`}>
                     {(STATUS_META[item.status] || STATUS_META.draft).label}
                   </span>

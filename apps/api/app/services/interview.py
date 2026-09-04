@@ -26,6 +26,7 @@ from ..common import model_dict
 from ..models import (
     AnalysisArtifact,
     AnalysisRun,
+    AutoAnalysisReport,
     InterviewQuestion,
     Project,
     User,
@@ -36,13 +37,56 @@ from .ai_stages import _run_ai_stage
 from .audit import audit
 
 _ANSWER_CONTEXT_LIMIT = 50
-_ARTIFACT_CONTEXT_LIMIT = 12
+# Batch 13: widened from 12 so the report's finding artifacts fit the window
+# alongside the raw analysis artifacts.
+_ARTIFACT_CONTEXT_LIMIT = 20
+_REPORT_DATASET_LIMIT = 5
 
 
 def _normalise_question_text(text: str) -> str:
     """Reduce a question to its comparable core for server-side dedup."""
 
     return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", str(text).lower())
+
+
+def _latest_report_context(db: Session, project: Project) -> list[dict[str, Any]]:
+    """Dataset aggregates of the project's report -- the grounding chain.
+
+    Batch 13: the interview and the distillation must reason from the report
+    the user confirmed (or, unconfirmed, the newest one), not only from raw
+    artifacts.  Shape mirrors ``documents._build_document_context`` so both
+    chains present the same evidence the same way; the per-report id prefix
+    avoids collisions across reports.
+    """
+
+    reports = db.scalars(
+        select(AutoAnalysisReport).where(AutoAnalysisReport.project_id == project.id)
+    ).all()
+    if not reports:
+        return []
+    report = next((item for item in reports if item.confirmed_at is not None), None) or max(
+        reports, key=lambda item: item.created_at
+    )
+    deterministic = report.deterministic_json if isinstance(report.deterministic_json, dict) else {}
+    datasets = deterministic.get("datasets")
+    if not isinstance(datasets, list):
+        return []
+    return [
+        {
+            "id": f"{report.id}:{dataset.get('dataset_version_id')}",
+            "artifact_type": "dataset_summary",
+            "title": str(dataset.get("name") or "dataset"),
+            "payload_json": dataset,
+        }
+        for dataset in datasets[:_REPORT_DATASET_LIMIT]
+        if isinstance(dataset, dict)
+    ]
+
+
+def _grounding_artifacts(db: Session, project: Project) -> list[dict[str, Any]]:
+    """Report aggregates first, then raw artifact details (shared by both paths)."""
+
+    return [*_latest_report_context(db, project), *_analysis_artifact_items(db, project)]
 
 
 def _analysis_artifact_items(db: Session, project: Project) -> list[dict[str, Any]]:
@@ -75,7 +119,7 @@ def _analysis_artifact_items(db: Session, project: Project) -> list[dict[str, An
 def _project_context(db: Session, project: Project, question: str) -> dict[str, Any]:
     return build_ai_context(
         goal=project.goal_statement or "",
-        artifacts=_analysis_artifact_items(db, project),
+        artifacts=_grounding_artifacts(db, project),
         question=question,
     )
 
@@ -100,6 +144,7 @@ async def generate_interview_round(
             "你是产品分析师（采访者）。基于给定的项目目标与分析结论，提出本轮采访问题（3-5 个），"
             "帮助澄清数据结论背后的用户动机、场景与业务背景。每个问题输出 topic（主题，尽量短）、"
             "question_text（问题正文）、rationale（为什么问这个，引用哪条结论）。"
+            "给定的报告聚合（dataset_summary）与 findings 是本项目数据侧已确认的重点，提问应优先围绕这些重点展开。"
             "问题之间不得重复，也不要重复给定的历史问题。输出默认是 draft。"
         ),
         context=_project_context(db, project, "请提出下一轮采访问题"),
@@ -213,6 +258,7 @@ async def distill_interview(
         .limit(_ANSWER_CONTEXT_LIMIT)
     ).all()
     analysis_items = _analysis_artifact_items(db, project)
+    report_items = _latest_report_context(db, project)
 
     interview_items = [
         {
@@ -225,7 +271,7 @@ async def distill_interview(
     ]
     context = build_ai_context(
         goal=project.goal_statement or "",
-        artifacts=[*interview_items, *analysis_items],
+        artifacts=[*report_items, *interview_items, *analysis_items],
         question="把采访问答与数据结论蒸馏成洞察草稿：事实、假设、建议，逐条给证据",
     )
     result = await _run_ai_stage(
