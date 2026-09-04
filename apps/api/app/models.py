@@ -267,6 +267,10 @@ class DataColumn(Base):
     unique_ratio = Column(Float, default=0, nullable=False)
     mapping_role = Column(String(50), nullable=True)
     ordinal = Column(Integer, default=0, nullable=False)
+    # Batch 14: "original" for uploaded columns, "extracted" for the derived
+    # numeric columns pulled out of free-text metric columns (name carries the
+    # "{source}__{metric}" convention).  The original file is never touched.
+    source = Column(String(20), default="original", nullable=False)
     dataset_version = relationship("DatasetVersion", back_populates="columns")
 
 

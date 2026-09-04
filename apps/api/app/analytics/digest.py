@@ -22,6 +22,10 @@ CORRELATION_TOP_PAIRS = 2
 TREND_SHIFT_THRESHOLD = 0.30
 CONCENTRATION_THRESHOLD = 0.60
 DUPLICATE_RATE_THRESHOLD = 0.05
+# Batch 14 additions.
+OUTLIER_RATE_THRESHOLD = 0.05
+OUTLIER_SEVERE_THRESHOLD = 0.15
+CALENDAR_GAP_MIN = 1
 
 _KIND_ORDER = {
     "missing": 0,
@@ -29,6 +33,9 @@ _KIND_ORDER = {
     "trend_shift": 2,
     "concentration": 3,
     "duplicate": 4,
+    "outlier": 5,
+    "constant": 6,
+    "calendar_gap": 7,
 }
 
 
@@ -90,16 +97,20 @@ def _trend_findings(dataset: dict[str, Any], findings: list[dict[str, Any]]) -> 
         return
     direction = "上升" if change > 0 else "下降"
     severity = 3 if abs(float(change)) >= 0.50 else 2
+    metric_column = str(trend.get("metric_column") or "")
+    # Batch 14: a derived metric column (source__label) makes this an
+    # extracted-metric trend finding -- same rule, marked provenance.
+    derived_mark = "（抽取指标）" if "__" in metric_column else ""
     findings.append(
         {
             "kind": "trend_shift",
             "dataset": str(dataset.get("name") or ""),
             "statement": (
-                f"「{dataset.get('name')}」{trend.get('metric_column')} 最近一期环比{direction} "
+                f"「{dataset.get('name')}」{metric_column}{derived_mark} 最近一期环比{direction} "
                 f"{_pct(abs(float(change)))}（{trend.get('first_value')} → {trend.get('last_value')}）。"
             ),
             "severity": severity,
-            "columns": [str(trend.get("metric_column"))],
+            "columns": [metric_column] if metric_column else [],
             "value": round(float(change), 4),
         }
     )
@@ -152,6 +163,76 @@ def _duplicate_findings(dataset: dict[str, Any], findings: list[dict[str, Any]])
     )
 
 
+def _constant_findings(dataset: dict[str, Any], findings: list[dict[str, Any]]) -> None:
+    """Batch 14: one merged finding per dataset for its constant columns."""
+
+    names = [
+        str(column.get("name"))
+        for column in dataset.get("metrics") or []
+        if isinstance(column, dict) and column.get("constant")
+    ]
+    if not names:
+        return
+    findings.append(
+        {
+            "kind": "constant",
+            "dataset": str(dataset.get("name") or ""),
+            "statement": f"「{dataset.get('name')}」{len(names)} 个字段内容完全固化（{'、'.join(names)}），不构成区分维度。",
+            "severity": 1,
+            "columns": names,
+            "value": float(len(names)),
+        }
+    )
+
+
+def _outlier_findings(dataset: dict[str, Any], findings: list[dict[str, Any]]) -> None:
+    """Batch 14: numeric columns whose IQR outlier share clears the threshold."""
+
+    for column in dataset.get("metrics") or []:
+        if not isinstance(column, dict):
+            continue
+        outliers = column.get("outliers")
+        statistics = column.get("statistics") if isinstance(column.get("statistics"), dict) else {}
+        valid = statistics.get("count")
+        if not isinstance(outliers, int) or not isinstance(valid, int) or valid <= 0:
+            continue
+        rate = outliers / valid
+        if rate < OUTLIER_RATE_THRESHOLD:
+            continue
+        severity = 3 if rate >= OUTLIER_SEVERE_THRESHOLD else 2
+        findings.append(
+            {
+                "kind": "outlier",
+                "dataset": str(dataset.get("name") or ""),
+                "statement": f"「{dataset.get('name')}」{column.get('name')} 有 {outliers} 个 IQR 离群值（占 {_pct(rate)}），均值类结论可能被拉偏。",
+                "severity": severity,
+                "columns": [str(column.get("name"))],
+                "value": round(rate, 4),
+            }
+        )
+
+
+def _calendar_gap_findings(dataset: dict[str, Any], findings: list[dict[str, Any]]) -> None:
+    """Batch 14: missing calendar periods inside an existing trend."""
+
+    trend = dataset.get("trend")
+    if not isinstance(trend, dict):
+        return
+    gaps = trend.get("gaps")
+    if not isinstance(gaps, int) or gaps < CALENDAR_GAP_MIN:
+        return
+    findings.append(
+        {
+            "kind": "calendar_gap",
+            "dataset": str(dataset.get("name") or ""),
+            "statement": f"「{dataset.get('name')}」的时间序列存在 {gaps} 个缺失期，趋势与环比结论在缺口处不连续。",
+            "severity": 1,
+            "columns": [str(trend.get("metric_column") or "")],
+            "value": float(gaps),
+        }
+    )
+
+
 def build_findings_digest(aggregates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Distill a severity-ordered findings list from report aggregates.
 
@@ -171,6 +252,9 @@ def build_findings_digest(aggregates: list[dict[str, Any]]) -> list[dict[str, An
         _trend_findings(dataset, findings)
         _concentration_findings(dataset, findings)
         _duplicate_findings(dataset, findings)
+        _constant_findings(dataset, findings)
+        _outlier_findings(dataset, findings)
+        _calendar_gap_findings(dataset, findings)
     findings.sort(
         key=lambda item: (
             -int(item.get("severity") or 0),

@@ -14,6 +14,7 @@ from ..ai_context import (
     validate_report_output,
 )
 from ..analytics.engine import AnalysisEngine
+from ..analytics.text_metrics import extract_text_metrics
 from ..common import _require_pandas, model_dict
 from ..config import settings
 from ..models import AutoAnalysisReport, Dataset, DatasetVersion, Project, User, Workspace
@@ -59,6 +60,12 @@ def _compute_report_aggregates(snapshot: dict[str, Any]) -> dict[str, Any]:
 
     _require_pandas()
     frame = _read_dataframe(settings.data_path / snapshot["storage_path"], snapshot["file_name"])
+    original_columns = {str(name) for name in frame.columns}
+    # Batch 14: derive numeric columns from text metrics before anything else.
+    # The original frame is never modified -- extraction returns a copy, and
+    # EDA / trend / grouping all run on the extended frame so derived metrics
+    # (e.g. "metrics_summary__DAU") become first-class numbers.
+    frame, _extraction_report = extract_text_metrics(frame)
     engine = AnalysisEngine(snapshot["version_id"])
     eda = engine.run_eda(frame, top_n=5).to_dict()
     eda_payload = dict(eda.get("payload_json") or {})
@@ -70,11 +77,14 @@ def _compute_report_aggregates(snapshot: dict[str, Any]) -> dict[str, Any]:
     columns: list[dict[str, Any]] = []
     row_total = int(eda_payload.get("row_count") or 0)
     for item in list(eda_payload.get("columns") or [])[:30]:
+        entry_name = str(item.get("name"))
         entry: dict[str, Any] = {
-            "name": str(item.get("name")),
+            "name": entry_name,
             "type": str(item.get("dtype")),
             "missing_rate": round(float(item.get("missing_rate") or 0), 4),
             "unique_count": int(item.get("unique_count") or 0),
+            "source": "extracted" if entry_name not in original_columns else "original",
+            "constant": int(item.get("unique_count") or 0) == 1,
         }
         stats = item.get("statistics")
         if isinstance(stats, dict) and stats:
@@ -83,6 +93,20 @@ def _compute_report_aggregates(snapshot: dict[str, Any]) -> dict[str, Any]:
                 for key in ("count", "mean", "median", "std", "min", "max")
                 if stats.get(key) is not None
             }
+            # Batch 14 distribution depth: IQR outlier count, skewness and a
+            # binned histogram for every numeric column (derived included).
+            numeric_series = pd.to_numeric(frame[entry_name], errors="coerce").dropna() if entry_name in frame.columns else pd.Series(dtype="float64")
+            if len(numeric_series) >= 3:
+                q1, q3 = float(numeric_series.quantile(0.25)), float(numeric_series.quantile(0.75))
+                spread = q3 - q1
+                entry["outliers"] = int(
+                    ((numeric_series < q1 - 1.5 * spread) | (numeric_series > q3 + 1.5 * spread)).sum()
+                ) if spread > 0 else 0
+                entry["skewness"] = round(float(numeric_series.skew()), 4)
+                bin_count = min(10, max(3, int(numeric_series.nunique())))
+                binned = pd.cut(numeric_series, bins=bin_count).value_counts().sort_index()
+                entry["bins"] = [str(interval) for interval in binned.index]
+                entry["counts"] = [int(count) for count in binned.values]
         # Batch 13: a near-unique column (report_id, 20 rows / 20 unique) only
         # produces "top value: 1 row (5%)" noise in per-value distributions and
         # in the digest's concentration rule. Keep its missing statistics, drop
@@ -133,6 +157,16 @@ def _compute_report_aggregates(snapshot: dict[str, Any]) -> dict[str, Any]:
             if rows:
                 values = [row.get("value") for row in rows]
                 numeric_values = [float(value) for value in values if value is not None]
+                # Batch 14: calendar-gap detection -- how many periods the
+                # frequency implies between first and last vs. how many exist.
+                parsed_periods = pd.Series(
+                    pd.to_datetime([row.get("period") for row in rows], errors="coerce")
+                ).dropna()
+                gaps = 0
+                if len(parsed_periods) >= 2:
+                    step = pd.Timedelta(days=7 if frequency == "W" else 1)
+                    expected = int((parsed_periods.iloc[-1] - parsed_periods.iloc[0]) / step) + 1
+                    gaps = max(0, expected - len(parsed_periods))
                 aggregates["trend"] = {
                     "time_column": datetime_column,
                     "metric_column": numeric_column,
@@ -144,6 +178,7 @@ def _compute_report_aggregates(snapshot: dict[str, Any]) -> dict[str, Any]:
                     "max_value": max(numeric_values) if numeric_values else None,
                     "min_value": min(numeric_values) if numeric_values else None,
                     "last_period_change": rows[-1].get("period_over_period"),
+                    "gaps": gaps,
                 }
         except Exception:  # noqa: BLE001 - trend is optional grounding for the report
             pass
@@ -244,6 +279,8 @@ def _deterministic_report_parts(
     for item in aggregates:
         for column in item.get("metrics") or []:
             label = f"{item.get('name')} · {column.get('name')}"
+            if column.get("source") == "extracted":
+                label += "（抽取）"
             categories = column.get("categories") or []
             if categories:
                 top = categories[0]

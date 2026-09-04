@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..ai_context import REPORT_OUTPUT_SCHEMA, empty_report_output, validate_report_output
+from ..analytics.text_metrics import extract_text_metrics
 from ..common import _require_pandas, model_dict, pd
 from ..config import settings
 from ..db import SessionLocal
@@ -89,19 +90,28 @@ def _handle_dataset_parse(context: JobContext) -> JobResult:
     if len(frame.columns) == 0 or len(frame) == 0:
         raise JobExecutionError("VALIDATION_ERROR", "Dataset must contain a header row and at least one data row", retryable=False)
     context.progress(45, "检查数据质量")
+    # Batch 14: derive numeric columns from free-text metrics BEFORE schema and
+    # analyses.  Quality assessment still runs on the original frame; EDA,
+    # trend/anomaly/grouping and the schema now cover the derived columns so a
+    # prose-only business table unlocks real numeric analysis.  The uploaded
+    # file (and the original frame) is never modified.
+    frame_ext, extraction_report = extract_text_metrics(frame)
     score, quality_status, summary = _quality_summary(frame)
-    schema = _column_schema(frame)
+    schema = _column_schema(frame_ext)
+    extracted_names = {str(name) for name in frame_ext.columns if str(name) not in {str(c) for c in frame.columns}}
+    for item in schema:
+        item["source"] = "extracted" if str(item["name"]) in extracted_names else "original"
     context.progress(75, "写入字段字典")
     version.row_count = len(frame)
     version.column_count = len(frame.columns)
-    version.schema_json = {"columns": schema}
+    version.schema_json = {"columns": schema, "text_metric_extraction": extraction_report}
     version.status = "ready"
     _replace_version_columns(db, version, schema)
     _replace_quality_report(db, version, score, quality_status, summary)
     audit(db, version.dataset.project.workspace_id, payload.get("_actor_id"), "dataset.parsed", "dataset_version", version.id, {"quality_status": quality_status, "row_count": len(frame)})
 
     context.progress(85, "自动分析")
-    auto = _run_auto_analyses(db, version, schema, frame, str(payload.get("_actor_id") or ""))
+    auto = _run_auto_analyses(db, version, schema, frame_ext, str(payload.get("_actor_id") or ""))
 
     db.commit()
     return JobResult(
