@@ -301,6 +301,11 @@ export function getActiveProjectId(): string | null {
 }
 
 export function setActiveProjectId(id: string | null): void {
+  // Idempotent by design: the event fires only on a REAL change.  The
+  // snapshot-load fallback correction (loadWorkflowSnapshot) relies on this --
+  // a caller that re-writes the same id must not be able to trigger an
+  // event storm of snapshot refreshes.
+  if (getActiveProjectId() === id) return;
   try {
     if (id) window.localStorage.setItem("apw_active_project", id);
     else window.localStorage.removeItem("apw_active_project");
@@ -373,7 +378,11 @@ export async function loadWorkflowSnapshot(): Promise<WorkflowSnapshot> {
     activeProject = storedActive;
   } else {
     activeProject = projects[0] ?? null;
-    if (storedProjectId !== activeProject?.id) setActiveProjectId(activeProject?.id ?? null);
+    // Normalized comparison: with no active project the fallback is null, and
+    // `null !== undefined` would be permanently true, rewriting storage (and
+    // firing the change event) on every snapshot load.
+    const fallbackId = activeProject?.id ?? null;
+    if (storedProjectId !== fallbackId) setActiveProjectId(fallbackId);
   }
   const activeProjectId = activeProject?.id ?? null;
 
