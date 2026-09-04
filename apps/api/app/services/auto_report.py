@@ -139,6 +139,45 @@ def _compute_report_aggregates(snapshot: dict[str, Any]) -> dict[str, Any]:
                 }
         except Exception:  # noqa: BLE001 - trend is optional grounding for the report
             pass
+
+    # Batch 12: group comparison over a low-cardinality category column and a
+    # complete numeric column.  The frame is already in memory here, so this is
+    # one extra pandas pass, and the persisted breakdown gives business tables
+    # (no event roles) real Pareto material for narration and documents.
+    row_total = int(aggregates.get("row_count") or len(frame))
+    group_column = next(
+        (
+            item.get("name")
+            for item in aggregates.get("metrics") or []
+            if isinstance(item, dict)
+            and item.get("categories")
+            and isinstance(item.get("unique_count"), int)
+            and row_total
+            and 0 < item["unique_count"] / row_total <= 0.4
+        ),
+        None,
+    )
+    value_column = next(
+        (
+            item.get("name")
+            for item in aggregates.get("metrics") or []
+            if isinstance(item, dict)
+            and isinstance(item.get("statistics"), dict)
+            and item["statistics"].get("mean") is not None
+        ),
+        None,
+    )
+    if group_column and value_column:
+        try:
+            comparison = engine.run_group_comparison(
+                frame, group_column=str(group_column), value_column=str(value_column), aggregation="mean", top_n=10
+            )
+            breakdown = [row for row in comparison.payload.get("categories") or [] if isinstance(row, dict)]
+            if breakdown:
+                aggregates["breakdown"] = breakdown
+                aggregates["breakdown_column"] = f"{group_column} ~ {value_column}"
+        except Exception:  # noqa: BLE001 - breakdown is optional grounding
+            pass
     return aggregates
 
 
@@ -160,10 +199,18 @@ def _compute_report_aggregates_batch(snapshots: list[dict[str, Any]]) -> list[An
 
 
 def _deterministic_report_parts(
-    project_name: str, aggregates: list[dict[str, Any]]
+    project_name: str,
+    aggregates: list[dict[str, Any]],
+    digest: list[dict[str, Any]] | None = None,
 ) -> tuple[str, str, list[dict[str, str]], list[str]]:
     """Deterministic report body used directly when AI is unavailable, and as
-    the persisted trace of the numbers behind an AI-written report."""
+    the persisted trace of the numbers behind an AI-written report.
+
+    ``digest`` is the rule-based findings digest (``build_findings_digest``);
+    when present, the key-findings section is generated from its statements --
+    strictly more informative than the legacy top-category/missing-rate
+    listing, which is kept as the fallback for empty digests.
+    """
 
     title = f"{project_name} 数据分析报告"
     total_rows = sum(int(item.get("row_count") or 0) for item in aggregates)
@@ -227,6 +274,13 @@ def _deterministic_report_parts(
     if trend_lines:
         sections.append({"heading": "四、时间趋势", "content": "\n".join(trend_lines)})
 
+    digest_statements = [
+        str(item.get("statement")).strip()
+        for item in (digest or [])
+        if isinstance(item, dict) and str(item.get("statement") or "").strip()
+    ]
+    if digest_statements:
+        return title, summary, sections, digest_statements[:12]
     return title, summary, sections, findings[:12]
 
 
@@ -277,26 +331,51 @@ def _auto_report_system_prompt() -> str:
     )
 
 
-def _report_ai_context(goal: str, aggregates: list[dict[str, Any]]) -> dict[str, Any]:
+def _report_ai_context(
+    goal: str,
+    aggregates: list[dict[str, Any]],
+    digest: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Allow-listed provider context, rebuilt from persisted aggregates.
 
     The aggregates are the exact payloads stored in
     ``deterministic_json.datasets``, so narration after the fact sees the same
-    numbers the compute step grounded the report on.
+    numbers the compute step grounded the report on.  Each digest finding is
+    injected as its own ``finding`` artifact through the artifacts channel --
+    every payload key is a firewall aggregate key, so the allowlist itself is
+    untouched (batch 12).
     """
 
+    artifacts: list[dict[str, Any]] = [
+        {
+            "id": item["dataset_version_id"],
+            "artifact_type": "dataset_summary",
+            "title": item.get("name"),
+            "payload_json": item,
+        }
+        for item in aggregates
+    ]
+    for index, item in enumerate(digest or [], start=1):
+        if not isinstance(item, dict):
+            continue
+        artifacts.append(
+            {
+                "id": f"finding-{index}",
+                "artifact_type": "finding",
+                "title": str(item.get("statement") or "")[:200],
+                "payload_json": {
+                    "kind": str(item.get("kind") or ""),
+                    "dataset": str(item.get("dataset") or ""),
+                    "severity": int(item.get("severity") or 1),
+                    "rate": item.get("value"),
+                    "metrics": [str(column) for column in item.get("columns") or []],
+                },
+            }
+        )
     return assert_safe_ai_context(
         build_ai_context(
             goal=goal or "",
-            artifacts=[
-                {
-                    "id": item["dataset_version_id"],
-                    "artifact_type": "dataset_summary",
-                    "title": item.get("name"),
-                    "payload_json": item,
-                }
-                for item in aggregates
-            ],
+            artifacts=artifacts,
             question=(
                 "请基于这些聚合统计生成分章节的数据分析报告：先概述数据规模与质量，"
                 "再按维度分布、数值统计、时间趋势等主题分章展开，最后给出关键发现与建议。"
@@ -329,14 +408,21 @@ async def _narrate_report(
     aggregates = [item for item in deterministic_json.get("datasets") or [] if isinstance(item, dict)]
     if not aggregates:
         raise ValueError("report has no deterministic aggregates to narrate")
+    digest = [item for item in deterministic_json.get("findings") or [] if isinstance(item, dict)]
 
+    system_prompt = _auto_report_system_prompt()
+    if digest:
+        system_prompt += (
+            " 给定的 findings 是规则从数据中提炼的重点发现，叙述中的关键发现必须逐条覆盖这些内容，"
+            "不得遗漏，也不得虚构清单之外的发现。"
+        )
     result = await _run_ai_stage(
         db=db,
         user=user,
         workspace=workspace,
         feature_name=_NARRATION_FEATURE,
-        system_prompt=_auto_report_system_prompt(),
-        context=_report_ai_context(project.goal_statement or "", aggregates),
+        system_prompt=system_prompt,
+        context=_report_ai_context(project.goal_statement or "", aggregates, digest),
         flag_name="auto_report_enabled",
         response_schema=REPORT_OUTPUT_SCHEMA,
         output_validator=validate_report_output,

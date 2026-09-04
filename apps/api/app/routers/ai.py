@@ -20,6 +20,7 @@ from ..ai_context import (
     validate_problem_draft,
     validate_solution_drafts,
 )
+from ..analytics.digest import build_findings_digest
 from ..auth import get_current_user
 from ..common import error, ok, page_params
 from ..config import settings
@@ -365,7 +366,10 @@ async def _compute_auto_report(project: Project, user: User, db: Session) -> Aut
     if not aggregates:
         raise error("VALIDATION_ERROR", "Could not read any dataset file to analyse", 400)
 
-    default_title, deterministic_summary, deterministic_sections, deterministic_findings = _deterministic_report_parts(project.name, aggregates)
+    findings_digest = build_findings_digest(aggregates)
+    default_title, deterministic_summary, deterministic_sections, deterministic_findings = _deterministic_report_parts(
+        project.name, aggregates, findings_digest
+    )
     deterministic_limitations = ["分析维度由系统按列类型自动选择；相关性不代表因果。"]
     report = AutoAnalysisReport(
         workspace_id=project.workspace_id,
@@ -378,7 +382,11 @@ async def _compute_auto_report(project: Project, user: User, db: Session) -> Aut
         recommendations=[],
         limitations=list(deterministic_limitations),
         dataset_version_ids=[item["dataset_version_id"] for item in aggregates],
-        deterministic_json={"datasets": aggregates, "read_failures": read_failures},
+        deterministic_json={
+            "datasets": aggregates,
+            "read_failures": read_failures,
+            "findings": findings_digest,
+        },
         content_markdown=_report_markdown(default_title, deterministic_summary, deterministic_sections, deterministic_findings, [], deterministic_limitations),
         generated_by=user.id,
     )

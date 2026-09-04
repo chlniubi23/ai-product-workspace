@@ -33,6 +33,7 @@ _DOC_INSIGHT_LIMIT = 20
 _DOC_INTERVIEW_LIMIT = 30
 _DOC_DECISION_LIMIT = 10
 _DOC_DATASET_SUMMARY_LIMIT = 5
+_DOC_FINDING_LIMIT = 12
 
 _DOCUMENT_SECTION_BRIEFS = {
     "weekly_report": "章节结构：本期概览、关键变化、核心问题与反馈、已完成工作、下期计划",
@@ -221,6 +222,28 @@ def _build_document_context(body: DocumentGenerate, db: Session, user: User) -> 
                         "payload_json": dataset,
                     }
                 )
+        # Batch 12: the rule-based findings digest rides along as its own
+        # evidence class, so the document covers the data side's distilled
+        # points instead of leaving them to the model's own reading.
+        findings = deterministic.get("findings")
+        if isinstance(findings, list):
+            for index, item in enumerate(findings[:_DOC_FINDING_LIMIT], start=1):
+                if not isinstance(item, dict):
+                    continue
+                artifacts.append(
+                    {
+                        "id": f"finding-{index}",
+                        "artifact_type": "finding",
+                        "title": str(item.get("statement") or "")[:200],
+                        "payload_json": {
+                            "kind": str(item.get("kind") or ""),
+                            "dataset": str(item.get("dataset") or ""),
+                            "severity": int(item.get("severity") or 1),
+                            "rate": item.get("value"),
+                            "metrics": [str(column) for column in item.get("columns") or []],
+                        },
+                    }
+                )
 
     options = body.template_options if isinstance(body.template_options, dict) else {}
     safe_context = build_ai_context(
@@ -255,7 +278,8 @@ def _evidence_manifest(generation_timestamp: str, dataset_version_ids: set[str],
 def _document_system_prompt(document_type: str, audience: str) -> str:
     brief = _DOCUMENT_SECTION_BRIEFS.get(document_type, _DOCUMENT_SECTION_BRIEFS["prd"])
     return (
-        "你是产品交付文档撰写助手。基于给定的证据材料（洞察、采访回答、已批准决策、数据集聚合）撰写文档。"
+        "你是产品交付文档撰写助手。基于给定的证据材料（洞察、采访回答、已批准决策、数据集聚合、数据侧重点发现）撰写文档。"
+        "artifact_type 为 finding 的条目是规则从数据中提炼的重点，正文应覆盖这些要点。"
         f"{brief}。"
         "所有论断必须来自给定上下文，并在内容中自然标注依据（引用证据标题或 id）；禁止编造数据；"
         "禁止出现英文模板句或占位文案；全文使用简体中文，语气面向指定读者。"
