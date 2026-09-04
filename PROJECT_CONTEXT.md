@@ -40,7 +40,7 @@
 - **鉴权**：HS256 JWT（`app/auth.py`），bcrypt 密码（>72 字节自动 pre-hash 标记 `bcrypt_sha256$`，兼容旧 pbkdf2 哈希并登录时升级）。JWT 存前端 localStorage；登录时镜像一个 `apw_session=1` cookie（max-age 对齐 JWT exp），Next.js middleware 只检查 cookie 存在性做**页面级软门禁**，真实鉴权在 API 层。
 - **异步任务**：无外部队列。`app/infrastructure/jobs.py` 的 `JobExecutor` 通过 FastAPI BackgroundTasks 在进程内执行 DB 持久化的 Job（状态机 queued→running→succeeded/failed/cancelled），启动时 `recover_pending()` 重放未完成 job。handler 通过 `_register_job_handlers()`（main.py 末尾）注册：`dataset_parse`、`analysis_run`、`feedback_import`、`feedback_clusters`、`document_generation`、`auto_report_narration`（`dataset_cleaning` 已随第十一批删除）。
 - **数据库**：生产 MySQL 8（docker-compose 只含 mysql 一个服务）；`DATABASE_URL` 未配置或 `ALLOW_SQLITE_FALLBACK=true` 时可回退 SQLite（`app/db.py`，fallback 状态通过 `/health/ready` 暴露）。`db.py` 还含 `_repair_missing_columns()` 运行时补列安全网（dev 便利，与 Alembic 并行的第二套 schema 机制）。
-- **迁移**：`apps/api/alembic/versions/0001..0010`（0010 = document_versions 的 ai_status/ai_error_code），其中 `0005_v11_slim_schema` 在 `V11_DROP_LEGACY_TABLES=true` 时删除 legacy 表（默认只加不减）。
+- **迁移**：`apps/api/alembic/versions/0001..0012`（0011 = projects.archived_at；0012 = auto_analysis_reports.superseded_at，第十三批），其中 `0005_v11_slim_schema` 在 `V11_DROP_LEGACY_TABLES=true` 时删除 legacy 表（默认只加不减）。
 
 ---
 
@@ -80,7 +80,7 @@ AI_Product_Workspace/
     │   │   │   └── （/ai/draft-document 在 documents.py、/ai/cluster-feedback 在 feedback.py——别名路由跟随其调用的服务函数所在 router，避免 routers 互导）
     │   │   ├── analytics/       #   engine.py / quality.py（未改动；顶层 import pandas 属既有行为）
     │   │   └── infrastructure/  #   jobs.py / llm/deepseek.py（未改动）
-    │   ├── alembic/versions/    #   9 个迁移（0009 = interview_questions）
+    │   ├── alembic/versions/    #   12 个迁移（0011 = projects.archived_at；0012 = auto_analysis_reports.superseded_at）
     │   ├── tests/               #   12 个测试文件，179 用例（含 route manifest 冻结测试 + 采访/守护测试）
     │   └── pyproject.toml
     └── web/                     # Next.js 14 前端
@@ -169,6 +169,8 @@ AI_Product_Workspace/
 | 10 产品决策 | stage10-decision（无 AI） | decision.status=approved | `POST /decision-proposals/{id}/submit`（仅置 pending_approval + 建 pending 审批）→ **审批是独立动作**：`POST /approval-requests/{id}/approve|reject`（驳回必写理由；提案被编辑则审批返回 VERSION_CONFLICT）。同一账号可先提交再审批 |
 | 11 PRD | stage11-prd | 文档有版本（workflow 门控不变） | `POST /documents`、`/documents/generate`、`/documents/{id}/versions`、`/documents/{id}/submit`、`GET /documents/{id}/export`（.md 下载）；完成后 `POST /projects/{id}/archive` 归档。页面渲染门控=存在 approved 决策 |
 
+> **第十三批「链式地基闭合」（2026-09-04 完成）**：采访与蒸馏的地基升级为「最新报告 + 底层产物细节」——`services/interview.py:_latest_report_context` 取项目报告（优先 confirmed，否则最新）的 `deterministic_json.datasets` 展开为 `dataset_summary` artifacts（形状照抄 documents，≤5 个），`_grounding_artifacts` = 报告聚合 + 原始产物（窗口 12→20，天然容纳落库的 finding artifacts）；采访 prompt 要求围绕报告重点提问。digest findings 在 compute 时落库为**真实 `finding` artifacts**（挂各数据集最新 succeeded run，幂等——重算先删旧行；无 succeeded run 的数据集只留在报告 digest；重跑分析会清掉 artifacts，需重新生成报告恢复），documents/interview 的 digest 注入优先读落库 artifacts（真实 id 可引用）。报告新增「已取代」语义（迁移 0012 `superseded_at`）：compute 置旧所有未取代旧报告（确认记录保留），最新一份永不被取代，前端历史列表显示「当前生效/已取代」。P0 修复：ISO 日期不再被手机号正则误杀（见 §7.1）。高基数标识列（unique_count ≥ 0.9×row_count ≥10 行）在报告聚合中标记 `identifier` 并丢弃 top 值分布，digest 集中度规则不再产生噪音。
+
 > **第九批「一个项目 = 一次工作流」（2026-09-03 完成）**：`Project` 增加 `archived_at`；新增 `POST /projects/{id}/archive|unarchive`（幂等、editor+、绕过自身守卫）。归档项目只读：`project_for` 对 editor+ 返回 409 `PROJECT_ARCHIVED`（viewer 读取不受影响），绕过 `project_for` 的编辑端点（insight/decision/document/dataset/task/feedback 的 patch/submit/approve/retry 等）逐一补 `_ensure_project_active` 守卫。前端：activeProjectId 持久化到 localStorage（`apw_active_project`，切换时派发 `apw-project-changed` 事件），快照按当前项目过滤（失效 id 回退到第一个活跃项目），新增 `/history` 列表页与 `/history/[projectId]` 只读回看页。
 
 > **第四批洞察层重构（2026-09-01 完成）**：第 6 步从「AI 倒草稿」改为「AI 采访式收集」（原第 8 步人机讨论并入本步下半区），第 7 步改为「蒸馏+裁决」（新增 `/ai/distill-interview`，采访答案可作为 evidence 引用，`_check_evidence_scope` 新增 `interview_question` 类型），流水线 12→11 阶段（9-12 重编号为 8-11，旧路由经 `legacyRouteAliases` 308 重定向）。`InterviewQuestion` 模型 + 迁移 0009；`STAGE_COUNT=11`。
@@ -187,7 +189,7 @@ AI_Product_Workspace/
 ## 7. AI / LLM 逻辑（本项目的核心特色）
 
 ### 7.1 出站上下文防火墙（app/ai_context.py）
-- `build_ai_context()` 是唯一合法出站构造器：白名单键为 `goal / metrics / artifacts / quality / schema / question / insights` 七个；`FORBIDDEN_CONTEXT_KEYS`（raw_rows/file_path/token/database_url…）、`_FEEDBACK_CONTENT_KEYS`（feedback/content/comment/…约 25 个变体键）、行级列表键（rows/records/samples…）一律剔除；Email/电话正则脱敏，ID 类字段做稳定哈希匿名化。
+- `build_ai_context()` 是唯一合法出站构造器：白名单键为 `goal / metrics / artifacts / quality / schema / question / insights` 七个；`FORBIDDEN_CONTEXT_KEYS`（raw_rows/file_path/token/database_url…）、`_FEEDBACK_CONTENT_KEYS`（feedback/content/comment/…约 25 个变体键）、行级列表键（rows/records/samples…）一律剔除；Email/电话正则脱敏（第十三批修正：ISO 日期先保护后还原——`_PHONE_RE` 此前把 `2026-03-30` 整串替换为 `[phone]`，已在 `ai_context._safe_scalar` 与 `deepseek.redact_pii` 两处改用「保护-脱敏-还原」，真手机号/邮箱仍被脱敏），ID 类字段做稳定哈希匿名化。
 - `insights` 是 2026-08-30 契约修复时**新增**的键（不是放宽）：每条只保留 `id/title/content/confidence/evidence`（`_extract_insights`，≤20 条、content≤2000 字符、evidence 走标量消毒）。仅由服务端注入（Copilot 路径加载 confirmed 洞察）；`/ai/interpret` 的 `_ai_interpret_context` 显式 pop 掉客户端传入的 insights，保持"客户端洞察一律丢弃"的既有行为（否则该键携带的 content 子键会被 `assert_safe_ai_context` 判为 feedback 文本导致 500）。
 - `assert_safe_ai_context()` 复检；`validate_ai_output()` 强制输出含 `facts/hypotheses/recommendations/limitations` 四节、每条 claim 必带 evidence 数组；`validate_report_output()` 校验分章报告；另有 `PROBLEM_DRAFT_SCHEMA`/`validate_problem_draft`（stage 9 问题草稿：title/statement/impact_scope/limitations，priority 可选 P0-P3）与 `SOLUTION_DRAFTS_SCHEMA`/`validate_solution_drafts`（stage 10 方案草稿：options≤5 × title/approach/pros/cons/effort，effort 只允许 S/M/L）。反馈键清单单一来源在本文件：`services/ai_stages.py` 的请求侧消毒清单 = `_FEEDBACK_CONTENT_KEYS ∪ {sample, samples}`（第四批合一，此前是两份各自维护的相似清单）。
 
@@ -264,7 +266,7 @@ AI_Product_Workspace/
 
 **已实现且验证**：
 - 后端测试套件 **240 passed, 1 xfailed，0 警告**（2026-09-04 实测运行；第十二批新增 test_digest.py 与 test_group_comparison.py 19 个计算加强测试；第十批新增 test_auto_report_split.py 10 个先算后叙测试，第九批新增 test_archive.py 9 个归档/守卫测试）；含 route manifest 冻结测试、test_guardrails.py 守护测试、test_interview.py 采访/蒸馏测试、第七批 test_document_generation.py、第八批 test_budget_model.py 直花/硬顶/总阀门测试）。覆盖：RBAC 与 workspace 隔离、数据管线（上传/版本/清洗/质量）、分析引擎全类型、AI 降级边界（无 key 绝不 500、输出契约、上下文白名单、反馈原文不外泄）、决策链规则（证据强制/落选理由/审批失效）、项目级联删除、报告叙述消毒。
-- 10 个 Alembic 迁移可从零建库（0010 = document_versions.ai_status/ai_error_code）；`.env` 已配置 DeepSeek；前后端均可本地跑通。
+- 12 个 Alembic 迁移可从零建库（0012 = auto_analysis_reports.superseded_at）；`.env` 已配置 DeepSeek；前后端均可本地跑通。
 - 前端 11 阶段页面、工作台、数据管理、设置页齐全（第四批起）。
 - **全链路已真实手动冒烟走通**（12 阶段版 2026-08-30：上传→报告→洞察→讨论→问题→方案→决策→PRD；11 阶段版 2026-09-01：上传→报告→采访→蒸馏→裁决→问题→方案→决策→PRD）。
 - **`ruff check app tests` 零告警**（第四批清掉 tests 基线 3 条 + 连带 2 条；unittest 弃用告警从 2494 → 0）。
@@ -307,6 +309,7 @@ AI_Product_Workspace/
 - 新增 API 端点：写到对应域的 `app/routers/<域>.py`（`router = APIRouter()` + `@router.<method>("/api/v1/...")` 路径全写），在 `main.py` 加 `app.include_router(...)`；请求模型进 `schemas.py`。`tests/test_route_manifest.py` 会冻结断言全部 (path, methods, name)——路由变更必须同步重生成该清单。
 - 新增业务逻辑：放到 `app/services/<域>.py`；被多个 router 共用的 helper 必须下沉 services（routers 之间禁止互导，services 禁止反向导入 routers）。`ok()/error()/model_dict/paged` 等信封工具在 `common.py`；`_require_pandas()` 是 pandas 懒加载哨兵（使用方在函数内 `pd = _require_pandas()`，运行时禁止模块顶层 import pandas）。
 - job handler：`app/services/job_handlers.py`，`job_executor` 全仓库唯一实例在此；新增 handler 后在 `_register_job_handlers()` 注册（main.py 末尾恰好调用一次）。
+- 链式地基（第十三批）：采访/蒸馏的地基 = 最新（或已确认）报告的聚合 + 底层产物细节；digest findings 同时落库为真实 finding artifacts，证据链（洞察 evidence 指向真实资源 id）与地基链（每步基于上一步结果思考）分离。报告 superseded_at 标记历史版本；dev 库升级需 `alembic upgrade head`（0012）。
 - 归档语义（第九批）：归档只能走 `POST /projects/{id}/archive|unarchive`（ProjectPatch 不含 status）；归档项目的 editor+ 写路径全部 409 `PROJECT_ARCHIVED`（project_for 与各路由的 `_ensure_project_active` 守卫），viewer 读与 owner 删除不受限。前端「当前项目」持久化键为 localStorage `apw_active_project`。
 - 数据页语义（第十一批，2026-09-04 完成）：清洗全链路已删除（`cleaning_operations` 表与模型保留、不提交 cleanup 迁移）；`GET /datasets` 的 versions 携带水合 `quality_report`（统计卡真实数字）；数据页「项目上下文」只读展示当前活跃项目（`getActiveProjectId()` + `apw-project-changed` 事件跟随刷新），切换/新建项目统一在工作台完成，上传绑定当前活跃项目；数据集详情页字段定义为只读（后端 PATCH schema 端点保留）。
 - 计算加强（第十二批，2026-09-04 完成）：新分析类型 `group_comparison`（engine `run_group_comparison`，自动计划上限 4，业务表自动选中）；`analytics/digest.py` 的 findings digest 写入报告 `deterministic_json.findings` 并注入叙述/文档 AI 上下文（firewall 白名单零改动）；新增测试 `test_digest.py`/`test_group_comparison.py`（后端 240 用例）。
