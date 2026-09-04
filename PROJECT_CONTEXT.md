@@ -38,7 +38,7 @@
 
 - **通信**：纯 REST，统一响应信封 `{"data": ..., "meta": {request_id, ...}}` / `{"error": {code, message, details}}`（`app/main.py` 的 `ok()`/`error()`）。
 - **鉴权**：HS256 JWT（`app/auth.py`），bcrypt 密码（>72 字节自动 pre-hash 标记 `bcrypt_sha256$`，兼容旧 pbkdf2 哈希并登录时升级）。JWT 存前端 localStorage；登录时镜像一个 `apw_session=1` cookie（max-age 对齐 JWT exp），Next.js middleware 只检查 cookie 存在性做**页面级软门禁**，真实鉴权在 API 层。
-- **异步任务**：无外部队列。`app/infrastructure/jobs.py` 的 `JobExecutor` 通过 FastAPI BackgroundTasks 在进程内执行 DB 持久化的 Job（状态机 queued→running→succeeded/failed/cancelled），启动时 `recover_pending()` 重放未完成 job。handler 通过 `_register_job_handlers()`（main.py 末尾）注册：`dataset_parse`、`dataset_cleaning`、`analysis_run`、`feedback_import`、`feedback_clusters`、`document_generation`、`auto_report_narration`（第十批）。
+- **异步任务**：无外部队列。`app/infrastructure/jobs.py` 的 `JobExecutor` 通过 FastAPI BackgroundTasks 在进程内执行 DB 持久化的 Job（状态机 queued→running→succeeded/failed/cancelled），启动时 `recover_pending()` 重放未完成 job。handler 通过 `_register_job_handlers()`（main.py 末尾）注册：`dataset_parse`、`analysis_run`、`feedback_import`、`feedback_clusters`、`document_generation`、`auto_report_narration`（`dataset_cleaning` 已随第十一批删除）。
 - **数据库**：生产 MySQL 8（docker-compose 只含 mysql 一个服务）；`DATABASE_URL` 未配置或 `ALLOW_SQLITE_FALLBACK=true` 时可回退 SQLite（`app/db.py`，fallback 状态通过 `/health/ready` 暴露）。`db.py` 还含 `_repair_missing_columns()` 运行时补列安全网（dev 便利，与 Alembic 并行的第二套 schema 机制）。
 - **迁移**：`apps/api/alembic/versions/0001..0010`（0010 = document_versions 的 ai_status/ai_error_code），其中 `0005_v11_slim_schema` 在 `V11_DROP_LEGACY_TABLES=true` 时删除 legacy 表（默认只加不减）。
 
@@ -66,7 +66,7 @@ AI_Product_Workspace/
     │   │   │   ├── audit.py              #   audit()/audit_user_workspaces
     │   │   │   ├── workspace_settings.py #   工作区设置/双层 token 预算/_workspace_payload/指标字典迁移
     │   │   │   ├── evidence.py           #   _check_evidence_scope/证据强制/引用范围校验
-    │   │   │   ├── datasets.py           #   读文件/字段 schema/质量摘要/清洗操作/版本 payload
+    │   │   │   ├── datasets.py           #   读文件/字段 schema/质量摘要/版本 payload（清洗 helper 已随第十一批删除）
     │   │   │   ├── analysis_pipeline.py  #   分析产物持久化/配置校验/自动分析计划/_analysis_artifacts
     │   │   │   ├── ai_stages.py          #   _run_ai_stage 模板/_deepseek_answer/Copilot 编排胶水/AI 上下文投影
     │   │   │   ├── auto_report.py        #   项目级自动报告（pandas 聚合 + 确定性骨架）
@@ -133,6 +133,8 @@ AI_Product_Workspace/
 **新增于迁移 0007/0008**：
 `analysis_report_narrations`（分析叙述，与 AnalysisRun 故意分离以保确定性） / `auto_analysis_reports`（项目级自动报告）
 
+**第十一批（2026-09-04）清洗功能删除**：清洗全链路（3 个端点、`dataset_cleaning` job、`apply_cleaning`/`CleaningRequest`/清洗 helper）已删除——主流程是「上传 → 代码计算 → LLM 解读」，清洗是 V1.0 质量门控时代的死流程；`cleaning_operations` 表与 `CleaningOperation` 模型**保留不 drop**（仅项目删除时的级联清理仍触达），`assess_quality` 质量报告完整保留。
+
 **新增于迁移 0009（第四批）**：
 `interview_questions`（AI 采访问题：round_number 0=手动补充/≥1=AI 轮次，status pending|answered|skipped，source ai|manual；蒸馏时 answered 行作为 stage 7 的上下文与 evidence 来源）
 
@@ -176,7 +178,7 @@ AI_Product_Workspace/
 **上传后的自动管线**（`services/job_handlers.py:_handle_dataset_parse`）：
 解析 → 行列数/空表校验 → 质量评估 → 写字段字典 → **`schema_auto_accepted_at` 打点 + 内联跑 `_auto_analysis_plan`**（≤3 个：事件表选留存、指标表选趋势+异常，漏斗永不自动选；幂等，失败不拖垮解析）。
 
-**数据集版本链**：重名重传追加不可变新版本（BUG-015 修复语义）；清洗（`POST /dataset-versions/{id}/cleaning-operations`）经 `cleaning_preview` 预演后由 `dataset_cleaning` job 产出新版本，每个操作单独落 `cleaning_operations` 行（可追溯/可重放）。
+**数据集版本链**：重名重传追加不可变新版本（BUG-015 修复语义）；~~清洗（`POST /dataset-versions/{id}/cleaning-operations`）~~ 已随第十一批删除（版本只经上传产生）。
 
 **删除语义**：数据集与项目删除均要求显式确认（`?confirm={id}` 或 body）；项目删除 `_purge_project`（`routers/projects.py`）级联清理各资源并经 `_safe_data_file` 越界防护后物理删除文件，全程审计。
 
@@ -221,12 +223,12 @@ AI_Product_Workspace/
 
 ## 8. API 面貌（第三批起按 routers/ 域拆分）
 
-约 139 个端点（清单由 tests/test_route_manifest.py 冻结），按资源域：
+约 136 个端点（清单由 tests/test_route_manifest.py 冻结），按资源域：
 - **Auth**：register/login/refresh/me（注册即建 workspace；登录失败统一报错不泄露邮箱存在性；均写审计）
 - **Workspace**：list/patch/settings(GET,PATCH)/members/metrics 字典 CRUD（含 `/api/v1/settings`、`/api/v1/metrics` 别名）
 - **Audit**：`GET /audit-logs`（workspace 级，newest-first）
 - **Projects**：CRUD + overview + workflow-status + tasks CRUD/links + `DELETE`（显式确认）
-- **Datasets**：upload/upload-batch/versions/schema(PATCH)/schema-review/preview/quality-report/cleaning-preview/cleaning-operations/DELETE（owner + 显式确认）
+- **Datasets**：upload/upload-batch/versions/schema(PATCH)/schema-review/preview/quality-report/DELETE（owner + 显式确认；cleaning 三端点已随第十一批删除，`GET /datasets` 的 versions payload 自第十一批起携带水合的 `quality_report`，前端统计卡显示真实数字）
 - **Analysis**：validate-config、runs CRUD、rerun、artifacts
 - **Feedback**：items CRUD/import/imports、clusters generate/patch/link-task、notes GET/POST/PATCH（V1.1）
 - **Insights / Problems / Solutions / Decisions / Approvals / Documents**：按第 6 节流程
@@ -299,6 +301,7 @@ AI_Product_Workspace/
 - 新增业务逻辑：放到 `app/services/<域>.py`；被多个 router 共用的 helper 必须下沉 services（routers 之间禁止互导，services 禁止反向导入 routers）。`ok()/error()/model_dict/paged` 等信封工具在 `common.py`；`_require_pandas()` 是 pandas 懒加载哨兵（使用方在函数内 `pd = _require_pandas()`，运行时禁止模块顶层 import pandas）。
 - job handler：`app/services/job_handlers.py`，`job_executor` 全仓库唯一实例在此；新增 handler 后在 `_register_job_handlers()` 注册（main.py 末尾恰好调用一次）。
 - 归档语义（第九批）：归档只能走 `POST /projects/{id}/archive|unarchive`（ProjectPatch 不含 status）；归档项目的 editor+ 写路径全部 409 `PROJECT_ARCHIVED`（project_for 与各路由的 `_ensure_project_active` 守卫），viewer 读与 owner 删除不受限。前端「当前项目」持久化键为 localStorage `apw_active_project`。
+- 数据页语义（第十一批，2026-09-04 完成）：清洗全链路已删除（`cleaning_operations` 表与模型保留、不提交 cleanup 迁移）；`GET /datasets` 的 versions 携带水合 `quality_report`（统计卡真实数字）；数据页「项目上下文」只读展示当前活跃项目（`getActiveProjectId()` + `apw-project-changed` 事件跟随刷新），切换/新建项目统一在工作台完成，上传绑定当前活跃项目；数据集详情页字段定义为只读（后端 PATCH schema 端点保留）。
 - 新增 AI 能力：服务逻辑进 `services/ai_stages.py`（复用 `_run_ai_stage()` 模板，可传 `response_schema`/`output_validator`/`empty_output` 定义阶段契约），路由壳进 `routers/ai.py`；上下文必须过 `build_ai_context`，AI 结果一律 draft；Copilot 的 insights 上下文由服务端注入，客户端传入的一律丢弃。
 - 分析类型扩展点：`analytics/engine.py`（计算）+ `services/analysis_pipeline.py`（`_analysis_artifacts` 持久化映射、`_analysis_config_validation`、`_auto_analysis_plan`）+ `deepseek.py` 工具白名单（若暴露给 Copilot）。
 - 前端新页面的惯例：`app/(workspace)/` 下建目录，用 `WorkflowFrame` 的 `WorkflowHeader/WorkflowGate` 包裹，门控逻辑改 `lib/workflow.ts` 的 `stepCompletion()`，导航加 `lib/navigation.ts`。
