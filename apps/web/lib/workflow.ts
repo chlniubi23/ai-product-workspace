@@ -386,6 +386,51 @@ export async function loadWorkflowSnapshot(): Promise<WorkflowSnapshot> {
   }
   const activeProjectId = activeProject?.id ?? null;
 
+  // 无活跃项目时业务列表为空是门控回到初始状态的实现方式；已归档项目的
+  // 数据只能经历史页的 project_id 定向读取，绝不进入全局快照。
+  // Workspace identity (/me) stays outside the branch: the project switcher
+  // and history pages need it even with no active project.
+  const mePromise = apiRequest<unknown>("/me").then(
+    (value): PromiseSettledResult<unknown> => ({ status: "fulfilled", value }),
+    (reason): PromiseSettledResult<unknown> => ({ status: "rejected", reason }),
+  );
+  type BusinessLists = [
+    PromiseSettledResult<WorkflowDataset[]>,
+    PromiseSettledResult<WorkflowAnalysisRun[]>,
+    PromiseSettledResult<WorkflowInsight[]>,
+    PromiseSettledResult<WorkflowDocument[]>,
+    PromiseSettledResult<WorkflowProblem[]>,
+    PromiseSettledResult<WorkflowSolution[]>,
+    PromiseSettledResult<WorkflowDecision[]>,
+    PromiseSettledResult<WorkflowApproval[]>,
+    PromiseSettledResult<WorkflowInterviewQuestion[]>,
+  ];
+  const businessLists: BusinessLists = activeProjectId
+    ? ((await Promise.allSettled([
+        requestList<WorkflowDataset>(projectScope("/datasets", activeProjectId)),
+        requestList<WorkflowAnalysisRun>(projectScope("/analysis-runs", activeProjectId)),
+        requestList<WorkflowInsight>(projectScope("/insights", activeProjectId)),
+        requestList<WorkflowDocument>(projectScope("/documents", activeProjectId)),
+        requestList<WorkflowProblem>(projectScope("/problems", activeProjectId)),
+        requestList<WorkflowSolution>(projectScope("/solutions", activeProjectId)),
+        requestList<WorkflowDecision>(projectScope("/decision-proposals", activeProjectId)),
+        // The endpoint itself only returns status=pending rows; requestList
+        // appends page_size=100.  Workspace-level on purpose: the stage-10 page
+        // maps target ids onto the project's own decisions.
+        requestList<WorkflowApproval>("/approval-requests"),
+        requestList<WorkflowInterviewQuestion>(projectScope("/interview-questions", activeProjectId)),
+      ])) as BusinessLists)
+    : [
+        { status: "fulfilled", value: [] as WorkflowDataset[] },
+        { status: "fulfilled", value: [] as WorkflowAnalysisRun[] },
+        { status: "fulfilled", value: [] as WorkflowInsight[] },
+        { status: "fulfilled", value: [] as WorkflowDocument[] },
+        { status: "fulfilled", value: [] as WorkflowProblem[] },
+        { status: "fulfilled", value: [] as WorkflowSolution[] },
+        { status: "fulfilled", value: [] as WorkflowDecision[] },
+        { status: "fulfilled", value: [] as WorkflowApproval[] },
+        { status: "fulfilled", value: [] as WorkflowInterviewQuestion[] },
+      ];
   const [
     datasetsResult,
     runsResult,
@@ -396,22 +441,8 @@ export async function loadWorkflowSnapshot(): Promise<WorkflowSnapshot> {
     decisionsResult,
     approvalsResult,
     interviewQuestionsResult,
-    meResult,
-  ] = await Promise.allSettled([
-    requestList<WorkflowDataset>(projectScope("/datasets", activeProjectId)),
-    requestList<WorkflowAnalysisRun>(projectScope("/analysis-runs", activeProjectId)),
-    requestList<WorkflowInsight>(projectScope("/insights", activeProjectId)),
-    requestList<WorkflowDocument>(projectScope("/documents", activeProjectId)),
-    requestList<WorkflowProblem>(projectScope("/problems", activeProjectId)),
-    requestList<WorkflowSolution>(projectScope("/solutions", activeProjectId)),
-    requestList<WorkflowDecision>(projectScope("/decision-proposals", activeProjectId)),
-    // The endpoint itself only returns status=pending rows; requestList
-    // appends page_size=100.  Workspace-level on purpose: the stage-10 page
-    // maps target ids onto the project's own decisions.
-    requestList<WorkflowApproval>("/approval-requests"),
-    requestList<WorkflowInterviewQuestion>(projectScope("/interview-questions", activeProjectId)),
-    apiRequest<unknown>("/me"),
-  ]);
+  ] = businessLists;
+  const meResult = await mePromise;
   const read = <T>(result: PromiseSettledResult<T[]>, label: string): T[] => {
     if (result.status === "fulfilled") return result.value;
     loadErrors.push(`${label}：${result.reason instanceof Error ? result.reason.message : "加载失败"}`);
