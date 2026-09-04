@@ -67,6 +67,15 @@ def _analysis_artifacts(frame: pd.DataFrame, version: DatasetVersion, analysis_t
             window=int(config.get("window") or 7),
             group_column=str(config["group_column"]) if config.get("group_column") else None,
         )
+    elif kind == "group_comparison":
+        engine_artifact = engine.run_group_comparison(
+            frame,
+            group_column=str(config.get("group_column")),
+            value_column=str(config.get("value_column")),
+            aggregation=str(config.get("aggregation") or "mean"),
+            top_n=int(config.get("top_n") or 10),
+            field_mapping=field_mapping,
+        )
     if engine_artifact is not None:
         result = engine_artifact.to_dict()
         payload = dict(result["payload_json"])
@@ -118,6 +127,23 @@ def _analysis_artifacts(frame: pd.DataFrame, version: DatasetVersion, analysis_t
                 ],
             }
             chart_type = "line"
+        elif kind == "group_comparison":
+            rows = list(payload.get("categories") or [])
+            option = {
+                "tooltip": {"trigger": "axis", "valueFormatter": "{c}%"},
+                "grid": {"left": 48, "right": 20, "top": 24, "bottom": 72},
+                "xAxis": {"type": "category", "axisLabel": {"rotate": 28}, "data": [row.get("group") for row in rows]},
+                "yAxis": {"type": "value", "axisLabel": {"formatter": "{value}%"}},
+                "series": [
+                    {
+                        "name": "占比",
+                        "type": "bar",
+                        "data": [row.get("share") * 100 if row.get("share") is not None else 0 for row in rows],
+                        "itemStyle": {"color": "#4a6cf7"},
+                    }
+                ],
+            }
+            chart_type = "bar"
         payload.update({"datasetVersionId": version.id, "configSnapshot": result["config_snapshot"], "chartType": chart_type, "title": result["title"], "option": option})
         return [{"artifact_type": result["artifact_type"], "title": result["title"], "payload_json": payload}]
 
@@ -178,7 +204,13 @@ def _replace_version_columns(db: Session, version: DatasetVersion, schema: list[
         db.delete(column)
     db.flush()
     for item in schema:
-        db.add(DataColumn(dataset_version_id=version.id, **item))
+        # Append through the relationship (not a bare session.add): a FK-only
+        # add never updates the already-loaded ``version.columns`` cache, which
+        # made every non-EDA auto analysis fail its own column validation
+        # (batch 12 fix; the columns themselves were persisted correctly).
+        column = DataColumn(dataset_version_id=version.id, **item)
+        db.add(column)
+        version.columns.append(column)
 
 
 def _replace_quality_report(db: Session, version: DatasetVersion, score: float, quality_status: str, summary: dict[str, Any]) -> None:
@@ -286,8 +318,8 @@ def _run_auto_analyses(
 
 SUPPORTED_ANALYSIS_TYPES = {
     "eda", "descriptive", "overview", "trend", "time_series", "group", "grouped",
-    "segmentation", "group_analysis", "funnel", "conversion", "retention",
-    "retention_analysis", "anomaly", "anomalies", "health", "health_score",
+    "segmentation", "group_analysis", "group_comparison", "funnel", "conversion",
+    "retention", "retention_analysis", "anomaly", "anomalies", "health", "health_score",
 }
 
 
@@ -408,6 +440,12 @@ def _analysis_config_validation(version: DatasetVersion, analysis_type: str, con
         require_column("group_column", "segment_column")
         if config.get("metric_column") and str(config["metric_column"]) not in columns:
             errors.append(f"Missing column: {config['metric_column']}")
+    elif kind == "group_comparison":
+        require_column("group_column")
+        require_column("value_column")
+        aggregation = str(config.get("aggregation") or "mean").lower()
+        if aggregation not in {"sum", "mean"}:
+            errors.append("aggregation must be sum or mean")
     elif kind in {"funnel", "conversion"}:
         require_semantic("user_id", "user_id_column")
         require_semantic("event_time", "event_time_column", "time_column")
@@ -450,11 +488,11 @@ def _field_mapping_error_message(analysis_type: str) -> str:
     return "Please provide the required field mappings for this analysis"
 
 
-_AUTO_ANALYSIS_LIMIT = 3
+_AUTO_ANALYSIS_LIMIT = 4
 
 
 def _auto_analysis_plan(schema: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Pick up to three analyses from the inferred schema, recording *why*.
+    """Pick up to four analyses from the inferred schema, recording *why*.
 
     Deterministic and inspectable by design.  Each entry carries a ``reason`` and
     the columns it chose so the report can disclose that the selection was
@@ -463,7 +501,10 @@ def _auto_analysis_plan(schema: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     ``funnel`` is never auto-selected: ``run_funnel_analysis`` needs an ordered
     ``steps`` list that cannot be inferred, and guessing produces a plausible but
-    wrong funnel.  Stage 4 remains the way to run one.
+    wrong funnel.  Stage 4 remains the way to run one.  ``group_comparison``
+    (batch 12) is the last pick: it turns any low-cardinality category column
+    plus a numeric column into a persisted Pareto breakdown, which is what
+    gives business tables (no event roles) real evidence material.
     """
 
     by_role = {
@@ -530,6 +571,18 @@ def _auto_analysis_plan(schema: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "config": {"metric_column": str(numerics[0]["name"])},
                 "reason": "numeric_column_available_for_outlier_scan",
                 "columns": [str(numerics[0]["name"])],
+            }
+        )
+
+    if len(plan) < _AUTO_ANALYSIS_LIMIT and categoricals and numerics:
+        group_column = str(categoricals[0]["name"])
+        metric_column = str(numerics[0]["name"])
+        plan.append(
+            {
+                "analysis_type": "group_comparison",
+                "config": {"group_column": group_column, "value_column": metric_column, "aggregation": "mean"},
+                "reason": "low_cardinality_string_column_and_numeric_column_for_pareto",
+                "columns": [group_column, metric_column],
             }
         )
 

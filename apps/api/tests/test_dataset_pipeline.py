@@ -331,10 +331,10 @@ def test_funnel_is_never_auto_selected(client, owner, project):
         assert "funnel" not in types, fixture
 
 
-def test_auto_analysis_caps_at_three_runs(client, owner, project):
+def test_auto_analysis_caps_at_four_runs(client, owner, project):
     uploaded = upload(client, owner, project["id"], "metrics.csv")
     job = data_of(client.get(f"/api/v1/jobs/{uploaded['job']['id']}", headers=auth(owner)))
-    assert len(job["input_json"]["auto_analysis_plan"]) <= 3
+    assert len(job["input_json"]["auto_analysis_plan"]) <= 4
 
 
 def test_failed_parse_creates_no_analysis_runs(client, owner, project):

@@ -590,6 +590,70 @@ class AnalysisEngine:
         config = {"analysis_type": "anomaly", "metric_column": metric_column, "time_column": time_column, "group_column": group_column, "method": method, "threshold": threshold, "window": window}
         return self._artifact("anomaly", "Anomaly detection", payload, config)
 
+    def run_group_comparison(
+        self,
+        data: pd.DataFrame | Sequence[Mapping[str, Any]],
+        *,
+        group_column: str,
+        value_column: str,
+        aggregation: str = "mean",
+        top_n: int = 10,
+        field_mapping: Mapping[str, str] | None = None,
+    ) -> AnalysisArtifact:
+        """Aggregate a numeric column per low-cardinality category, Pareto-style.
+
+        Each group gets count/mean/sum/min/max plus its share of the total sum
+        (the share is always sum-based, whatever ``aggregation`` the caller
+        highlights).  Rows are sorted by share descending and truncated to
+        ``top_n``.  The row list lives under the aggregate-allowlist key
+        ``categories`` so the payload survives the AI-context firewall without
+        any allowlist change.
+        """
+
+        frame, normalized_mapping = _apply_field_mapping(data, field_mapping)
+        _require_columns(frame, [group_column, value_column])
+        if aggregation not in {"sum", "mean"}:
+            raise ValueError("aggregation must be sum or mean")
+        if top_n < 1:
+            raise ValueError("top_n must be at least 1")
+        work = frame[[group_column, value_column]].copy()
+        work[value_column] = pd.to_numeric(work[value_column], errors="coerce")
+        work = work.loc[work[group_column].notna() & work[value_column].notna()]
+        if work.empty:
+            raise ValueError("group_comparison requires at least one row with a group and a numeric value")
+        stats = work.groupby(group_column, dropna=False)[value_column].agg(["count", "mean", "sum", "min", "max"])
+        total_sum = float(stats["sum"].sum())
+        records: list[dict[str, Any]] = []
+        for group_value, row in stats.iterrows():
+            group_sum = float(row["sum"])
+            records.append(
+                {
+                    "group": str(group_value),
+                    "count": int(row["count"]),
+                    "mean": round(float(row["mean"]), 6),
+                    "sum": round(group_sum, 6),
+                    "min": _jsonable(row["min"]),
+                    "max": _jsonable(row["max"]),
+                    "share": (round(group_sum / total_sum, 6) if total_sum else None),
+                }
+            )
+        records.sort(key=lambda row: (row["share"] if row["share"] is not None else 0.0), reverse=True)
+        records = records[:top_n]
+        chart = {
+            "type": "bar",
+            "data": [{"name": row["group"], "value": (round(row["share"] * 100, 2) if row["share"] is not None else 0)} for row in records],
+        }
+        payload = {
+            "group_column": group_column,
+            "value_column": value_column,
+            "aggregation": aggregation,
+            "total_groups": int(stats.shape[0]),
+            "categories": records,
+            "chart": chart,
+        }
+        config = {"analysis_type": "group_comparison", "group_column": group_column, "value_column": value_column, "aggregation": aggregation, "top_n": top_n, "field_mapping": normalized_mapping}
+        return self._artifact("chart", f"Group comparison by {group_column}", payload, config)
+
     @staticmethod
     def _line_chart(records: Sequence[Mapping[str, Any]], *, x_key: str, y_key: str, series_key: str | None) -> dict[str, Any]:
         if series_key:
@@ -632,12 +696,17 @@ def run_anomaly_detection(data: pd.DataFrame | Sequence[Mapping[str, Any]], **kw
     return _facade_result(AnalysisEngine(kwargs.pop("dataset_version_id", None), kwargs.pop("analysis_run_id", None)).run_anomaly_detection(data, **kwargs))
 
 
+def run_group_comparison(data: pd.DataFrame | Sequence[Mapping[str, Any]], **kwargs: Any) -> dict[str, Any]:
+    return _facade_result(AnalysisEngine(kwargs.pop("dataset_version_id", None), kwargs.pop("analysis_run_id", None)).run_group_comparison(data, **kwargs))
+
+
 __all__ = [
     "AnalysisArtifact",
     "AnalysisEngine",
     "run_anomaly_detection",
     "run_eda",
     "run_funnel_analysis",
+    "run_group_comparison",
     "run_retention_analysis",
     "run_trend_analysis",
 ]
