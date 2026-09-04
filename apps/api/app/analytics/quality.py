@@ -9,6 +9,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from .parsing import infer_column_type_v2
+
 _TYPE_ALIASES = {
     "numeric": "numeric",
     "number": "numeric",
@@ -57,9 +59,13 @@ def _jsonable(value: Any) -> Any:
 def infer_column_type(series: pd.Series) -> str:
     """Infer one of the product's stable display types.
 
-    Date inference is deliberately conservative: a value must parse for at least 80%
-    of non-empty cells.  This avoids treating arbitrary numeric or identifier strings
-    as dates.
+    Batch 14 delegates to ``parsing.infer_column_type_v2`` so upload inference,
+    the report pipeline and the derived-metric engine share one grammar
+    (thousands separators, currency, percent, magnitude suffixes, Chinese
+    dates, booleans).  The v2 semantic type maps onto the historical
+    vocabulary: numeric/datetime/boolean keep their names, while
+    category/text/identifier all surface as ``categorical`` -- the finer
+    classification lives in the v2 result, not in this legacy contract.
     """
 
     if pd.api.types.is_bool_dtype(series):
@@ -68,14 +74,9 @@ def infer_column_type(series: pd.Series) -> str:
         return "numeric"
     if pd.api.types.is_datetime64_any_dtype(series):
         return "datetime"
-    non_empty = series.dropna()
-    if not non_empty.empty and pd.api.types.is_string_dtype(series):
-        # ``format="mixed"`` is exactly the per-element fallback pandas would
-        # take on its own; naming it keeps real-world mixed-format columns
-        # (ISO dates next to "2026/1/5") from spamming UserWarnings.
-        parsed = pd.to_datetime(non_empty, errors="coerce", utc=True, format="mixed")
-        if float(parsed.notna().mean()) >= 0.8:
-            return "datetime"
+    semantic = infer_column_type_v2(series)["semantic_type"]
+    if semantic in {"numeric", "datetime", "boolean"}:
+        return semantic
     return "categorical"
 
 
