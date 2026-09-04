@@ -172,10 +172,6 @@ class LinkCreate(BaseModel):
     title: str = ""
 
 
-class CleaningRequest(BaseModel):
-    operations: list[dict[str, Any]] = Field(default_factory=list)
-
-
 class DatasetDeleteRequest(BaseModel):
     """Explicit confirmation required before soft-deleting a dataset.
 

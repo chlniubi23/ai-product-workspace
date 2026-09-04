@@ -1,4 +1,4 @@
-"""Deterministic data quality checks and explicitly approved cleaning operations."""
+"""Deterministic data quality checks (the cleaning pipeline was removed in batch 11; the cleaning_operations table is kept but unused)."""
 
 from __future__ import annotations
 
@@ -259,145 +259,11 @@ def assess_quality(
     )
 
 
-def apply_cleaning(
-    data: pd.DataFrame | Sequence[Mapping[str, Any]],
-    operations: Sequence[Mapping[str, Any]],
-) -> pd.DataFrame:
-    """Apply only explicit, deterministic cleaning operations.
-
-    Supported operations are ``drop_duplicates`` (optionally by ``columns``),
-    ``drop_missing`` (``columns``), ``fill_missing`` (``columns`` plus ``value``
-    or a ``strategy`` of mean/median/mode/forward_fill/backward_fill),
-    ``coerce_type`` (``column`` and ``type``), ``strip_strings``, ``lowercase``,
-    ``filter_range`` (``column`` with ``min``/``max``), ``rename_column`` and
-    ``drop_column``.  The function rejects unknown operations and never mutates
-    the source frame.
-    """
-
-    frame = _as_dataframe(data)
-    for operation in operations:
-        kind = str(operation.get("operation") or operation.get("type") or "").lower()
-        params = operation.get("parameters") if isinstance(operation.get("parameters"), Mapping) else {}
-        if kind == "drop_duplicates":
-            subset = operation.get("columns") or params.get("subset")
-            frame = frame.drop_duplicates(subset=list(subset) if subset else None, keep="first")
-        elif kind == "drop_missing":
-            subset = operation.get("columns") or params.get("columns")
-            if not subset:
-                raise ValueError("drop_missing requires columns")
-            frame = frame.dropna(subset=list(subset))
-        elif kind == "fill_missing":
-            columns = operation.get("columns") or params.get("columns")
-            if not columns:
-                raise ValueError("fill_missing requires columns")
-            strategy = str(operation.get("strategy") or params.get("strategy") or "").lower()
-            if strategy:
-                for column in columns:
-                    if column not in frame.columns:
-                        raise ValueError(f"fill_missing column does not exist: {column}")
-                    series = frame[column]
-                    if strategy == "mean":
-                        fill = pd.to_numeric(series, errors="coerce").mean()
-                    elif strategy == "median":
-                        fill = pd.to_numeric(series, errors="coerce").median()
-                    elif strategy == "mode":
-                        modes = series.mode(dropna=True)
-                        fill = modes.iloc[0] if not modes.empty else None
-                    elif strategy in {"forward_fill", "ffill"}:
-                        frame[column] = series.ffill()
-                        continue
-                    elif strategy in {"backward_fill", "bfill"}:
-                        frame[column] = series.bfill()
-                        continue
-                    else:
-                        raise ValueError(f"unsupported fill_missing strategy: {strategy}")
-                    if fill is not None and not pd.isna(fill):
-                        frame[column] = series.fillna(fill)
-            else:
-                value = operation.get("value", params.get("value"))
-                frame.loc[:, list(columns)] = frame.loc[:, list(columns)].fillna(value)
-        elif kind in {"coerce_type", "coerce_numeric"}:
-            columns = operation.get("columns") or params.get("columns")
-            column = operation.get("column") or params.get("column")
-            target_name = operation.get("target_type") or operation.get("type_name") or params.get("target_type") or ("numeric" if kind == "coerce_numeric" else "")
-            target = _TYPE_ALIASES.get(str(target_name).lower())
-            if columns and not column:
-                for selected in columns:
-                    frame = apply_cleaning(frame, [{"operation": "coerce_type", "column": selected, "target_type": target_name}])
-                continue
-            if not column or target not in {"numeric", "datetime", "boolean", "categorical"}:
-                raise ValueError("coerce_type requires column and a supported target_type")
-            if target == "numeric":
-                frame[column] = pd.to_numeric(frame[column], errors="coerce")
-            elif target == "datetime":
-                frame[column] = pd.to_datetime(frame[column], errors="coerce", utc=True)
-            elif target == "boolean":
-                # True/1 and False/0 are the same dict key in Python, so list each
-                # truth value once and bind the mapping as a default argument.
-                mapping = {"true": True, "1": True, True: True, "false": False, "0": False, False: False}
-                frame[column] = frame[column].map(
-                    lambda value, mapping=mapping: mapping.get(value, value if pd.isna(value) else np.nan)
-                )
-            else:
-                frame[column] = frame[column].astype("string")
-        elif kind == "strip_strings":
-            columns = operation.get("columns") or list(frame.select_dtypes(include=["object", "string"]).columns)
-            for column in columns:
-                frame[column] = frame[column].map(lambda value: value.strip() if isinstance(value, str) else value)
-        elif kind in {"lowercase", "uppercase"}:
-            columns = operation.get("columns") or params.get("columns")
-            if not columns:
-                raise ValueError(f"{kind} requires columns")
-            for column in columns:
-                if column not in frame.columns:
-                    raise ValueError(f"{kind} column does not exist: {column}")
-                transform = str.lower if kind == "lowercase" else str.upper
-                frame[column] = frame[column].map(
-                    lambda value, transform=transform: transform(value) if isinstance(value, str) else value
-                )
-        elif kind == "filter_range":
-            column = operation.get("column") or params.get("column")
-            if not column or column not in frame.columns:
-                raise ValueError("filter_range requires an existing column")
-            minimum = operation.get("min", params.get("min"))
-            maximum = operation.get("max", params.get("max"))
-            if minimum is None and maximum is None:
-                raise ValueError("filter_range requires min and/or max")
-            values = pd.to_numeric(frame[column], errors="coerce")
-            mask = pd.Series(True, index=frame.index)
-            if minimum is not None:
-                mask &= values >= float(minimum)
-            if maximum is not None:
-                mask &= values <= float(maximum)
-            frame = frame[mask.fillna(False)]
-        elif kind == "rename_column":
-            column = operation.get("column") or params.get("column")
-            new_name = operation.get("new_name") or params.get("new_name")
-            if not column or column not in frame.columns or not new_name:
-                raise ValueError("rename_column requires an existing column and new_name")
-            if new_name in frame.columns:
-                raise ValueError(f"rename_column target already exists: {new_name}")
-            frame = frame.rename(columns={column: str(new_name)})
-        elif kind == "drop_column":
-            columns = operation.get("columns") or params.get("columns") or ([operation.get("column")] if operation.get("column") else None)
-            if not columns:
-                raise ValueError("drop_column requires column(s)")
-            missing = [column for column in columns if column not in frame.columns]
-            if missing:
-                raise ValueError(f"drop_column columns do not exist: {missing}")
-            frame = frame.drop(columns=list(columns))
-        else:
-            raise ValueError(f"unsupported cleaning operation: {kind or '<missing>'}")
-    return frame.reset_index(drop=True)
-
-
-# Backwards-compatible aliases used by job/application layers.
 run_quality_checks = assess_quality
 check_data_quality = assess_quality
 
 __all__ = [
     "QualityReport",
-    "apply_cleaning",
     "assess_quality",
     "check_data_quality",
     "infer_column_type",

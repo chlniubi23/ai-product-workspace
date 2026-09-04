@@ -4,22 +4,11 @@ import re
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
-
-from ..analytics.quality import apply_cleaning as apply_quality_cleaning
 from ..analytics.quality import assess_quality, infer_column_type
 from ..common import _require_pandas, error, model_dict, pd, serialize
 from ..config import settings
 from ..infrastructure.jobs import JobExecutionError
-from ..models import CleaningOperation, DatasetVersion, now
-
-
-def _cleaning_operation_rows(version: DatasetVersion) -> list[CleaningOperation]:
-    """Return operation history touching a version, ordered oldest first."""
-
-    rows = {item.id: item for item in (*version.cleaning_operations_from, *version.cleaning_operations_to)}
-    return sorted(rows.values(), key=lambda item: item.created_at)
+from ..models import DatasetVersion
 
 
 def _version_payload(version: DatasetVersion, extra: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -163,59 +152,6 @@ def _json_records(df: pd.DataFrame) -> list[dict[str, Any]]:
     return [serialize(row) for row in clean.to_dict(orient="records")]
 
 
-def _cleaning_operation_parameters(operation: dict[str, Any]) -> dict[str, Any]:
-    raw = operation.get("parameters") or {}
-    params = dict(raw) if isinstance(raw, dict) else {}
-    for key in ("columns", "subset", "column", "value", "target_type"):
-        if key in operation and key not in params:
-            params[key] = operation[key]
-    return params
-
-
-def _normalise_cleaning_operations(operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Normalize the public cleaning request into replayable operation payloads."""
-
-    normalised: list[dict[str, Any]] = []
-    for operation in operations:
-        typ = str(operation.get("operation") or operation.get("type") or "").lower()
-        params = _cleaning_operation_parameters(operation)
-        if typ in {"dropna", "drop_missing"}:
-            typ = "drop_missing"
-        elif typ in {"fillna", "fill_missing"}:
-            typ = "fill_missing"
-        elif typ in {"coerce_numeric", "coerce_type"}:
-            typ = "coerce_type" if typ == "coerce_type" else "coerce_numeric"
-            if typ == "coerce_numeric":
-                params.setdefault("target_type", "numeric")
-        # The API accepts the concise top-level form used by the web client.
-        # Copy those values into parameters so the persisted row is sufficient
-        # to replay the operation without relying on the original request.
-        normalised.append({**operation, "operation": typ, "parameters": params})
-    return normalised
-
-
-def _apply_cleaning(df: pd.DataFrame, operations: list[dict[str, Any]]) -> tuple[pd.DataFrame, dict[str, Any]]:
-    _require_pandas()
-    normalised = _normalise_cleaning_operations(operations)
-    affected: list[str] = []
-    for operation in normalised:
-        params = dict(operation.get("parameters") or {})
-        affected.extend([str(item) for item in (operation.get("columns") or params.get("columns") or params.get("subset") or ([operation.get("column")] if operation.get("column") else []))])
-    try:
-        result = apply_quality_cleaning(df, normalised)
-    except (KeyError, TypeError, ValueError) as exc:
-        raise error("VALIDATION_ERROR", f"Invalid cleaning operation: {exc}", 400) from exc
-    removed = max(0, len(df) - len(result))
-    risks: list[str] = []
-    if not len(result):
-        risks.append("Cleaning operations would remove every row")
-    if removed:
-        risks.append(f"{removed} rows will be removed from the derived version")
-    # ``estimated_dropped_rows`` is the documented field name (BUG-016);
-    # ``estimated_deleted_rows`` is kept as a compatibility alias.
-    return result, {"estimated_dropped_rows": int(removed), "estimated_deleted_rows": int(removed), "affected_fields": sorted(set(item for item in affected if item)), "sample_before": _json_records(df.head(5)), "sample_after": _json_records(result.head(5)), "risks": risks}
-
-
 def _safe_data_file(relative_path: str) -> Path | None:
     """Resolve a stored file inside DATA_ROOT, or None if it escapes the root.
 
@@ -240,42 +176,3 @@ def _job_storage_path(relative_path: str) -> Path:
     if root != candidate and root not in candidate.parents:
         raise JobExecutionError("INVALID_STORAGE_PATH", "Job storage path is outside the data root", retryable=False)
     return candidate
-
-
-def _update_cleaning_operation_rows(
-    db: Session,
-    payload: dict[str, Any],
-    *,
-    status: str,
-    summary: dict[str, Any] | None = None,
-    source_row_count: int | None = None,
-    result_row_count: int | None = None,
-    result_fingerprint: str | None = None,
-    error_code: str | None = None,
-    error_message: str | None = None,
-) -> None:
-    operation_ids = [str(value) for value in (payload.get("_cleaning_operation_ids") or []) if value]
-    if not operation_ids:
-        return
-    rows = db.scalars(select(CleaningOperation).where(CleaningOperation.id.in_(operation_ids))).all()
-    by_id = {row.id: row for row in rows}
-    for index, operation_id in enumerate(operation_ids):
-        row = by_id.get(operation_id)
-        if row is None:
-            continue
-        preview = dict(row.preview_json or {})
-        preview.update({"status": status, "operation_index": index})
-        if summary is not None:
-            preview.update(summary)
-        if source_row_count is not None:
-            preview["source_row_count"] = source_row_count
-        if result_row_count is not None:
-            preview["result_row_count"] = result_row_count
-        if result_fingerprint:
-            preview["result_fingerprint"] = result_fingerprint
-        if error_code:
-            preview["error_code"] = error_code
-        if error_message:
-            preview["error_message"] = error_message[:4000]
-        preview["updated_at"] = serialize(now())
-        row.preview_json = preview

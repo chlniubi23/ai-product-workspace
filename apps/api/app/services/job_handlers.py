@@ -44,12 +44,10 @@ from .analysis_pipeline import (
 )
 from .auto_report import _narrate_report
 from .datasets import (
-    _apply_cleaning,
     _column_schema,
     _job_storage_path,
     _quality_summary,
     _read_dataframe,
-    _update_cleaning_operation_rows,
 )
 from .documents import (
     _build_document_context,
@@ -116,47 +114,6 @@ def _handle_dataset_parse(context: JobContext) -> JobResult:
             "auto_analysis_plan": auto["plan"],
         },
     )
-
-
-def _handle_dataset_cleaning(context: JobContext) -> JobResult:
-    db = context.db
-    payload = context.input
-    source = db.get(DatasetVersion, payload.get("source_version_id"))
-    target = db.get(DatasetVersion, payload.get("target_version_id"))
-    if source is None or target is None:
-        raise JobExecutionError("NOT_FOUND", "Cleaning source or target version not found", retryable=False)
-    context.progress(10, "读取原始版本")
-    frame = _read_dataframe(_job_storage_path(source.storage_path), source.file_name)
-    context.progress(35, "应用清洗规则")
-    cleaned, summary = _apply_cleaning(frame, list(payload.get("operations") or []))
-    if cleaned.empty:
-        raise JobExecutionError("VALIDATION_ERROR", "Cleaning operations would remove every row; adjust the rules and retry", retryable=False)
-    target_path = _job_storage_path(str(payload.get("_target_storage_path") or target.storage_path))
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    cleaned.to_csv(target_path, index=False)
-    context.progress(70, "生成清洗后版本")
-    schema = _column_schema(cleaned)
-    target.row_count = len(cleaned)
-    target.column_count = len(cleaned.columns)
-    target.file_size_bytes = target_path.stat().st_size
-    target.fingerprint = hashlib.sha256(target_path.read_bytes()).hexdigest()
-    target.schema_json = {"columns": schema, "parent_version_id": source.id, "cleaning_operations": payload.get("operations") or []}
-    target.status = "ready"
-    _replace_version_columns(db, target, schema)
-    score, quality_status, quality = _quality_summary(cleaned)
-    _replace_quality_report(db, target, score, quality_status, quality)
-    _update_cleaning_operation_rows(
-        db,
-        payload,
-        status="succeeded",
-        summary=summary,
-        source_row_count=len(frame),
-        result_row_count=len(cleaned),
-        result_fingerprint=target.fingerprint,
-    )
-    audit(db, target.dataset.project.workspace_id, payload.get("_actor_id"), "dataset.cleaning_applied", "dataset_version", target.id, {"source_version_id": source.id, "operations": payload.get("operations") or [], "summary": summary})
-    db.commit()
-    return JobResult(result_type="dataset_version", result_id=target.id, input_updates={"rows": len(cleaned), "cleaning_summary": summary})
 
 
 def _handle_analysis(context: JobContext) -> JobResult:
@@ -410,24 +367,6 @@ def _mark_dataset_parse_failed(db: Session, job: Job, code: str, message: str) -
         version.status = "failed"
 
 
-def _mark_cleaning_failed(db: Session, job: Job, code: str, message: str) -> None:
-    payload = job.input_json if isinstance(job.input_json, dict) else {}
-    target_id = payload.get("target_version_id")
-    target = db.get(DatasetVersion, target_id) if target_id else None
-    if target is not None:
-        target.status = "failed"
-    _update_cleaning_operation_rows(db, payload, status="failed", error_code=code, error_message=message)
-
-
-def _mark_cleaning_cancelled(db: Session, job: Job) -> None:
-    payload = job.input_json if isinstance(job.input_json, dict) else {}
-    target_id = payload.get("target_version_id")
-    target = db.get(DatasetVersion, target_id) if target_id else None
-    if target is not None:
-        target.status = "cancelled"
-    _update_cleaning_operation_rows(db, payload, status="cancelled")
-
-
 def _mark_analysis_failed(db: Session, job: Job, code: str, message: str) -> None:
     run_id = (job.input_json or {}).get("analysis_run_id")
     run = db.get(AnalysisRun, run_id) if run_id else None
@@ -510,7 +449,6 @@ def _mark_auto_report_narration_failed(db: Session, job: Job, code: str, message
 def _register_job_handlers() -> None:
     registrations = {
         "dataset_parse": (_handle_dataset_parse, _mark_dataset_parse_failed, None),
-        "dataset_cleaning": (_handle_dataset_cleaning, _mark_cleaning_failed, _mark_cleaning_cancelled),
         "analysis_run": (_handle_analysis, _mark_analysis_failed, None),
         "feedback_import": (_handle_feedback_import, None, None),
         "feedback_cluster_generation": (_handle_feedback_clusters, _mark_feedback_clusters_failed, _mark_feedback_clusters_cancelled),

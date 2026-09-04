@@ -14,16 +14,12 @@ from ..auth import get_current_user
 from ..common import error, model_dict, ok, page_params, paged
 from ..config import settings
 from ..db import get_db
-from ..models import CleaningOperation, DataColumn, Dataset, DatasetVersion, User, WorkspaceMember, now
-from ..schemas import CleaningRequest, DatasetDeleteRequest, SchemaPatch
+from ..models import DataColumn, Dataset, DatasetVersion, User, WorkspaceMember, now
+from ..schemas import DatasetDeleteRequest, SchemaPatch
 from ..services.access import _dataset_version_for, _ensure_project_active, membership, project_for
 from ..services.audit import audit
 from ..services.datasets import (
-    _apply_cleaning,
-    _cleaning_operation_parameters,
-    _cleaning_operation_rows,
     _json_records,
-    _normalise_cleaning_operations,
     _read_dataframe,
     _reject_unsupported_upload,
     _safe_name,
@@ -44,7 +40,9 @@ def list_datasets(project_id: str | None = Query(default=None), user: User = Dep
     else:
         workspace_ids = [m.workspace_id for m in db.scalars(select(WorkspaceMember).where(WorkspaceMember.user_id == user.id)).all()]
         rows = db.scalars(select(Dataset).where(Dataset.workspace_id.in_(workspace_ids), Dataset.deleted_at.is_(None)).order_by(Dataset.created_at.desc())).all() if workspace_ids else []
-    payload = [model_dict(row, {"versions": [_version_payload(version, {"columns": None, "cleaning_operations": [model_dict(item) for item in _cleaning_operation_rows(version)]}) for version in row.versions]}) for row in rows]
+    # The quality report rides along so the web list page can render real
+    # stats without fanning out one request per version (batch 11).
+    payload = [model_dict(row, {"versions": [_version_payload(version, {"columns": None, "quality_report": model_dict(version.quality_report) if version.quality_report else None}) for version in row.versions]}) for row in rows]
     return paged(payload, *pagination, len(payload))
 
 
@@ -176,7 +174,7 @@ def get_dataset(dataset_id: str, user: User = Depends(get_current_user), db: Ses
     if dataset is None or dataset.deleted_at is not None:
         raise error("NOT_FOUND", "Dataset not found", 404)
     project_for(db, user, dataset.project_id)
-    return ok(model_dict(dataset, {"versions": [_version_payload(version, {"quality_report": model_dict(version.quality_report) if version.quality_report else None, "columns": [model_dict(column) for column in version.columns], "cleaning_operations": [model_dict(item) for item in _cleaning_operation_rows(version)]}) for version in dataset.versions]}))
+    return ok(model_dict(dataset, {"versions": [_version_payload(version, {"quality_report": model_dict(version.quality_report) if version.quality_report else None, "columns": [model_dict(column) for column in version.columns]}) for version in dataset.versions]}))
 
 
 @router.get("/api/v1/datasets/{dataset_id}/versions")
@@ -193,7 +191,7 @@ def list_dataset_versions(dataset_id: str, user: User = Depends(get_current_user
 @router.get("/api/v1/dataset-versions/{version_id}")
 def get_dataset_version(version_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     version, _, _ = _dataset_version_for(db, user, version_id)
-    return ok(_version_payload(version, {"columns": [model_dict(column) for column in version.columns], "quality_report": model_dict(version.quality_report) if version.quality_report else None, "cleaning_operations": [model_dict(item) for item in _cleaning_operation_rows(version)]}))
+    return ok(_version_payload(version, {"columns": [model_dict(column) for column in version.columns], "quality_report": model_dict(version.quality_report) if version.quality_report else None}))
 
 
 def _dataset_schema_payload(version: DatasetVersion, dataset: Dataset) -> dict[str, Any]:
@@ -219,13 +217,6 @@ def get_dataset_schema(dataset_id: str, version_id: str, user: User = Depends(ge
     if dataset.id != dataset_id:
         raise error("NOT_FOUND", "Dataset version does not belong to this dataset", 404)
     return ok(_dataset_schema_payload(version, dataset))
-
-
-@router.get("/api/v1/dataset-versions/{version_id}/cleaning-operations")
-def list_cleaning_operations(version_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
-    version, _, _ = _dataset_version_for(db, user, version_id)
-    rows = [model_dict(item) for item in _cleaning_operation_rows(version)]
-    return ok(rows, page=1, page_size=len(rows), total=len(rows))
 
 
 @router.get("/api/v1/dataset-versions/{version_id}/preview")
@@ -300,54 +291,6 @@ def quality_report(version_id: str, user: User = Depends(get_current_user), db: 
     if version.quality_report is None:
         raise error("NOT_FOUND", "Quality report not found", 404)
     return ok(model_dict(version.quality_report))
-
-
-@router.post("/api/v1/dataset-versions/{version_id}/cleaning-preview")
-def cleaning_preview(version_id: str, body: CleaningRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
-    version, _, _ = _dataset_version_for(db, user, version_id, "editor")
-    _ensure_project_active(db, version.project_id)
-    path = settings.data_path / version.storage_path
-    try:
-        dataframe = _read_dataframe(path, version.file_name)
-    except Exception as exc:
-        raise error("VALIDATION_ERROR", f"Could not load dataset: {exc}", 400) from exc
-    _, summary = _apply_cleaning(dataframe, body.operations)
-    return ok({"dataset_version_id": version.id, **summary})
-
-
-@router.post("/api/v1/dataset-versions/{version_id}/cleaning-operations")
-def cleaning_operations(version_id: str, body: CleaningRequest, background_tasks: BackgroundTasks, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
-    version, dataset, project = _dataset_version_for(db, user, version_id, "editor")
-    _ensure_project_active(db, version.project_id)
-    if version.status not in {"ready", "confirmed"}:
-        raise error("DATASET_NOT_READY", "Source dataset version is not ready for cleaning", 422)
-    normalised_operations = _normalise_cleaning_operations(body.operations)
-    if not normalised_operations:
-        raise error("VALIDATION_ERROR", "At least one cleaning operation is required", 400)
-    new_version_number = max((item.version_number for item in dataset.versions), default=0) + 1
-    cleaned_name = f"{Path(version.file_name).stem}_v{new_version_number}.csv"
-    cleaned_path = settings.data_path / "processed" / f"{uuid4().hex}_{cleaned_name}"
-    relative_path = str(cleaned_path.relative_to(settings.data_path))
-    new_version = DatasetVersion(dataset_id=dataset.id, version_number=new_version_number, parent_version_id=version.id, storage_path=relative_path, file_name=cleaned_name, file_size_bytes=0, row_count=0, column_count=0, schema_json={"columns": []}, status="processing", fingerprint=None)
-    db.add(new_version)
-    db.flush()
-    operation_rows: list[CleaningOperation] = []
-    for operation in normalised_operations:
-        operation_rows.append(CleaningOperation(
-            source_version_id=version.id,
-            result_version_id=new_version.id,
-            operation_type=str(operation.get("operation") or "")[:50],
-            parameters_json=_cleaning_operation_parameters(operation),
-            preview_json={"status": "queued", "source_version_id": version.id, "result_version_id": new_version.id},
-            approved_by=user.id,
-        ))
-    db.add_all(operation_rows)
-    db.flush()
-    job = _job(db, project.workspace_id, "dataset_cleaning", {"source_version_id": version.id, "target_version_id": new_version.id, "operations": normalised_operations, "_cleaning_operation_ids": [item.id for item in operation_rows], "_target_storage_path": relative_path, "_actor_id": user.id}, result_type="dataset_version", result_id=new_version.id)
-    audit(db, project.workspace_id, user.id, "dataset.cleaning_queued", "dataset_version", new_version.id, {"parent_version_id": version.id, "operations": normalised_operations, "cleaning_operation_ids": [item.id for item in operation_rows], "job_id": job.id})
-    db.commit()
-    job_executor.schedule(background_tasks, job.id)
-    return ok({"dataset_version": _version_payload(new_version, {"columns": [], "quality_report": None, "cleaning_operations": [model_dict(item) for item in operation_rows]}), "preview": {"status": "queued"}, "job": _job_payload(job)})
 
 
 @router.delete("/api/v1/datasets/{dataset_id}")
