@@ -176,7 +176,7 @@ AI_Product_Workspace/
 > **第二批流程收敛（2026-08-30 完成，纯前端）**：第 6 步只产草稿、第 7 步统一裁决；第 11 步提交与审批分离（`submit()` 不再自动 approve，页面新增待审批区块，数据来自 `GET /approval-requests`）；第 12 步渲染门控从"有已确认洞察"改为"存在 approved 决策"。后端零改动。
 
 **上传后的自动管线**（`services/job_handlers.py:_handle_dataset_parse`）：
-解析 → 行列数/空表校验 → 质量评估 → 写字段字典 → **`schema_auto_accepted_at` 打点 + 内联跑 `_auto_analysis_plan`**（≤3 个：事件表选留存、指标表选趋势+异常，漏斗永不自动选；幂等，失败不拖垮解析）。
+解析 → 行列数/空表校验 → 质量评估 → 写字段字典 → **`schema_auto_accepted_at` 打点 + 内联跑 `_auto_analysis_plan`（第十二批起 ≤4 个：EDA 恒在 + 事件表选留存、指标表选趋势、业务表（低基数类别+数值）选 group 分组 + `group_comparison` Pareto 分组对比、数值列选异常；漏斗永不自动选；幂等，失败不拖垮解析）。第十二批同时修复 `_replace_version_columns` 的关系缓存缺陷（见 §11.16）——此前所有非 EDA 自动分析因列校验拿不到列而从未真正落库。
 
 **数据集版本链**：重名重传追加不可变新版本（BUG-015 修复语义）；~~清洗（`POST /dataset-versions/{id}/cleaning-operations`）~~ 已随第十一批删除（版本只经上传产生）。
 
@@ -206,11 +206,17 @@ AI_Product_Workspace/
 - Copilot SSE 是**回放**而非实时流：事件先存 `AIRun.input_summary_json.events`，`GET /copilot/runs/{id}/events` 逐条吐出（`_sse`）。
 - Copilot 上下文中的洞察由**服务端**注入：`copilot_message` 按 `session.project_id` 查询 confirmed 洞察（created_at 倒序 ≤20 条），经 `extract_ai_insights` 消毒后并入 `copilot_context`；不信任前端传的 insight_ids。
 
-### 7.4 自动报告：先算后叙两步链路（第十批重做，2026-09-03 完成）
+### 7.4 自动报告：先算后叙两步链路（第十批重做，2026-09-03 完成；第十二批加 findings digest）
 「数据概况秒级可见，AI 解读异步补上」——原 `POST /projects/{id}/auto-report` 同步串（pandas 聚合 + AI 叙述一个 HTTP 调用）拆为：
 - **`POST /projects/{id}/auto-report/compute`**：仅确定性部分——`_latest_project_versions` + `_compute_report_aggregates_batch`（`asyncio.to_thread`，单文件失败隔离为 read_failure）+ `_deterministic_report_parts`，落库 `AutoAnalysisReport`（status=`not_configured`、`deterministic_json` 完整、`content_markdown`=确定性体）并立即返回；**零 AI 调用、零 token、不建 AIRun/job**（测试锁定）。重复调用始终新建一条报告（与原语义一致）。
 - **`POST /auto-reports/{id}/narrate`**：对已有报告排队 `auto_report_narration` job（`job_handlers._handle_auto_report_narration`，`asyncio.run(_narrate_report(...))`，模式同文档生成）；`_narrate_report`（services/auto_report.py）从 `deterministic_json.datasets` 重建消毒上下文，走 `_run_ai_stage`（feature=`auto_report_narration`、现有叙述 prompt + `REPORT_OUTPUT_SCHEMA`、flag `auto_report_enabled`、`min_output_tokens=8192`，预算阀门复用第八批语义）。成功 → `sections_json` = 确定性段在前 + AI 段在后重渲染 markdown、status=`succeeded`、记录 `ai_run_id`；任何失败 → status 保持 `not_configured`、仅记 `error_code`，确定性体不动。succeeded/confirmed 报告拒绝重叙述（409 `REPORT_ALREADY_NARRATED`），同一报告在途 job 拒绝重复叙述（409 `NARRATION_IN_PROGRESS`，防双花）。
 - 旧 `POST /projects/{id}/auto-report` **保留为兼容串联**（compute + 同步 narrate，AIRun feature 变为 `auto_report_narration`）；一处语义变化：预算阀门 429 时 compute 报告保留（原先是零报告），聚合数字零成本且可用。实测成本（deepseek-v4-flash，2026-09-03 冒烟）：单次叙述 prompt 1438 / completion 2909-5346；compute 无 ai_runs 记录。
+
+**findings digest 与 group_comparison（第十二批，2026-09-04 完成）**：
+- **`analytics/digest.py: build_findings_digest(aggregates)`**：纯函数，从报告聚合（`deterministic_json.datasets` 同形）按规则提炼 ≤12 条中文发现（kind=missing|correlation|trend_shift|concentration|duplicate，阈值 10%/0.6/30%/60%/5% 为模块常量），severity 降序 + |value| 降序排序；compute 时写入 `deterministic_json["findings"]`，并替换确定性报告「关键发现」段的内容（空 digest 回退旧罗列）。
+- **注入点仅两处**：narrate（`_report_ai_context` 把 digest 逐条作为 `{"id": "finding-N", "artifact_type": "finding"}` artifact 走 artifacts 通道，payload 键 kind/dataset/severity/rate/metrics 全在防火墙白名单内——**ai_context.py 零改动**；system prompt 要求逐条覆盖）与文档生成（`_build_document_context` 第五类证据，同形状 ≤12 条）。蒸馏/采访不注入（合成 id 会被证据归一丢弃）。
+- **`AnalysisEngine.run_group_comparison(group_column, value_column, aggregation="mean", top_n=10)`**：按类别列分组聚合数值列（count/mean/sum/min/max + sum 口径占比，按占比降序 top_n）；分组行列表用白名单键 `categories`（任务建议键名 `groups` 不在 `_AGGREGATE_LIST_KEYS`，防火墙禁改，故偏离）；`SUPPORTED_ANALYSIS_TYPES`/`_analysis_artifacts`（bar 图 option）/`_analysis_config_validation` 均有对应分支。
+- `_compute_report_aggregates` 内联调 run_group_comparison，把 top 组摘要并入该数据集聚合的 `breakdown` 键（同为白名单键）；自动分析计划上限 3→4，业务表追加 group_comparison（reason=`..._for_pareto`）。前端 `chartOption.ts` 新增 bar 渲染（group_comparison 占比柱状图）。
 
 ### 7.5 交付文档生成（第七批重做，AI 驱动）
 - **上下文装配**（`services/documents.py:_build_document_context`）：四类证据全部走 artifacts 通道——项目内 confirmed 洞察（≤20）、已回答采访问题（≤30）、approved 决策（≤10）、最新 auto-report 的每数据集聚合（≤5，deterministic_json.datasets 逐个展开）；经 `build_ai_context` 消毒（防火墙零改动）。`_collect_source_refs` 保留原 source_refs 校验并产出 manifest 所需的上游 id 集合；`_evidence_manifest` 是两条渲染路径共用的不可变溯源块（**AI 输出永不覆盖 manifest**）。
@@ -257,7 +263,7 @@ AI_Product_Workspace/
 ## 10. 当前完成度
 
 **已实现且验证**：
-- 后端测试套件 **221 passed, 1 xfailed，0 警告**（2026-09-03 实测运行；第十批新增 test_auto_report_split.py 10 个先算后叙测试，第九批新增 test_archive.py 9 个归档/守卫测试）；含 route manifest 冻结测试、test_guardrails.py 守护测试、test_interview.py 采访/蒸馏测试、第七批 test_document_generation.py、第八批 test_budget_model.py 直花/硬顶/总阀门测试）。覆盖：RBAC 与 workspace 隔离、数据管线（上传/版本/清洗/质量）、分析引擎全类型、AI 降级边界（无 key 绝不 500、输出契约、上下文白名单、反馈原文不外泄）、决策链规则（证据强制/落选理由/审批失效）、项目级联删除、报告叙述消毒。
+- 后端测试套件 **240 passed, 1 xfailed，0 警告**（2026-09-04 实测运行；第十二批新增 test_digest.py 与 test_group_comparison.py 19 个计算加强测试；第十批新增 test_auto_report_split.py 10 个先算后叙测试，第九批新增 test_archive.py 9 个归档/守卫测试）；含 route manifest 冻结测试、test_guardrails.py 守护测试、test_interview.py 采访/蒸馏测试、第七批 test_document_generation.py、第八批 test_budget_model.py 直花/硬顶/总阀门测试）。覆盖：RBAC 与 workspace 隔离、数据管线（上传/版本/清洗/质量）、分析引擎全类型、AI 降级边界（无 key 绝不 500、输出契约、上下文白名单、反馈原文不外泄）、决策链规则（证据强制/落选理由/审批失效）、项目级联删除、报告叙述消毒。
 - 10 个 Alembic 迁移可从零建库（0010 = document_versions.ai_status/ai_error_code）；`.env` 已配置 DeepSeek；前后端均可本地跑通。
 - 前端 11 阶段页面、工作台、数据管理、设置页齐全（第四批起）。
 - **全链路已真实手动冒烟走通**（12 阶段版 2026-08-30：上传→报告→洞察→讨论→问题→方案→决策→PRD；11 阶段版 2026-09-01：上传→报告→采访→蒸馏→裁决→问题→方案→决策→PRD）。
@@ -291,6 +297,7 @@ AI_Product_Workspace/
 13. **历史事故记录（已修复）**：第三批 Phase 2 的 AST 切割脚本曾把 `_purge_project` 中对 `_safe_data_file` 的调用连同注释一并丢弃（拆分后该函数一度成为无调用者的死代码，且删除路径失去越界防护，提交 42728e5..132a25e 期间生效）。第四批重新接线并由 test_guardrails 锁定；同时纠正第三批汇报中"死代码"的定性——根源是脚本丢行，不是基线死代码。
 14. **文档生成上下文丢失洞察正文（第八批冒烟实证，未修）**：`_build_document_context` 的洞察 payload 用 `content` 键，而 `content` 在 `_FEEDBACK_CONTENT_KEYS` 黑名单内——`build_ai_context` 装配时洞察正文被静默剥离，文档 AI 实际只能看到洞察标题/置信度/证据骨架（采访回答的 question/answer 键不受影响）。修复方向：洞察 payload 改用非保留键（如 `body`）或为洞察开专用通道；因涉防火墙（第八批禁改）未动。
 15. **设置项 `ai_per_request_token_budget` 已无拦截职责但仍在设置 UI 展示**（第八批起仅作 worst_case 预留的兜底参数），用户可能误以为它限流；建议后续在设置页标注或移除展示。
+16. **`_replace_version_columns` 关系缓存缺陷（第十二批发现并修复，2026-09-04）**：新列经裸 `db.add(DataColumn(dataset_version_id=...))` 落库（FK 不经 back_populates 更新已加载的 `version.columns` 缓存），导致自动管线内所有非 EDA 分析（留存/趋势/异常/分组）的列校验拿到空列集而全部以 `reason=config` 被跳过——**自自动管线引入以来这些分析从未真正落库**（既有测试只锁 plan 未锁 run，故未暴露）。修复：新列经 `version.columns.append()` 追加；test_group_comparison.py 以业务表上传断言 group_comparison run 真实落库锁定。
 
 ---
 
@@ -302,6 +309,7 @@ AI_Product_Workspace/
 - job handler：`app/services/job_handlers.py`，`job_executor` 全仓库唯一实例在此；新增 handler 后在 `_register_job_handlers()` 注册（main.py 末尾恰好调用一次）。
 - 归档语义（第九批）：归档只能走 `POST /projects/{id}/archive|unarchive`（ProjectPatch 不含 status）；归档项目的 editor+ 写路径全部 409 `PROJECT_ARCHIVED`（project_for 与各路由的 `_ensure_project_active` 守卫），viewer 读与 owner 删除不受限。前端「当前项目」持久化键为 localStorage `apw_active_project`。
 - 数据页语义（第十一批，2026-09-04 完成）：清洗全链路已删除（`cleaning_operations` 表与模型保留、不提交 cleanup 迁移）；`GET /datasets` 的 versions 携带水合 `quality_report`（统计卡真实数字）；数据页「项目上下文」只读展示当前活跃项目（`getActiveProjectId()` + `apw-project-changed` 事件跟随刷新），切换/新建项目统一在工作台完成，上传绑定当前活跃项目；数据集详情页字段定义为只读（后端 PATCH schema 端点保留）。
+- 计算加强（第十二批，2026-09-04 完成）：新分析类型 `group_comparison`（engine `run_group_comparison`，自动计划上限 4，业务表自动选中）；`analytics/digest.py` 的 findings digest 写入报告 `deterministic_json.findings` 并注入叙述/文档 AI 上下文（firewall 白名单零改动）；新增测试 `test_digest.py`/`test_group_comparison.py`（后端 240 用例）。
 - 新增 AI 能力：服务逻辑进 `services/ai_stages.py`（复用 `_run_ai_stage()` 模板，可传 `response_schema`/`output_validator`/`empty_output` 定义阶段契约），路由壳进 `routers/ai.py`；上下文必须过 `build_ai_context`，AI 结果一律 draft；Copilot 的 insights 上下文由服务端注入，客户端传入的一律丢弃。
 - 分析类型扩展点：`analytics/engine.py`（计算）+ `services/analysis_pipeline.py`（`_analysis_artifacts` 持久化映射、`_analysis_config_validation`、`_auto_analysis_plan`）+ `deepseek.py` 工具白名单（若暴露给 Copilot）。
 - 前端新页面的惯例：`app/(workspace)/` 下建目录，用 `WorkflowFrame` 的 `WorkflowHeader/WorkflowGate` 包裹，门控逻辑改 `lib/workflow.ts` 的 `stepCompletion()`，导航加 `lib/navigation.ts`。
