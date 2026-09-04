@@ -234,9 +234,31 @@ def _safe_json(value: Any) -> Any:
 
 
 _EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I)
-# Require at least ten digits so ISO dates and ordinary metric values are not
-# mistaken for phone numbers.
+# The ten-character minimum does NOT save ISO dates: "2026-03-30" is ten chars
+# with separators inside the class, so the pattern ate them whole and planted
+# fake "[phone]" markers in every report. Dates are shielded before masking
+# and restored afterwards (batch 13).
 _PHONE_RE = re.compile(r"(?<!\d)(?:\+?\d[\d .()\-]{8,}\d)(?!\d)")
+_ISO_DATE_RE = re.compile(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}([ T]\d{1,2}:\d{2}(:\d{2})?)?")
+
+
+def _mask_keeping_dates(value: str) -> str:
+    """Protect-then-mask-then-restore emails/phones over ISO dates."""
+
+    dates: list[str] = []
+
+    def _protect(match: re.Match[str]) -> str:
+        dates.append(match.group(0))
+        # Private-use-area placeholders: unique per date and unmatchable by
+        # the phone/email patterns.
+        return chr(0xE000 + len(dates) - 1)
+
+    text = _ISO_DATE_RE.sub(_protect, value)
+    text = _EMAIL_RE.sub("[email]", text)
+    text = _PHONE_RE.sub("[phone]", text)
+    for index, original in enumerate(dates):
+        text = text.replace(chr(0xE000 + index), original)
+    return text
 _SENSITIVE_KEY_RE = re.compile(r"(?:^|_)(?:email|e_mail|phone|mobile|telephone|ip|address|password|secret|token|api_key|user_ref|userid|user_id|account_id)(?:$|_)", re.I)
 _IDENTIFIER_KEYS = {"user_id", "userid", "user_ref", "account_id", "external_ref", "session_id"}
 _DROP_KEYS = {"password", "password_hash", "secret", "token", "access_token", "api_key", "authorization", "raw_data", "raw_rows", "file_path"}
@@ -288,8 +310,7 @@ def redact_pii(value: Any, *, key: str | None = None, max_string_length: int = 2
     if isinstance(value, str):
         if normalized_key in _IDENTIFIER_KEYS:
             return _stable_hash(value)
-        text = _EMAIL_RE.sub("[email]", value)
-        text = _PHONE_RE.sub("[phone]", text)
+        text = _mask_keeping_dates(value)
         return text[:max_string_length]
     if _SENSITIVE_KEY_RE.search(normalized_key) and value is not None:
         return _stable_hash(value)

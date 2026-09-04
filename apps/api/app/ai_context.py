@@ -106,6 +106,29 @@ _SECRET_KEY_RE = re.compile(
 _PII_KEY_RE = re.compile(r"(?:email|phone|mobile|telephone|address|user[_-]?id|account[_-]?id|external[_-]?ref)", re.I)
 _EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I)
 _PHONE_RE = re.compile(r"(?<!\d)(?:\+?\d[\d .()\-]{8,}\d)(?!\d)")
+# ISO dates are analysis objects, not PII -- but the phone pattern above eats
+# them whole ("2026-03-30" -> "[phone]"), which manufactured fake limitations
+# in every report. Dates are shielded before masking and restored afterwards.
+_ISO_DATE_RE = re.compile(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}([ T]\d{1,2}:\d{2}(:\d{2})?)?")
+
+
+def _mask_keeping_dates(value: str) -> str:
+    """Protect-then-mask-then-restore emails/phones over ISO dates."""
+
+    dates: list[str] = []
+
+    def _protect(match: re.Match[str]) -> str:
+        dates.append(match.group(0))
+        # Private-use-area placeholders: unique per date and unmatchable by
+        # the phone/email patterns.
+        return chr(0xE000 + len(dates) - 1)
+
+    text = _ISO_DATE_RE.sub(_protect, value)
+    text = _EMAIL_RE.sub("[email]", text)
+    text = _PHONE_RE.sub("[phone]", text)
+    for index, original in enumerate(dates):
+        text = text.replace(chr(0xE000 + index), original)
+    return text
 
 _ALIASES = {
     "goal_statement": "goal",
@@ -211,8 +234,7 @@ def _safe_scalar(value: Any, *, key: str | None = None, max_length: int = 2000) 
     if isinstance(value, str):
         if key and _SECRET_KEY_RE.search(key):
             return "[REDACTED]"
-        text = _EMAIL_RE.sub("[email]", value)
-        text = _PHONE_RE.sub("[phone]", text)
+        text = _mask_keeping_dates(value)
         if key and _PII_KEY_RE.search(key) and key not in {"summary", "description", "question"}:
             return _anon(value)
         return text[:max_length]

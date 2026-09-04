@@ -147,6 +147,30 @@ def test_ai_context_redacts_emails_and_phone_numbers():
     assert "555-123-4567" not in blob
 
 
+def test_iso_dates_survive_the_ai_masking():
+    """Batch 13: dates are analysis objects -- the phone pattern must stop
+    eating them ("2026-03-30" used to become "[phone]", planting fake
+    limitations in every report)."""
+
+    from app.ai_context import build_ai_context
+    from app.infrastructure.llm.deepseek import redact_pii
+
+    context = build_ai_context(goal="活动窗口 2026-03-30 至 2026-06-30")
+    assert context["goal"] == "活动窗口 2026-03-30 至 2026-06-30"
+
+    assert redact_pii("2026-03-30 10:00") == "2026-03-30 10:00"
+    assert redact_pii("2026/3/5") == "2026/3/5"
+    assert "[phone]" in redact_pii("13800138000")
+
+    mixed = redact_pii("联系电话 13800138000，日期 2026-03-30")
+    assert "[phone]" in mixed
+    assert "2026-03-30" in mixed
+
+    mixed_email = build_ai_context(goal="联系 a@b.com，截止 2026-03-30")
+    assert "a@b.com" not in json.dumps(mixed_email)
+    assert "2026-03-30" in json.dumps(mixed_email)
+
+
 def test_individual_feedback_text_never_reaches_the_context(client, owner, project):
     """Feedback contributes aggregate counts only -- never verbatim notes."""
 
