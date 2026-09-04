@@ -324,6 +324,64 @@ async def report_narration(version_id: str, user: User = Depends(get_current_use
     )
 
 
+def _persist_report_findings(
+    db: Session, project: Project, snapshots: list[dict[str, Any]], findings: list[dict[str, Any]]
+) -> None:
+    """Land the digest as real ``finding`` artifacts so the grounding chain can
+    cite actual ids (batch 13).
+
+    Each dataset's findings attach to that dataset's latest succeeded analysis
+    run.  Idempotent: the target run's existing finding artifacts are deleted
+    first, so recomputing a report never stacks duplicates.  A dataset without
+    a succeeded run keeps its findings in the report digest but gets no
+    artifacts.  NOTE: re-running an analysis clears that run's artifacts
+    (findings included) -- regenerate the report to restore them.
+    """
+
+    for snapshot in snapshots:
+        run = db.scalar(
+            select(AnalysisRun)
+            .where(
+                AnalysisRun.project_id == project.id,
+                AnalysisRun.dataset_version_id == snapshot["version_id"],
+                AnalysisRun.status == "succeeded",
+            )
+            .order_by(AnalysisRun.created_at.desc())
+            .limit(1)
+        )
+        if run is None:
+            continue
+        dataset_findings = [item for item in findings if item.get("dataset") == snapshot["dataset_name"]]
+        stale = db.scalars(
+            select(AnalysisArtifact).where(
+                AnalysisArtifact.analysis_run_id == run.id,
+                AnalysisArtifact.artifact_type == "finding",
+            )
+        ).all()
+        for artifact in stale:
+            db.delete(artifact)
+        db.flush()
+        for item in dataset_findings:
+            payload = {
+                "kind": str(item.get("kind") or ""),
+                "dataset": str(item.get("dataset") or ""),
+                "columns": [str(column) for column in item.get("columns") or []],
+                "value": item.get("value"),
+                "rate": item.get("value"),
+            }
+            db.add(
+                AnalysisArtifact(
+                    analysis_run_id=run.id,
+                    artifact_type="finding",
+                    title=str(item.get("statement") or "")[:255],
+                    payload_json=payload,
+                    fingerprint=hashlib.sha256(
+                        json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode()
+                    ).hexdigest(),
+                )
+            )
+
+
 async def _compute_auto_report(project: Project, user: User, db: Session) -> AutoAnalysisReport:
     """Deterministic half of the auto report (batch 10): pandas aggregates
     plus the fallback body, persisted as ``not_configured``.  No AI call
@@ -367,6 +425,17 @@ async def _compute_auto_report(project: Project, user: User, db: Session) -> Aut
         raise error("VALIDATION_ERROR", "Could not read any dataset file to analyse", 400)
 
     findings_digest = build_findings_digest(aggregates)
+    _persist_report_findings(db, project, snapshots, findings_digest)
+    # Batch 13: every still-current predecessor loses its "live" status the
+    # moment a new report is computed; the newest report never carries the
+    # stamp.  Confirmation records stay on the old rows.
+    for predecessor in db.scalars(
+        select(AutoAnalysisReport).where(
+            AutoAnalysisReport.project_id == project.id,
+            AutoAnalysisReport.superseded_at.is_(None),
+        )
+    ).all():
+        predecessor.superseded_at = now()
     default_title, deterministic_summary, deterministic_sections, deterministic_findings = _deterministic_report_parts(
         project.name, aggregates, findings_digest
     )

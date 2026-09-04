@@ -601,6 +601,11 @@ class AutoAnalysisReport(Base):
     generated_by = Column(String(36), nullable=True)
     confirmed_by = Column(String(36), nullable=True)
     confirmed_at = Column(DateTime, nullable=True)
+    # Batch 13: a report that is no longer the project's live one (compute
+    # stamps every predecessor); the newest report never carries this.
+    # Confirmation records survive supersession -- confirmed_at/confirmed_by
+    # are the history, superseded_at just marks "not current".
+    superseded_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=now, nullable=False)
     updated_at = Column(DateTime, default=now, onupdate=now, nullable=False)
 
