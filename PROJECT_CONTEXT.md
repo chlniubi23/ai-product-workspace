@@ -220,6 +220,18 @@ AI_Product_Workspace/
 - **`AnalysisEngine.run_group_comparison(group_column, value_column, aggregation="mean", top_n=10)`**：按类别列分组聚合数值列（count/mean/sum/min/max + sum 口径占比，按占比降序 top_n）；分组行列表用白名单键 `categories`（任务建议键名 `groups` 不在 `_AGGREGATE_LIST_KEYS`，防火墙禁改，故偏离）；`SUPPORTED_ANALYSIS_TYPES`/`_analysis_artifacts`（bar 图 option）/`_analysis_config_validation` 均有对应分支。
 - `_compute_report_aggregates` 内联调 run_group_comparison，把 top 组摘要并入该数据集聚合的 `breakdown` 键（同为白名单键）；自动分析计划上限 3→4，业务表追加 group_comparison（reason=`..._for_pareto`）。前端 `chartOption.ts` 新增 bar 渲染（group_comparison 占比柱状图）。
 
+### 7.4b 计算层 v2 能力清单与封版说明（第十四批，2026-09-04 完成——计算层就此封版）
+
+「数据上传后全部价值提取由代码完成，LLM 只做整合解读」。五项地基能力全部落地：
+
+1. **解析鲁棒性**（`analytics/parsing.py`）：`parse_numeric`（千分位/货币 ¥￥$/百分比（保留数值本身）/k|K|M|m|B|万|亿 后缀/负号/括号负数）、`parse_datetime_value`（ISO/斜杠/中文 `2026年3月30日`|`2026年3月`/带时间）、`parse_boolean`（是/否、true/false、0/1、Y/N）。`infer_column_type_v2(series)` 返回 `{semantic_type: numeric|datetime|boolean|category|text|identifier, parse_rate, unique_ratio, constant, identifier}`——采样逐值解析、parse_rate ≥0.8 判定（numeric→datetime→boolean 顺序）；identifier=唯一率 ≥0.9 且无空格的字符串列；constant 为正交标志。**`quality.infer_column_type` 已委托 v2**（numeric/datetime/boolean 同名映射，其余返回 `categorical`），上传推断全链路一致。
+2. **文本指标抽取**（`analytics/text_metrics.py: extract_text_metrics(frame, text_columns=None, min_label_coverage=0.3)`）：固定「label(2-12 位含字母/汉字)+数值+可选单位」模式逐行抽取；label 归一（去空格小写）后出现率 ≥30% 非空行才派生列 `{源列}__{指标}`（行对齐，未匹配 NaN）；返回 (扩展帧副本, extraction_report)；**默认只扫 text/category 语义列、排除 constant 列**（日期/ID 列不产垃圾 token）。同时把 v2 numeric/datetime/boolean 字符串列**物化为解析值**（"¥12,000"→12000.0、中文日期→datetime）——否则 schema 标 float 而单元格仍是文本，下游数值计算必崩（实现期发现）。
+3. **语义分类与溯源**：`DataColumn.source`（迁移 0013，`original|extracted`）；parse 流程 = 原帧质量评估 + `extract_text_metrics` → `_column_schema(frame_ext)`（含派生列）→ schema item 带 `source`；`schema_json["text_metric_extraction"]` 存逐指标覆盖率报告；`version.column_count` 保持原文件列数。
+4. **分布深化**：`_compute_report_aggregates` 在扩展帧上聚合，数值列（含派生）统计含 `outliers`（IQR 1.5 倍计数）、`skewness`、`bins`+`counts`（pd.cut 直方）；metrics entry 标 `source` 与 `constant`；trend 增 `gaps`（日历缺口期数，按频率步长推算）。
+5. **digest v2**：新增三条规则——常数列每数据集合并为一条（kind=constant）、IQR 离群占比 ≥5%（kind=outlier，≥15% 升 severity 3）、趋势日历缺口 ≥1 期（kind=calendar_gap）；派生指标列（名含 `__`）命中的 trend_shift 在语句中标注「（抽取指标）」。
+
+回归基准：`tests/fixtures/samples/business_table_text_metrics.csv`（30 行 × 8 列合成周报表：ISO+中文日期、千分位货币、百分比、类别、标识符、常数、含缺失的文本指标列）；`tests/test_parsing.py`（34 个）+ `tests/test_compute_v2.py`（4 个集成）。派生列前端标注：数据集详情页字段字典对 `source=extracted` 显示「抽取 NN%」tag（覆盖率来自 extraction report）。**不做**：跨数据集 join、Cramér's V/交叉表、缺失共现、季节性分解、新分析范式——等真实需求立项。
+
 ### 7.5 交付文档生成（第七批重做，AI 驱动）
 - **上下文装配**（`services/documents.py:_build_document_context`）：四类证据全部走 artifacts 通道——项目内 confirmed 洞察（≤20）、已回答采访问题（≤30）、approved 决策（≤10）、最新 auto-report 的每数据集聚合（≤5，deterministic_json.datasets 逐个展开）；经 `build_ai_context` 消毒（防火墙零改动）。`_collect_source_refs` 保留原 source_refs 校验并产出 manifest 所需的上游 id 集合；`_evidence_manifest` 是两条渲染路径共用的不可变溯源块（**AI 输出永不覆盖 manifest**）。
 - **job 链路**（`job_handlers._handle_document_generation`）：路由先落确定性模板（中文）并排队 job；handler 在 worker 线程 `asyncio.run(_run_ai_stage(...))`（feature=document_generation、`REPORT_OUTPUT_SCHEMA`、按 document_type 给中文章节结构 prompt、`min_output_tokens=8192`）——succeeded 则 AI 渲染中文 Markdown 追加溯源块落新版本；任何失败（not_configured/failed/截断/预算拒绝）回退完整中文模板。`DocumentVersion.ai_status/ai_error_code`（迁移 0010）记录产出来源：NULL=旧数据、succeeded=AI、fallback=模板——交付页按错误码显示中文提示条，**模板回退绝不静默**。`generate_document` 按 (project_id, document_type) find-or-create（第八批）：重生成复用同一文档追加版本、更新标题，不再堆积同名文档。job input 含 `title`/`project_id`。
@@ -265,8 +277,8 @@ AI_Product_Workspace/
 ## 10. 当前完成度
 
 **已实现且验证**：
-- 后端测试套件 **240 passed, 1 xfailed，0 警告**（2026-09-04 实测运行；第十二批新增 test_digest.py 与 test_group_comparison.py 19 个计算加强测试；第十批新增 test_auto_report_split.py 10 个先算后叙测试，第九批新增 test_archive.py 9 个归档/守卫测试）；含 route manifest 冻结测试、test_guardrails.py 守护测试、test_interview.py 采访/蒸馏测试、第七批 test_document_generation.py、第八批 test_budget_model.py 直花/硬顶/总阀门测试）。覆盖：RBAC 与 workspace 隔离、数据管线（上传/版本/清洗/质量）、分析引擎全类型、AI 降级边界（无 key 绝不 500、输出契约、上下文白名单、反馈原文不外泄）、决策链规则（证据强制/落选理由/审批失效）、项目级联删除、报告叙述消毒。
-- 12 个 Alembic 迁移可从零建库（0012 = auto_analysis_reports.superseded_at）；`.env` 已配置 DeepSeek；前后端均可本地跑通。
+- 后端测试套件 **284 passed, 1 xfailed，0 警告**（2026-09-04 实测运行；第十四批新增 test_parsing.py 34 个与 test_compute_v2.py 4 个计算层 v2 测试；第十二批新增 test_digest.py 与 test_group_comparison.py 19 个计算加强测试；第十批新增 test_auto_report_split.py 10 个先算后叙测试，第九批新增 test_archive.py 9 个归档/守卫测试）；含 route manifest 冻结测试、test_guardrails.py 守护测试、test_interview.py 采访/蒸馏测试、第七批 test_document_generation.py、第八批 test_budget_model.py 直花/硬顶/总阀门测试）。覆盖：RBAC 与 workspace 隔离、数据管线（上传/版本/清洗/质量）、分析引擎全类型、AI 降级边界（无 key 绝不 500、输出契约、上下文白名单、反馈原文不外泄）、决策链规则（证据强制/落选理由/审批失效）、项目级联删除、报告叙述消毒。
+- 13 个 Alembic 迁移可从零建库（0013 = data_columns.source）；`.env` 已配置 DeepSeek；前后端均可本地跑通。
 - 前端 11 阶段页面、工作台、数据管理、设置页齐全（第四批起）。
 - **全链路已真实手动冒烟走通**（12 阶段版 2026-08-30：上传→报告→洞察→讨论→问题→方案→决策→PRD；11 阶段版 2026-09-01：上传→报告→采访→蒸馏→裁决→问题→方案→决策→PRD）。
 - **`ruff check app tests` 零告警**（第四批清掉 tests 基线 3 条 + 连带 2 条；unittest 弃用告警从 2494 → 0）。
