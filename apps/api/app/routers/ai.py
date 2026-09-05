@@ -363,6 +363,10 @@ def _persist_report_findings(
         db.flush()
         for item in dataset_findings:
             payload = {
+                # Batch 17b: the digest index makes read-back order equal the
+                # digest order -- created_at ties are unreliable and UUID ids
+                # do not follow insertion order.
+                "order": findings.index(item),
                 "kind": str(item.get("kind") or ""),
                 "dataset": str(item.get("dataset") or ""),
                 "columns": [str(column) for column in item.get("columns") or []],

@@ -240,9 +240,20 @@ def _build_document_context(body: DocumentGenerate, db: Session, user: User) -> 
                 AnalysisRun.status == "succeeded",
                 AnalysisArtifact.artifact_type == "finding",
             )
-            .order_by(AnalysisArtifact.created_at.desc())
+            .order_by(AnalysisArtifact.created_at.asc())
             .limit(_DOC_FINDING_LIMIT)
         ).all()
+        # Batch 17b: read-back order must equal digest order.  created_at ties
+        # are unreliable, so artifacts persisted with a digest "order" key sort
+        # by it; legacy rows without the key trail behind in stable time order.
+        finding_artifacts = sorted(
+            finding_artifacts,
+            key=lambda item: (
+                item.payload_json.get("order") if isinstance(item.payload_json, dict) and isinstance(item.payload_json.get("order"), int) else 10**9,
+                item.created_at,
+                item.id,
+            ),
+        )
         if finding_artifacts:
             for item in finding_artifacts:
                 artifacts.append(

@@ -239,3 +239,44 @@ def test_document_context_includes_findings_from_latest_report(client, owner, pr
         assert stored is not None and stored.project_id == project["id"]
         runs = db.scalars(select(AnalysisRun).where(AnalysisRun.project_id == project["id"])).all()
     assert runs  # sanity: the business upload really produced analysis runs
+
+
+def test_finding_artifact_order_is_deterministic(client, owner, project):
+    """Batch 17b: read-back order equals digest order across independent
+    sessions -- created_at ties and UUID ids used to make it vary."""
+
+    from app.models import AnalysisArtifact
+
+    _upload_business(client, owner, project)
+    report = data_of(
+        client.post(f"/api/v1/projects/{project['id']}/auto-report/compute", headers=auth(owner))
+    )["report"]
+    findings = report["deterministic_json"]["findings"]
+    assert len(findings) >= 2, "the fixture must produce at least two findings"
+
+    def read_titles():
+        with database.SessionLocal() as db:
+            user = db.get(User, owner["user"]["id"])
+            context = _build_document_context(
+                DocumentGenerate(project_id=project["id"], document_type="prd", title="顺序验收", source_refs=[]),
+                db,
+                user,
+            )
+            return [
+                item["title"]
+                for item in context["safe_context"]["artifacts"]
+                if item["artifact_type"] == "finding"
+            ]
+
+    first = read_titles()
+    second = read_titles()
+    assert first == second, "two independent reads must agree"
+    assert first == [item["statement"] for item in findings], "read-back order == digest order"
+    # every landed payload carries the digest index
+    with database.SessionLocal() as db:
+        rows = db.scalars(
+            select(AnalysisArtifact).join(AnalysisRun, AnalysisRun.id == AnalysisArtifact.analysis_run_id).where(
+                AnalysisRun.project_id == project["id"], AnalysisArtifact.artifact_type == "finding"
+            )
+        ).all()
+        assert sorted(row.payload_json["order"] for row in rows) == list(range(len(findings)))

@@ -104,6 +104,9 @@ def _analysis_artifact_items(db: Session, project: Project) -> list[dict[str, An
     artifacts = db.scalars(
         select(AnalysisArtifact)
         .where(AnalysisArtifact.analysis_run_id.in_([run.id for run in runs]))
+        # Stable read order (batch 17b): no ORDER BY here made the grounding
+        # window's composition vary between processes.
+        .order_by(AnalysisArtifact.created_at.asc(), AnalysisArtifact.id.asc())
         .limit(_ARTIFACT_CONTEXT_LIMIT)
     ).all()
     return [
