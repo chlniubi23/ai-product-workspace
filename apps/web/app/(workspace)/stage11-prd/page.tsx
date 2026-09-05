@@ -75,8 +75,10 @@ export default function Stage11PrdPage() {
   const hydrateSeq = useRef(0);
   const projectId = snapshot?.activeDataset?.project_id;
   const confirmed = snapshot?.insights.filter((insight) => insight.status === "confirmed") || [];
-  const hasApprovedDecision =
-    (snapshot?.decisions || []).some((decision) => decision.status === "approved");
+  const approvedDecision = [...(snapshot?.decisions || [])]
+    .filter((decision) => decision.status === "approved")
+    .at(-1);
+  const hasApprovedDecision = Boolean(approvedDecision);
 
   function switchType(value: string) {
     setDocType(value);
@@ -90,9 +92,12 @@ export default function Stage11PrdPage() {
     for (let attempt = 0; attempt < POLL_LIMIT; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 2000));
       try {
-        const job = await apiRequest<{ status?: string }>(`/jobs/${jobId}`);
+        // Batch 17: two-pass generation reports per-section progress through
+        // the job's current_step -- surface it verbatim ("正在撰写 第 N/M 节…").
+        const job = await apiRequest<{ status?: string; current_step?: string }>(`/jobs/${jobId}`);
         const status = String(job.status || "");
         if (TERMINAL_JOB_STATUS.has(status)) return status;
+        if (job.current_step) setProgressNote(job.current_step);
       } catch {
         /* transient read failure: keep polling */
       }
@@ -185,7 +190,12 @@ export default function Stage11PrdPage() {
             project_id: projectId,
             document_type: docType,
             title: title.trim() || "未命名文档",
-            source_refs: confirmed.map((insight) => ({ type: "insight", id: insight.id })),
+            // Batch 17: the approved decision joins the evidence list so the
+            // generated document treats it as the narrative axis.
+            source_refs: [
+              ...confirmed.map((insight) => ({ type: "insight", id: insight.id })),
+              ...(approvedDecision ? [{ type: "decision_proposal", id: approvedDecision.id }] : []),
+            ],
           }),
         },
       );
