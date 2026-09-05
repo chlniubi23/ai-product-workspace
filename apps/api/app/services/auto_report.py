@@ -344,10 +344,17 @@ def _report_markdown(title: str, summary: str, sections: list[dict[str, str]], f
     return "\n".join(parts).strip()
 
 
-def _auto_report_payload(report: AutoAnalysisReport) -> dict[str, Any]:
+def _auto_report_payload(report: AutoAnalysisReport, db: Session) -> dict[str, Any]:
+    from .job_handlers import _active_narration_job  # in-function: job_handlers imports this module
+
     payload = model_dict(report)
     # Convenience alias: the web client renders the markdown directly.
     payload["markdown"] = report.content_markdown
+    # Batch 16: the in-flight narration job id (null once terminal) lets the
+    # web client resume its poll after a page switch instead of showing a
+    # stale "补生成" button.
+    active = _active_narration_job(db, report.id)
+    payload["narration_job_id"] = active.id if active is not None else None
     return payload
 
 

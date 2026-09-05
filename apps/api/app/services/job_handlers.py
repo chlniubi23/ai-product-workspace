@@ -393,11 +393,13 @@ def _mark_document_failed(db: Session, job: Job, code: str, message: str) -> Non
         document.status = "generation_failed"
 
 
-def _narration_job_active(db: Session, report_id: str) -> bool:
-    """True while a narration job for this report is queued or running.
+def _active_narration_job(db: Session, report_id: str) -> Job | None:
+    """The in-flight narration job for a report, if any (queued or running).
 
     Guards against double-spend: a second narrate call while one is in flight
-    would queue a duplicate provider call over the same aggregates.
+    would queue a duplicate provider call over the same aggregates.  Batch 16
+    also exposes the job id through the report payload so the web client can
+    resume polling after a page switch.
     """
 
     rows = db.scalars(
@@ -406,8 +408,25 @@ def _narration_job_active(db: Session, report_id: str) -> bool:
     for job in rows:
         source = job.input_json if isinstance(job.input_json, dict) else {}
         if str(source.get("report_id") or "") == report_id:
-            return True
-    return False
+            return job
+    return None
+
+
+def _active_document_generation_job(db: Session, document_id: str) -> Job | None:
+    """The in-flight generation job for a document, if any (batch 16).
+
+    Same shape as ``_active_narration_job``: the delivery page reads the job
+    id from the document payload to resume its poll after navigation.
+    """
+
+    rows = db.scalars(
+        select(Job).where(Job.job_type == "document_generation", Job.status.in_(("queued", "running")))
+    ).all()
+    for job in rows:
+        source = job.input_json if isinstance(job.input_json, dict) else {}
+        if str(source.get("document_id") or "") == document_id:
+            return job
+    return None
 
 
 def _handle_auto_report_narration(context: JobContext) -> JobResult:

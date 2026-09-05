@@ -43,9 +43,16 @@ _DOCUMENT_SECTION_BRIEFS = {
 
 
 def _document_payload(document: Document, db: Session) -> dict[str, Any]:
+    from .job_handlers import _active_document_generation_job  # in-function: job_handlers imports this module
+
     versions = db.scalars(select(DocumentVersion).where(DocumentVersion.document_id == document.id).order_by(DocumentVersion.version_number)).all()
     current = next((version for version in versions if version.id == document.current_version_id), versions[-1] if versions else None)
-    return model_dict(document, {"current_version": model_dict(current) if current else None, "versions": [model_dict(version) for version in versions]})
+    payload = model_dict(document, {"current_version": model_dict(current) if current else None, "versions": [model_dict(version) for version in versions]})
+    # Batch 16: in-flight generation job id (null once terminal) so the
+    # delivery page can resume its poll after a page switch.
+    active = _active_document_generation_job(db, document.id)
+    payload["generation_job_id"] = active.id if active is not None else None
+    return payload
 
 
 def _collect_source_refs(body: DocumentGenerate, db: Session, project: Project) -> dict[str, Any]:

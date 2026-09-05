@@ -318,3 +318,47 @@ def test_regenerating_same_type_reuses_one_document(client, owner, project):
     assert first["id"] == second["id"], "same project+type must reuse the document"
     assert second["title"] == "第二次生成"
     assert len(second["versions"]) >= 2
+
+
+def test_generation_job_id_exposed_in_payload_across_lifecycle(client, owner, project):
+    """Batch 16: the document payload carries the in-flight generation job id
+    (null once terminal) so the delivery page can resume its poll."""
+
+    from app.models import Job
+
+    ready = make_ready(client, owner, project)
+    insight = confirmed_insight(client, owner, ready)
+    ready["insight_id"] = insight["id"]
+    generated = generate_doc(client, owner, ready)
+    document_id = generated["id"]
+
+    # Terminal (the inline job already finished): null.
+    fetched = data_of(client.get(f"/api/v1/documents/{document_id}", headers=auth(owner)))
+    assert fetched["generation_job_id"] is None
+
+    # An in-flight job shows up on both detail and list payloads.
+    with database.SessionLocal() as db:
+        job = Job(
+            workspace_id=owner["workspace"]["id"],
+            job_type="document_generation",
+            status="running",
+            progress=30,
+            current_step="AI 撰写文档",
+            input_json={"document_id": document_id, "_actor_id": owner["user"]["id"]},
+        )
+        db.add(job)
+        db.commit()
+        job_id = job.id
+
+    fetched = data_of(client.get(f"/api/v1/documents/{document_id}", headers=auth(owner)))
+    assert fetched["generation_job_id"] == job_id
+    listed = data_of(client.get(f"/api/v1/documents?project_id={project['id']}", headers=auth(owner)))
+    row = next(item for item in listed if item["id"] == document_id)
+    assert row["generation_job_id"] == job_id
+
+    with database.SessionLocal() as db:
+        stored = db.get(Job, job_id)
+        stored.status = "succeeded"
+        db.commit()
+    fetched = data_of(client.get(f"/api/v1/documents/{document_id}", headers=auth(owner)))
+    assert fetched["generation_job_id"] is None

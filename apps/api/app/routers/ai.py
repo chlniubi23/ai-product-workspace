@@ -65,7 +65,7 @@ from ..services.auto_report import (
     _report_markdown,
 )
 from ..services.evidence import _validate_source_insights
-from ..services.job_handlers import _job, _job_payload, _narration_job_active, job_executor
+from ..services.job_handlers import _active_narration_job, _job, _job_payload, job_executor
 from ..services.workspace_settings import (
     _reject_ai_budget,
     _token_count,
@@ -487,7 +487,7 @@ async def compute_auto_report(project_id: str, user: User = Depends(get_current_
     report = await _compute_auto_report(project, user, db)
     audit(db, workspace.id, user.id, "report.computed", "auto_report", report.id, {"datasets": len(report.dataset_version_ids)})
     db.commit()
-    return ok({"report": _auto_report_payload(report), "status": report.status, "error_code": report.error_code})
+    return ok({"report": _auto_report_payload(report, db), "status": report.status, "error_code": report.error_code})
 
 
 @router.post("/api/v1/auto-reports/{report_id}/narrate")
@@ -508,13 +508,13 @@ def narrate_auto_report(report_id: str, background_tasks: BackgroundTasks, user:
     project_for(db, user, report.project_id, "editor")
     if report.status in {"succeeded", "confirmed"}:
         raise error("REPORT_ALREADY_NARRATED", "该报告已有 AI 解读；如需更新请重新生成报告", 409)
-    if _narration_job_active(db, report.id):
+    if _active_narration_job(db, report.id) is not None:
         raise error("NARRATION_IN_PROGRESS", "AI 解读正在生成中，请稍候", 409)
     job = _job(db, report.workspace_id, "auto_report_narration", {"report_id": report.id, "_actor_id": user.id}, result_type="auto_report", result_id=report.id)
     audit(db, report.workspace_id, user.id, "report.narration_queued", "auto_report", report.id)
     db.commit()
     job_executor.schedule(background_tasks, job.id)
-    return ok({"report": _auto_report_payload(report), "job": _job_payload(job)})
+    return ok({"report": _auto_report_payload(report, db), "job": _job_payload(job)})
 
 
 @router.post("/api/v1/projects/{project_id}/auto-report")
@@ -541,7 +541,7 @@ async def generate_auto_report(project_id: str, user: User = Depends(get_current
     usage = result.get("usage") or {}
     return ok(
         {
-            "report": _auto_report_payload(report),
+            "report": _auto_report_payload(report, db),
             "run_id": report.ai_run_id,
             "status": report.status,
             "error_code": report.error_code,
@@ -568,7 +568,7 @@ def list_auto_reports(
         .offset((page - 1) * page_size)
         .limit(page_size)
     ).all()
-    return ok([_auto_report_payload(row) for row in rows], page=page, page_size=page_size, total=total)
+    return ok([_auto_report_payload(row, db) for row in rows], page=page, page_size=page_size, total=total)
 
 
 @router.get("/api/v1/auto-reports/{report_id}")
@@ -577,7 +577,7 @@ def get_auto_report(report_id: str, user: User = Depends(get_current_user), db: 
     if report is None:
         raise error("NOT_FOUND", "Report not found", 404)
     project_for(db, user, report.project_id)
-    return ok(_auto_report_payload(report))
+    return ok(_auto_report_payload(report, db))
 
 
 @router.post("/api/v1/auto-reports/{report_id}/confirm")
@@ -594,7 +594,7 @@ def confirm_auto_report(report_id: str, user: User = Depends(get_current_user), 
         report.confirmed_at = now()
         audit(db, report.workspace_id, user.id, "report.confirmed", "auto_report", report.id)
         db.commit()
-    return ok(_auto_report_payload(report))
+    return ok(_auto_report_payload(report, db))
 
 
 @router.post("/api/v1/ai/propose-solutions")

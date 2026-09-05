@@ -262,6 +262,69 @@ def test_narration_handler_is_registered_for_recover(client, owner, project):
     assert job_executor.has_handler("auto_report_narration")
 
 
+def test_narration_job_id_exposed_in_payloads_across_lifecycle(client, owner, project, monkeypatch):
+    """Batch 16: the payload carries the in-flight narration job id so the web
+    client can resume polling; it is null whenever no job is queued/running."""
+
+    _upload_two(client, owner, project)
+    computed = data_of(_compute(client, owner, project["id"]))["report"]
+    assert computed["narration_job_id"] is None
+
+    # An in-flight (queued) job shows up on both the detail and list payloads.
+    with database.SessionLocal() as db:
+        job = Job(
+            workspace_id=owner["workspace"]["id"],
+            job_type="auto_report_narration",
+            status="running",
+            progress=10,
+            current_step="AI 解读报告",
+            input_json={"report_id": computed["id"], "_actor_id": owner["user"]["id"]},
+        )
+        db.add(job)
+        db.commit()
+        job_id = job.id
+
+    listed = data_of(client.get(f"/api/v1/projects/{project['id']}/auto-reports", headers=auth(owner)))
+    row = next(item for item in listed if item["id"] == computed["id"])
+    assert row["narration_job_id"] == job_id
+    assert _get_report(client, owner, computed["id"])["narration_job_id"] == job_id
+
+    # Terminal job: back to null.
+    with database.SessionLocal() as db:
+        stored = db.get(Job, job_id)
+        stored.status = "failed"
+        stored.error_code = "LLM_PROVIDER_ERROR"
+        db.commit()
+    assert _get_report(client, owner, computed["id"])["narration_job_id"] is None
+
+    # A completed narrate run (fake adapter success) also leaves it null.
+    class _FakeAdapter:
+        configured = True
+
+        async def complete(self, *, messages, response_schema, request_metadata):
+            from app.infrastructure.llm.deepseek import LlmResult
+
+            return LlmResult(
+                structured={
+                    "title": "生命周期",
+                    "summary": "概述。",
+                    "sections": [{"heading": "AI 解读", "content": "- 要点"}],
+                    "key_findings": ["发现"],
+                    "recommendations": ["建议"],
+                    "limitations": ["局限"],
+                },
+                finish_reason="stop",
+                prompt_tokens=100,
+                completion_tokens=100,
+            )
+
+    import app.services.ai_stages as ai_stages
+
+    monkeypatch.setattr(ai_stages, "DeepSeekAdapter", lambda _settings: _FakeAdapter())
+    data_of(_narrate(client, owner, computed["id"]))
+    assert _get_report(client, owner, computed["id"])["narration_job_id"] is None
+
+
 def test_narrate_enforces_roles(client, owner, viewer, outsider, project):
     _upload_two(client, owner, project)
     computed = data_of(_compute(client, owner, project["id"]))["report"]
