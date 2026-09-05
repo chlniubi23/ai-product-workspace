@@ -29,6 +29,7 @@ type DocumentRow = {
   document_type?: string;
   created_at?: string;
   current_version?: DocumentVersionRow | null;
+  generation_job_id?: string | null;
 };
 
 const DOCUMENT_TYPES = [
@@ -147,6 +148,28 @@ export default function Stage11PrdPage() {
   useEffect(() => {
     void hydrateDocument();
   }, [projectId, docType, hydrateDocument]);
+
+  // Batch 16: resume a generation job after a page switch. The hydrated
+  // document carries generation_job_id while a generation job is queued or
+  // running; entering it re-uses the exact generate() flow (progress note,
+  // poll, re-hydrate) without another click or a duplicate queueing.
+  useEffect(() => {
+    const jobId = document?.generation_job_id;
+    if (!jobId || busy) return;
+    setProgressNote("正在生成新版本…");
+    void (async () => {
+      setBusy(true);
+      try {
+        await waitForJob(jobId);
+        await hydrateDocument(true);
+        setNotice("文档已就绪，可编辑后导出。");
+        await refresh();
+      } finally {
+        setProgressNote("");
+        setBusy(false);
+      }
+    })();
+  }, [document?.generation_job_id, busy, hydrateDocument, refresh]);
 
   async function generate() {
     if (!projectId || !confirmed.length || !accessToken()) return;

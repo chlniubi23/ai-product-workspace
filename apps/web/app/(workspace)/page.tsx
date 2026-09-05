@@ -41,6 +41,7 @@ type AutoReport = {
   error_code?: string | null;
   created_at?: string;
   confirmed_at?: string | null;
+  narration_job_id?: string | null;
 };
 
 type BatchUploadResult = {
@@ -313,8 +314,23 @@ export default function WorkbenchPage() {
   }, []);
 
   // Async AI half (batch 10): queue a narration job and poll it. Leaving the
-  // page does not affect the server-side job; coming back, the report list
-  // already carries the latest status.
+  // page does not affect the server-side job; coming back, the effect below
+  // resumes polling from the payload's narration_job_id (batch 16).
+  const pollNarration = useCallback(
+    async (targetReportId: string, jobId: string) => {
+      setNarratingId(targetReportId);
+      setNarrationNotice("");
+      const outcome = jobId ? await waitForJob(jobId) : "failed";
+      if (!mountedRef.current) return;
+      const fresh = await refreshReport(targetReportId);
+      if (!fresh || fresh.status !== "succeeded") {
+        setNarrationNotice(narrationFailureNotice(fresh?.error_code, outcome));
+      }
+      if (mountedRef.current) setNarratingId(null);
+    },
+    [refreshReport, waitForJob],
+  );
+
   const narrateReport = useCallback(
     async (targetReportId: string) => {
       setNarratingId(targetReportId);
@@ -323,23 +339,32 @@ export default function WorkbenchPage() {
         const result = await apiRequest<{ job?: { id?: string } }>(`/auto-reports/${targetReportId}/narrate`, {
           method: "POST",
         });
-        const jobId = result.job?.id || "";
-        const outcome = jobId ? await waitForJob(jobId) : "failed";
-        if (!mountedRef.current) return;
-        const fresh = await refreshReport(targetReportId);
-        if (!fresh || fresh.status !== "succeeded") {
-          setNarrationNotice(narrationFailureNotice(fresh?.error_code, outcome));
-        }
+        await pollNarration(targetReportId, result.job?.id || "");
       } catch (cause) {
-        if (mountedRef.current) {
-          setNarrationNotice(cause instanceof Error ? cause.message : "AI 解读失败，请重试。");
+        const message = cause instanceof Error ? cause.message : "AI 解读失败，请重试。";
+        if (message.includes("NARRATION_IN_PROGRESS")) {
+          // 另一处已在生成：刷新拿到 job id，恢复 effect 接管轮询，不报错。
+          await refreshReport(targetReportId);
+          return;
         }
-      } finally {
-        if (mountedRef.current) setNarratingId(null);
+        if (mountedRef.current) {
+          setNarrationNotice(message);
+          setNarratingId(null);
+        }
       }
     },
-    [refreshReport, waitForJob],
+    [pollNarration, refreshReport],
   );
+
+  // Batch 16: resume narration polling after a page switch. The payload's
+  // narration_job_id is non-null exactly while a job is queued/running, so
+  // remounting this page re-enters the in-progress state automatically
+  // (no button click, no duplicate queueing -- the 409 guard backs this up).
+  useEffect(() => {
+    const jobId = report?.narration_job_id;
+    if (!jobId || !report?.id || narratingId) return;
+    void pollNarration(report.id, jobId);
+  }, [report, narratingId, pollNarration]);
 
   const startUpload = async () => {
     if (!files.length || !projectId) return;
@@ -662,16 +687,19 @@ export default function WorkbenchPage() {
             </div>
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
               <span className={`tag ${statusMeta?.tone || "tag-slate"}`}>{statusMeta?.label || report.status}</span>
-              {(report.status === "not_configured" || report.status === "failed") && !narratingId && !narrationNotice && (
-                <button
-                  className="btn btn-subtle btn-sm"
-                  onClick={() => void narrateReport(report.id)}
-                  title="对当前确定性报告补一次 AI 解读"
-                >
-                  <Sparkles size={13} />
-                  补生成 AI 解读
-                </button>
-              )}
+              {(report.status === "not_configured" || report.status === "failed") &&
+                !narratingId &&
+                !narrationNotice &&
+                !report.narration_job_id && (
+                  <button
+                    className="btn btn-subtle btn-sm"
+                    onClick={() => void narrateReport(report.id)}
+                    title="对当前确定性报告补一次 AI 解读"
+                  >
+                    <Sparkles size={13} />
+                    补生成 AI 解读
+                  </button>
+                )}
               {report.status !== "confirmed" && (
                 <button className="btn btn-subtle btn-sm" onClick={confirmReport} disabled={confirming}>
                   <Check size={13} />
