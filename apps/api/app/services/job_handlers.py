@@ -10,7 +10,15 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..ai_context import REPORT_OUTPUT_SCHEMA, empty_report_output, validate_report_output
+from ..ai_context import (
+    DOCUMENT_OUTLINE_SCHEMA,
+    DOCUMENT_SECTION_SCHEMA,
+    REPORT_OUTPUT_SCHEMA,
+    empty_report_output,
+    validate_document_outline,
+    validate_document_section,
+    validate_report_output,
+)
 from ..analytics.text_metrics import extract_text_metrics
 from ..common import _require_pandas, model_dict, pd
 from ..config import settings
@@ -53,8 +61,11 @@ from .datasets import (
 from .documents import (
     _build_document_context,
     _document_system_prompt,
+    _fallback_section_content,
+    _outline_system_prompt,
     _render_ai_document_markdown,
     _render_document_markdown,
+    _section_system_prompt,
 )
 
 job_executor = JobExecutor(SessionLocal)
@@ -304,45 +315,160 @@ def _handle_document_generation(context: JobContext) -> JobResult:
     if workspace is None:
         raise JobExecutionError("NOT_FOUND", "Workspace not found", retryable=False)
 
-    context.progress(20, "装配证据上下文")
+    context.progress(15, "装配证据上下文")
     doc_context = _build_document_context(body, context.db, user)
-
-    context.progress(45, "AI 撰写文档")
     audience = str((doc_context["options"] or {}).get("audience") or "产品团队")[:120]
+
+    final_output: dict[str, Any] | None = None
+    ai_error_code = "AI_UNAVAILABLE"
+
+    # ---- Pass 1: outline & findings (batch 17) ----
     # Sync handler on a worker thread: no ambient event loop exists here, so
     # asyncio.run() is safe (TestClient's inline background execution runs on
-    # a threadpool thread as well).
+    # a threadpool thread as well).  Every pass goes through _run_ai_stage and
+    # therefore the regular daily valve -- no bypass.
+    outline: dict[str, Any] | None = None
     try:
-        ai_result = asyncio.run(
+        outline_result = asyncio.run(
             _run_ai_stage(
                 db=context.db,
                 user=user,
                 workspace=workspace,
-                feature_name="document_generation",
-                system_prompt=_document_system_prompt(body.document_type, audience),
+                feature_name="document_outline",
+                system_prompt=_outline_system_prompt(body.document_type, audience),
                 context=doc_context["safe_context"],
                 flag_name="document_generation_enabled",
-                response_schema=REPORT_OUTPUT_SCHEMA,
-                output_validator=validate_report_output,
-                empty_output=dict(empty_report_output(limitation="AI provider is not configured.")),
-                min_output_tokens=8192,
+                response_schema=DOCUMENT_OUTLINE_SCHEMA,
+                output_validator=validate_document_outline,
+                empty_output={"findings": [], "sections": [], "root_cause": ""},
             )
         )
+        if outline_result.get("status") == "succeeded":
+            outline = outline_result["output"]
+        else:
+            ai_error_code = str(outline_result.get("error_code") or ai_error_code)
     except HTTPException as exc:
         # Budget rejection (429) or a feature flag flip mid-flight: the AIRun
-        # bookkeeping already happened inside; fall back to the template.
-        ai_result = {"status": "failed", "error_code": str(getattr(exc, "detail", {}).get("code") if isinstance(exc.detail, dict) else "AI_REJECTED"), "output": {}}
+        # bookkeeping already happened inside; degrade to the single pass.
+        ai_error_code = str(exc.detail.get("code")) if isinstance(exc.detail, dict) else "AI_REJECTED"
 
-    context.progress(80, "渲染文档")
-    if ai_result.get("status") == "succeeded":
-        markdown = _render_ai_document_markdown(body, ai_result["output"], doc_context)
+    # ---- Pass 2: one call per section ----
+    if outline is not None:
+        sections = [s for s in outline.get("sections") or [] if str(s.get("heading") or "").strip()][:10]
+        total = len(sections)
+        written: list[dict[str, str]] = []
+        summary_parts: list[str] = []
+        ok_count = 0
+        for index, section in enumerate(sections):
+            heading = str(section.get("heading")).strip()
+            context.progress(20 + int(65 * index / max(1, total)), f"正在撰写 第 {index + 1}/{total} 节：{heading[:40]}")
+            written_summary = chr(10).join(summary_parts)[:1200]
+            section_context = {
+                **doc_context["safe_context"],
+                "outline_findings": outline.get("findings") or [],
+                "root_cause": str(outline.get("root_cause") or ""),
+                "written_summary": written_summary,
+                "solution": doc_context.get("solution"),
+                "decision": doc_context.get("decision"),
+            }
+            sec_ok = False
+            content = ""
+            try:
+                sec_result = asyncio.run(
+                    _run_ai_stage(
+                        db=context.db,
+                        user=user,
+                        workspace=workspace,
+                        feature_name="document_section",
+                        system_prompt=_section_system_prompt(
+                            body.document_type,
+                            body.title,
+                            index + 1,
+                            total,
+                            heading,
+                            str(section.get("purpose") or ""),
+                            written_summary,
+                            audience,
+                            doc_context.get("solution"),
+                            doc_context.get("decision"),
+                        ),
+                        context=section_context,
+                        flag_name="document_generation_enabled",
+                        response_schema=DOCUMENT_SECTION_SCHEMA,
+                        output_validator=validate_document_section,
+                        empty_output={"heading": heading, "content": ""},
+                        min_output_tokens=8192,
+                    )
+                )
+                if sec_result.get("status") == "succeeded":
+                    content = str(sec_result["output"].get("content") or "").strip()
+                    sec_ok = bool(content)
+                else:
+                    ai_error_code = str(sec_result.get("error_code") or ai_error_code)
+            except HTTPException as exc:
+                ai_error_code = str(exc.detail.get("code")) if isinstance(exc.detail, dict) else "AI_REJECTED"
+            if not sec_ok:
+                # One failed section degrades to outline bullets; the rest of
+                # the document carries on.
+                content = _fallback_section_content(section, outline)
+            else:
+                ok_count += 1
+            written.append({"heading": heading, "content": content})
+            plain = re.sub(r"\|[^\n]*\|", "", content)
+            summary_parts.append(f"{heading}：{plain.strip()[:100]}")
+        if ok_count > 0:
+            final_output = {
+                "title": body.title,
+                "summary": str(outline.get("root_cause") or ""),
+                "sections": written,
+                "key_findings": [
+                    str(item.get("title")) for item in outline.get("findings") or [] if item.get("title")
+                ][:8],
+                "recommendations": [],
+                "limitations": [],
+            }
+
+    # ---- availability path: single-pass generation, then template fallback ----
+    if final_output is None:
+        context.progress(45, "AI 撰写文档")
+        try:
+            ai_result = asyncio.run(
+                _run_ai_stage(
+                    db=context.db,
+                    user=user,
+                    workspace=workspace,
+                    feature_name="document_generation",
+                    system_prompt=_document_system_prompt(body.document_type, audience),
+                    context=doc_context["safe_context"],
+                    flag_name="document_generation_enabled",
+                    response_schema=REPORT_OUTPUT_SCHEMA,
+                    output_validator=validate_report_output,
+                    empty_output=dict(empty_report_output(limitation="AI provider is not configured.")),
+                    min_output_tokens=8192,
+                )
+            )
+        except HTTPException as exc:
+            # Budget rejection (429) or a feature flag flip mid-flight: the AIRun
+            # bookkeeping already happened inside; fall back to the template.
+            ai_result = {"status": "failed", "error_code": str(getattr(exc, "detail", {}).get("code") if isinstance(exc.detail, dict) else "AI_REJECTED"), "output": {}}
+        if ai_result.get("status") == "succeeded":
+            final_output = ai_result["output"]
+        else:
+            ai_error_code = str(ai_result.get("error_code") or ai_error_code)
+
+    context.progress(92, "渲染文档")
+    if final_output is not None:
+        markdown = _render_ai_document_markdown(body, final_output, doc_context)
+        version_ai_status = "succeeded"
+        version_error = None
     else:
         # Deterministic fallback keeps the deliverable usable without a
         # provider; the reason is recorded on the audit trail.
         markdown, _ = _render_document_markdown(body, context.db, user)
+        version_ai_status = "fallback"
+        version_error = ai_error_code
 
     latest = context.db.scalar(select(DocumentVersion.version_number).where(DocumentVersion.document_id == document.id).order_by(DocumentVersion.version_number.desc()).limit(1)) or 0
-    ai_succeeded = ai_result.get("status") == "succeeded"
     version = DocumentVersion(
         document_id=document.id,
         version_number=latest + 1,
@@ -351,16 +477,16 @@ def _handle_document_generation(context: JobContext) -> JobResult:
         created_by=user.id,
         # Degradation visibility: the delivery page surfaces this so a
         # template fallback never masquerades as AI output.
-        ai_status="succeeded" if ai_succeeded else "fallback",
-        ai_error_code=None if ai_succeeded else str(ai_result.get("error_code") or "AI_UNAVAILABLE")[:80],
+        ai_status=version_ai_status,
+        ai_error_code=None if version_ai_status == "succeeded" else str(version_error or "AI_UNAVAILABLE")[:80],
     )
     context.db.add(version)
     context.db.flush()
     document.current_version_id = version.id
-    # Batch 17: this version is the document's FIRST and ONLY output -- the
-    # route no longer pre-writes a template shell.  A retried document carries
-    # status "generation_failed" from the earlier attempt; landing the final
-    # version clears it.
+    # This version is the document's FIRST and ONLY output -- the
+    # route no longer pre-writes a template shell (batch 17 prep).  A retried
+    # document carries status "generation_failed" from the earlier attempt;
+    # landing the final version clears it.
     document.status = "draft"
     audit(
         context.db,
@@ -369,7 +495,7 @@ def _handle_document_generation(context: JobContext) -> JobResult:
         "document.generation_completed",
         "document",
         document.id,
-        {"job_id": context.job_id, "ai_status": ai_result.get("status"), "ai_error_code": ai_result.get("error_code"), "version": version.version_number},
+        {"job_id": context.job_id, "ai_status": version_ai_status, "ai_error_code": version_error, "version": version.version_number},
     )
     context.db.commit()
     return JobResult(result_type="document", result_id=document.id)

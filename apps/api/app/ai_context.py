@@ -743,6 +743,112 @@ def empty_report_output(*, summary: str = "", limitation: str | None = None) -> 
     }
 
 
+# Batch 17: two-pass deep document generation.  Pass 1 produces the outline
+# (key findings + per-section plan + root cause); pass 2 writes one section
+# per call.  Both ride the existing _run_ai_stage budget/valve machinery --
+# only the output contracts are new here, the context allowlist is untouched.
+DOCUMENT_OUTLINE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["findings", "sections", "root_cause"],
+    "properties": {
+        "findings": {
+            "type": "array",
+            "maxItems": 6,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["id", "title", "severity"],
+                "properties": {
+                    "id": {"type": "string"},
+                    "title": {"type": "string"},
+                    "evidence_hint": {"type": "string"},
+                    "severity": {"type": "string", "enum": ["高", "中", "低"]},
+                },
+            },
+        },
+        "sections": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["heading", "purpose"],
+                "properties": {"heading": {"type": "string"}, "purpose": {"type": "string"}},
+            },
+        },
+        "root_cause": {"type": "string"},
+    },
+}
+
+_DOCUMENT_SEVERITIES = {"高", "中", "低"}
+
+
+def validate_document_outline(value: Any) -> dict[str, Any]:
+    """Validate and normalize the outline contract (batch 17)."""
+
+    if not isinstance(value, Mapping):
+        raise AIOutputValidationError("document outline must be a JSON object")
+    raw_findings = value.get("findings")
+    raw_sections = value.get("sections")
+    if not isinstance(raw_findings, list) or not isinstance(raw_sections, list):
+        raise AIOutputValidationError("document outline requires findings and sections arrays")
+    findings: list[dict[str, Any]] = []
+    for item in raw_findings[:6]:
+        if not isinstance(item, Mapping):
+            continue
+        title = str(item.get("title") or "").strip()
+        if not title:
+            continue
+        severity = str(item.get("severity") or "中").strip()
+        findings.append(
+            {
+                "id": str(item.get("id") or "")[:120],
+                "title": title[:500],
+                "evidence_hint": str(item.get("evidence_hint") or "")[:300],
+                "severity": severity if severity in _DOCUMENT_SEVERITIES else "中",
+            }
+        )
+    sections: list[dict[str, Any]] = []
+    for item in raw_sections[:10]:
+        if not isinstance(item, Mapping):
+            continue
+        heading = str(item.get("heading") or "").strip()
+        if not heading:
+            continue
+        sections.append({"heading": heading[:200], "purpose": str(item.get("purpose") or "").strip()[:500]})
+    if not sections:
+        raise AIOutputValidationError("document outline requires at least one section")
+    return {
+        "findings": findings,
+        "sections": sections,
+        "root_cause": str(value.get("root_cause") or "").strip()[:2000],
+    }
+
+
+DOCUMENT_SECTION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["heading", "content"],
+    "properties": {"heading": {"type": "string"}, "content": {"type": "string"}},
+}
+
+
+def validate_document_section(value: Any) -> dict[str, Any]:
+    """Validate one written section; near-empty bodies are rejected so the
+    caller can fall back to the outline-bullet content (batch 17)."""
+
+    if not isinstance(value, Mapping):
+        raise AIOutputValidationError("document section must be a JSON object")
+    heading = str(value.get("heading") or "").strip()
+    content = str(value.get("content") or "").strip()
+    if not heading:
+        raise AIOutputValidationError("document section requires a heading")
+    if len(content) < 50:
+        raise AIOutputValidationError("document section content is too short to be a real section")
+    return {"heading": heading[:200], "content": content[:60000]}
+
+
 # Stage 9 contract: a single problem statement draft.  ``priority`` is optional
 # because a model that cannot judge urgency should omit it rather than guess;
 # the effort/priority enums match the persistence models exactly so a draft can

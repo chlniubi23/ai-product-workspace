@@ -59,6 +59,35 @@ def _report(prompt_tokens: int, completion_tokens: int, finish_reason: str = "st
     )
 
 
+def _outline_stub():
+    return LlmResult(
+        structured={
+            "findings": [{"id": "finding-1", "title": "缺口 14.3%", "severity": "高"}],
+            "sections": [{"heading": "第1节", "purpose": "写透"}],
+            "root_cause": "根因。",
+        },
+        finish_reason="stop",
+        prompt_tokens=900,
+        completion_tokens=600,
+    )
+
+
+def _section_result(prompt_tokens: int, completion_tokens: int, finish_reason: str = "stop", truncated: bool = False):
+    if truncated:
+        return LlmResult(
+            content='{"heading": "第1节", "content": "截',
+            finish_reason="length",
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
+    return LlmResult(
+        structured={"heading": "第1节", "content": "正文" * 200},
+        finish_reason=finish_reason,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+    )
+
+
 def _patch_adapter(monkeypatch, fake: _FakeAdapter) -> None:
     import app.services.ai_stages as ai_stages
 
@@ -144,14 +173,19 @@ def test_large_observed_usage_is_kept_not_rejected(client, owner, project, monke
     insight = confirmed_insight(client, owner, ready)
     ready["insight_id"] = insight["id"]
 
-    fake = _FakeAdapter([_report(prompt_tokens=3746, completion_tokens=13000)])
+    # Batch 17: the large paid result is now a SECTION call (the outline is
+    # the cheap first pass); spend-then-account keeps it either way.
+    fake = _FakeAdapter([_outline_stub(), _section_result(prompt_tokens=3746, completion_tokens=13000)])
     _patch_adapter(monkeypatch, fake)
     document = generate_doc(client, owner, ready)
 
     content = document["current_version"]["content_markdown"]
-    assert "需求背景" in content
-    assert len(fake.calls) == 1
-    run = latest_generation_run()
+    assert "第1节" in content
+    assert len(fake.calls) == 2
+    with database.SessionLocal() as db:
+        run = db.scalar(
+            select(AIRun).where(AIRun.feature_name == "document_section").order_by(AIRun.created_at.desc()).limit(1)
+        )
     assert run.status == "succeeded"
     assert run.error_code is None
     assert run.prompt_tokens == 3746
@@ -168,18 +202,24 @@ def test_document_uses_8192_and_retry_caps_at_hard_cap(client, owner, project, m
     insight = confirmed_insight(client, owner, ready)
     ready["insight_id"] = insight["id"]
 
+    # Batch 17: outline first (default ceiling), then a section call whose
+    # truncation retry doubles 8192 -> 16384 and never beyond.
     fake = _FakeAdapter(
         [
-            _report(3746, 8000, finish_reason="length", truncated=True),
-            _report(3746, 9000),
+            _outline_stub(),
+            _section_result(3746, 8000, finish_reason="length", truncated=True),
+            _section_result(3746, 9000),
         ]
     )
     _patch_adapter(monkeypatch, fake)
     generate_doc(client, owner, ready)
 
-    assert [call["max_tokens"] for call in fake.calls] == [8192, 16384]
+    assert [call["max_tokens"] for call in fake.calls] == [4096, 8192, 16384]
     assert all(call["max_tokens"] <= 16384 for call in fake.calls)
-    run = latest_generation_run()
+    with database.SessionLocal() as db:
+        run = db.scalar(
+            select(AIRun).where(AIRun.feature_name == "document_section").order_by(AIRun.created_at.desc()).limit(1)
+        )
     assert run.status == "succeeded"
 
 

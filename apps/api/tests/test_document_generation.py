@@ -173,6 +173,44 @@ def _report_result(finish_reason: str = "stop", truncated: bool = False):
     )
 
 
+def _outline_result(sections: int = 3):
+    from app.infrastructure.llm.deepseek import LlmResult
+
+    return LlmResult(
+        structured={
+            "findings": [
+                {"id": "finding-1", "title": "注册转化缺口 14.3%", "evidence_hint": "漏斗分析", "severity": "高"},
+                {"id": "finding-2", "title": "新版本覆盖率 46.6%", "evidence_hint": "维度分布", "severity": "中"},
+            ],
+            "sections": [
+                {"heading": f"第{i}节", "purpose": f"写透第{i}节的设计要点"} for i in range(1, sections + 1)
+            ],
+            "root_cause": "注册到成功的转化缺口集中在移动端，根因是升级引导缺失。",
+        },
+        finish_reason="stop",
+        prompt_tokens=900,
+        completion_tokens=600,
+    )
+
+
+def _section_result(index: int, content: str | None = None, heading: str | None = None):
+    from app.infrastructure.llm.deepseek import LlmResult
+
+    body = content or (f"第{index}节正文。" + "设计要点与数据依据充分展开，覆盖边界情况与坏例兜底。" * 12)
+    return LlmResult(
+        structured={"heading": heading or f"第{index}节", "content": body},
+        finish_reason="stop",
+        prompt_tokens=1200,
+        completion_tokens=1500,
+    )
+
+
+def _bad_result():
+    from app.infrastructure.llm.deepseek import LlmResult
+
+    return LlmResult(content="not json at all", finish_reason="stop", prompt_tokens=50, completion_tokens=20)
+
+
 def _patch_adapter(monkeypatch, fake: _FakeAdapter) -> None:
     import app.services.ai_stages as ai_stages
 
@@ -185,20 +223,30 @@ def test_ai_document_renders_chinese_sections_and_keeps_manifest(client, owner, 
     ready["insight_id"] = insight["id"]
     add_manual_question(client, owner, ready["project"]["id"], "为什么不升级？", "习惯旧交互。")
 
-    fake = _FakeAdapter([_report_result()])
+    fake = _FakeAdapter([_outline_result(3), _section_result(1), _section_result(2), _section_result(3)])
     _patch_adapter(monkeypatch, fake)
 
     document = generate_doc(client, owner, ready, document_type="prd", title="升级引导 PRD")
     content = document["current_version"]["content_markdown"]
-    assert "## 需求背景" in content or "需求背景" in content
-    assert "旧版本用户缺乏升级引导" in content
+    # every outlined section lands in the markdown
+    assert "## 第1节" in content and "## 第2节" in content and "## 第3节" in content
+    # the root cause doubles as the executive summary
+    assert "升级引导缺失" in content
     # the deterministic manifest survives after the AI sections
     assert "## 证据溯源" in content
-    assert content.index("需求背景") < content.index("## 证据溯源")
+    assert content.index("第3节") < content.index("## 证据溯源")
 
     with database.SessionLocal() as db:
-        run = db.scalar(select(AIRun).where(AIRun.feature_name == "document_generation").order_by(AIRun.created_at.desc()).limit(1))
-        assert run.status == "succeeded"
+        workspace_filter = AIRun.workspace_id == owner["workspace"]["id"]
+        outline_run = db.scalar(
+            select(AIRun).where(workspace_filter, AIRun.feature_name == "document_outline").order_by(AIRun.created_at.desc()).limit(1)
+        )
+        assert outline_run is not None and outline_run.status == "succeeded"
+        section_runs = db.scalars(
+            select(AIRun).where(workspace_filter, AIRun.feature_name == "document_section")
+        ).all()
+        assert len(section_runs) == 3
+        assert all(run.status == "succeeded" for run in section_runs)
 
 
 def test_ai_document_uses_at_least_8192_output_tokens(client, owner, project, monkeypatch):
@@ -206,12 +254,15 @@ def test_ai_document_uses_at_least_8192_output_tokens(client, owner, project, mo
     insight = confirmed_insight(client, owner, ready)
     ready["insight_id"] = insight["id"]
 
-    fake = _FakeAdapter([_report_result()])
+    fake = _FakeAdapter([_outline_result(2), _section_result(1), _section_result(2)])
     _patch_adapter(monkeypatch, fake)
     generate_doc(client, owner, ready)
 
-    assert fake.calls, "adapter was never invoked"
-    assert fake.calls[0]["max_tokens"] >= 8192
+    assert len(fake.calls) == 3, "1 outline + 2 section calls expected"
+    # the outline rides the default ceiling; every section call raises its
+    # first-attempt ceiling to 8192 and never beyond
+    assert fake.calls[0]["max_tokens"] <= 8192
+    assert all(call["max_tokens"] == 8192 for call in fake.calls[1:])
 
 
 def test_truncated_ai_output_falls_back_to_template(client, owner, project, monkeypatch):
@@ -219,15 +270,15 @@ def test_truncated_ai_output_falls_back_to_template(client, owner, project, monk
     insight = confirmed_insight(client, owner, ready)
     ready["insight_id"] = insight["id"]
 
-    fake = _FakeAdapter([_report_result(truncated=True), _report_result(truncated=True)])
+    fake = _FakeAdapter([_report_result(truncated=True)] * 4)
     _patch_adapter(monkeypatch, fake)
     document = generate_doc(client, owner, ready)
 
     content = document["current_version"]["content_markdown"]
-    # both attempts truncated -> honest failure -> deterministic template
+    # outline truncated twice -> single pass truncated twice -> template
     assert "## 需求背景" in content
     assert "## 证据溯源" in content
-    assert len(fake.calls) == 2
+    assert len(fake.calls) == 4
     with database.SessionLocal() as db:
         run = db.scalar(select(AIRun).where(AIRun.feature_name == "document_generation").order_by(AIRun.created_at.desc()).limit(1))
         assert run.status == "failed"
@@ -239,13 +290,19 @@ def test_document_system_prompt_mentions_sections_and_audience(client, owner, pr
     insight = confirmed_insight(client, owner, ready)
     ready["insight_id"] = insight["id"]
 
-    fake = _FakeAdapter([_report_result()])
+    fake = _FakeAdapter([_outline_result(2), _section_result(1), _section_result(2)])
     _patch_adapter(monkeypatch, fake)
     generate_doc(client, owner, ready, document_type="prd")
 
-    system = fake.calls[0]["system"]
-    assert "章节结构" in system
-    assert "禁止" in system
+    outline_system = fake.calls[0]["system"]
+    assert "大纲" in outline_system
+    assert "产品团队" in outline_system
+    section_system = fake.calls[1]["system"]
+    assert "第 1/2 节" in section_system
+    assert "|目标|衡量指标|目标值|" in section_system
+    assert "|编号|验收点|预期结果|" in section_system
+    assert "badcase" in section_system
+    assert "禁止编造数据" in section_system
 
 
 # --------------------------------------------------------------------------
@@ -302,6 +359,9 @@ def test_build_document_context_assembles_four_artifact_classes(client, owner, p
     # payload keys are flattened by the sanitizer; inspect raw artifacts instead
     raw_types = {item["artifact_type"] for item in context["safe_context"]["artifacts"]}
     assert {"insight", "interview_answer", "decision"} <= raw_types
+    # batch 17: the decision chain rides as top-level keys for the two-pass prompts
+    assert context["decision"]["problem_statement"] == "旧版本滞留"
+    assert context["solution"] is None  # no selected solution in this fixture
     # dataset_summary appears once an auto-report exists for the project
     assert types  # sanitizer output remains structured
     assert context["evidence"] == [{"type": "insight", "id": insight["id"]}]
@@ -471,3 +531,107 @@ def test_failed_job_leaves_no_version_and_retry_recovers(client, owner, project)
     assert len(retry["versions"]) == 1
     assert retry["versions"][0]["version_number"] == 1
     assert retry["status"] == "draft"
+
+
+def test_outline_failure_falls_back_to_single_pass(client, owner, project, monkeypatch):
+    ready = make_ready(client, owner, project)
+    insight = confirmed_insight(client, owner, ready)
+    ready["insight_id"] = insight["id"]
+
+    # Outline call fails twice (retry), the single-pass fallback then succeeds.
+    fake = _FakeAdapter([_bad_result(), _bad_result(), _report_result()])
+    _patch_adapter(monkeypatch, fake)
+    document = generate_doc(client, owner, ready, document_type="prd", title="单次回退")
+
+    assert document["current_version"]["ai_status"] == "succeeded"
+    content = document["current_version"]["content_markdown"]
+    assert "需求背景" in content  # came from the single-pass _report_result
+    assert len(fake.calls) == 3
+
+
+def test_section_failure_degrades_that_section_only(client, owner, project, monkeypatch):
+    ready = make_ready(client, owner, project)
+    insight = confirmed_insight(client, owner, ready)
+    ready["insight_id"] = insight["id"]
+
+    # Outline ok; section 2 fails (bad output + retry), sections 1/3 succeed.
+    fake = _FakeAdapter(
+        [_outline_result(3), _section_result(1), _bad_result(), _bad_result(), _section_result(3)]
+    )
+    _patch_adapter(monkeypatch, fake)
+    document = generate_doc(client, owner, ready, document_type="prd", title="局部降级")
+
+    assert document["current_version"]["ai_status"] == "succeeded"
+    content = document["current_version"]["content_markdown"]
+    assert "## 第1节" in content and "## 第3节" in content
+    assert "## 第2节" in content
+    # the degraded section carries the outline purpose bullets
+    assert "本节要点：写透第2节的设计要点" in content
+    assert "相关发现：注册转化缺口 14.3%" in content
+    assert len(fake.calls) == 5
+
+
+def test_all_sections_failing_falls_back_to_template(client, owner, project, monkeypatch):
+    ready = make_ready(client, owner, project)
+    insight = confirmed_insight(client, owner, ready)
+    ready["insight_id"] = insight["id"]
+
+    # Outline ok; every section burns its retry (2 calls each); the final
+    # single-pass attempt gets an exhausted adapter (IndexError -> LLM_ERROR).
+    fake = _FakeAdapter([_outline_result(2)] + [_bad_result()] * 4)
+    _patch_adapter(monkeypatch, fake)
+    document = generate_doc(client, owner, ready, document_type="prd", title="全败回退")
+
+    assert document["current_version"]["ai_status"] == "fallback"
+    content = document["current_version"]["content_markdown"]
+    assert "## 证据溯源" in content
+    assert "## 第1节" not in content
+
+
+def test_section_calls_carry_decision_axis_and_written_summary(client, owner, project, monkeypatch):
+    ready = make_ready(client, owner, project)
+    insight = confirmed_insight(client, owner, ready)
+    ready["insight_id"] = insight["id"]
+    add_manual_question(client, owner, ready["project"]["id"], "为什么不升级？", "习惯旧交互。")
+    # approved decision (same chain as the context test)
+    proposal = data_of(
+        client.post(
+            "/api/v1/decision-proposals",
+            headers=auth(owner),
+            json={
+                "project_id": ready["project"]["id"],
+                "title": "升级引导",
+                "problem_statement": "旧版本滞留",
+                "proposed_action": "上线引导",
+                "validation_plan": "两周观察",
+            },
+        )
+    )
+    submitted = data_of(client.post(f"/api/v1/decision-proposals/{proposal['id']}/submit", headers=auth(owner)))
+    approval = submitted["approval_request"]
+    data_of(
+        client.post(
+            f"/api/v1/approval-requests/{approval['id']}/approve",
+            headers=auth(owner),
+            json={"version": approval["version"], "decision_note": ""},
+        )
+    )
+
+    fake = _FakeAdapter([_outline_result(3), _section_result(1), _section_result(2), _section_result(3)])
+    _patch_adapter(monkeypatch, fake)
+    generate_doc(client, owner, ready, document_type="prd", title="决策主轴")
+
+    # section 2+ must see the written summary of the previous section
+    section_users = [call["user"] for call in fake.calls[1:]]
+    assert "written_summary" in section_users[0]
+    assert "第1节" in section_users[1], "second section sees the first section's summary"
+    # the section prompt quotes the approved decision as the narrative axis
+    assert "旧版本滞留" in fake.calls[1]["system"]
+    with database.SessionLocal() as db:
+        run = db.scalar(
+            select(AIRun).where(AIRun.feature_name == "document_section").order_by(AIRun.created_at.desc()).limit(1)
+        )
+        context = run.input_summary_json["context"]
+    assert "decision" in context and context["decision"]["proposed_action"] == "上线引导"
+    assert "solution" in context  # None here -- no selected solution in this fixture
+    assert "outline_findings" in context and context["outline_findings"]

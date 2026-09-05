@@ -18,7 +18,9 @@ from ..models import (
     FeedbackCluster,
     Insight,
     InterviewQuestion,
+    ProductProblem,
     Project,
+    SolutionOption,
     User,
     now,
 )
@@ -40,6 +42,111 @@ _DOCUMENT_SECTION_BRIEFS = {
     "prd": "章节结构：需求背景、目标与非目标、用户与场景、功能范围、用户流程、数据与埋点、验收标准",
     "retrospective": "章节结构：背景、事实与结果、根因假设、决策与改进、跟进事项",
 }
+
+
+# Batch 17: per-type section plans for the two-pass outline.  prd is the
+# deep product document; weekly/retrospective keep their editorial shapes.
+_DOCUMENT_TYPE_SECTIONS: dict[str, list[str]] = {
+    "prd": [
+        "需求背景与数据发现",
+        "根因判断",
+        "目标与非目标",
+        "用户与场景",
+        "功能范围与优先级",
+        "用户流程",
+        "数据与埋点",
+        "验收标准",
+        "风险与缓解",
+        "迭代规划",
+    ],
+    "weekly_report": ["本期概览", "关键变化", "核心问题与反馈", "已完成工作", "下期计划"],
+    "retrospective": ["背景与结果", "根因分析", "决策与改进", "跟进事项"],
+}
+
+
+def _outline_system_prompt(document_type: str, audience: str) -> str:
+    """Pass-1 prompt: findings, section plan and root cause (batch 17)."""
+
+    plan = "、".join(_DOCUMENT_TYPE_SECTIONS.get(document_type, _DOCUMENT_TYPE_SECTIONS["prd"]))
+    return (
+        "你是资深产品文档架构师。基于给定的证据材料（洞察、采访回答、已批准决策、数据集聚合、数据侧重点发现）"
+        "为一份产品文档产出大纲：findings 列出最多 6 条关键数据发现（id 用 finding-1 这样的序号，title 一句话并包含具体数字，"
+        "severity 只能从 高/中/低 中选，evidence_hint 指明数据来源如 分析产物/采访/洞察）；"
+        f"sections 按顺序给出本文档的章节计划（heading 与 purpose），{document_type} 文档必须依次覆盖：{plan}；"
+        "root_cause 用 3-5 句话概括数据背后的根因判断，必须引用具体数字。"
+        "所有内容必须来自给定上下文，禁止编造数据。输出面向读者：" f"{audience}。"
+    )
+
+
+def _section_system_prompt(
+    document_type: str,
+    title: str,
+    index: int,
+    total: int,
+    heading: str,
+    purpose: str,
+    written_summary: str,
+    audience: str,
+    solution: dict[str, Any] | None,
+    decision: dict[str, Any] | None,
+) -> str:
+    """Pass-2 prompt for one section (batch 17).
+
+    The decision chain is the main narrative axis for a PRD: the approved
+    decision and the selected solution are quoted directly so the section
+    writes the product design around them instead of generic analysis.
+    """
+
+    axis = ""
+    if decision:
+        axis += (
+            f"已批准决策（本文档的主叙事轴）：问题=「{decision.get('problem_statement') or ''}」，"
+            f"行动=「{decision.get('proposed_action') or ''}」，验证=「{decision.get('validation_plan') or ''}」。"
+        )
+    if solution:
+        axis += (
+            f"选定方案：{solution.get('title') or ''}——{solution.get('approach') or ''}"
+            f"（工作量 {solution.get('effort') or 'M'}）。"
+        )
+    if document_type == "prd":
+        axis += "本文档是围绕已批准决策与选定方案的产品设计文档，数据发现是论据，功能设计是主体；禁止输出与决策无关的泛泛分析。"
+    format_rules = (
+        "格式要求：涉及发现清单用 Markdown 表格（|编号|发现|数据证据|严重程度|）；"
+        "涉及目标用 Markdown 表格（|目标|衡量指标|目标值|）且每个目标必须量化；"
+        "涉及验收标准用 Markdown 表格（|编号|验收点|预期结果|）；"
+        "功能设计必须包含边界情况与异常兜底（badcase）小节；用户流程用「场景一/场景二…」编号叙述。"
+        if document_type == "prd"
+        else "格式要求：使用 Markdown 小标题与列表，涉及数据必须引用具体数字。"
+    )
+    depth = "content 至少 400 字，写深写透，不要罗列式敷衍。" if document_type == "prd" else "content 至少 200 字。"
+    return (
+        f"你负责撰写《{title}》的第 {index}/{total} 节「{heading}」。本节目的：{purpose or '按标题展开'}。"
+        f"{axis}{format_rules}"
+        "写作依据：给定的证据材料与 outline_findings；引用证据时标注来源（引用证据标题或 id）；禁止编造数据；"
+        "全文使用简体中文，语气面向指定读者：" f"{audience}。"
+        f"{depth}"
+        + (
+            f"已写前文摘要（保证连贯，不要重复）：{'；'.join(written_summary.splitlines())}"
+            if written_summary
+            else ""
+        )
+        + ' 只输出 JSON：{"heading": 节标题, "content": Markdown 正文}。'
+    )
+
+
+def _fallback_section_content(section: dict[str, Any], outline: dict[str, Any]) -> str:
+    """Deterministic in-place content for a failed section call (batch 17).
+
+    The section still appears in the document (outline bullets + findings) so
+    one failed call never breaks the whole deliverable."""
+
+    lines: list[str] = []
+    purpose = str(section.get("purpose") or "").strip()
+    lines.append(f"- 本节要点：{purpose}" if purpose else "- 本节要点：按大纲展开（本节自动生成失败，请人工补充）。")
+    for item in outline.get("findings") or []:
+        if isinstance(item, dict) and item.get("title"):
+            lines.append(f"- 相关发现：{item['title']}（严重程度：{item.get('severity') or '中'}）")
+    return chr(10).join(lines) if len(lines) > 1 else "（本节内容生成失败，请结合证据清单人工补充。）"
 
 
 def _document_payload(document: Document, db: Session) -> dict[str, Any]:
@@ -143,10 +250,13 @@ def _collect_source_refs(body: DocumentGenerate, db: Session, project: Project) 
 def _build_document_context(body: DocumentGenerate, db: Session, user: User) -> dict[str, Any]:
     """Assemble the grounded, firewall-safe context for AI document rendering.
 
-    The artifacts channel carries four evidence classes: confirmed insights,
-    answered interview questions, approved decisions and the per-dataset
-    aggregates of the latest auto-report.  Everything passes through
-    ``build_ai_context``; no raw rows or storage paths ever leave.
+    The artifacts channel carries six evidence classes: confirmed insights,
+    answered interview questions, approved decisions, the selected solution
+    (batch 17), the per-dataset aggregates of the latest auto-report and its
+    landed finding artifacts.  Everything passes through ``build_ai_context``;
+    no raw rows or storage paths ever leave.  ``solution``/``decision`` are
+    additionally returned as top-level dicts for the two-pass section prompts
+    (they never pass through the firewall themselves).
     """
 
     project = project_for(db, user, body.project_id)
@@ -207,6 +317,46 @@ def _build_document_context(body: DocumentGenerate, db: Session, user: User) -> 
                 },
             }
         )
+
+    # Batch 17: the decision chain is the PRD's narrative axis.  The selected
+    # solution rides the artifacts channel AND the top-level keys, which the
+    # per-section prompts quote directly (firewall untouched -- the artifacts
+    # payloads stay within the aggregate sanitizer, the top-level dicts never
+    # pass through build_ai_context).
+    selected_solution = db.scalar(
+        select(SolutionOption)
+        .join(ProductProblem, ProductProblem.id == SolutionOption.problem_id)
+        .where(ProductProblem.project_id == project.id, SolutionOption.status == "selected")
+        .order_by(SolutionOption.created_at.desc())
+        .limit(1)
+    )
+    solution_payload: dict[str, Any] | None = None
+    if selected_solution is not None:
+        solution_payload = {
+            "title": selected_solution.title,
+            "approach": selected_solution.approach,
+            "pros": list(selected_solution.pros or []),
+            "cons": list(selected_solution.cons or []),
+            "effort": selected_solution.effort,
+        }
+        artifacts.append(
+            {
+                "id": selected_solution.id,
+                "artifact_type": "solution",
+                "title": selected_solution.title,
+                "payload_json": {"approach": selected_solution.approach, "effort": selected_solution.effort},
+            }
+        )
+    decision_payload: dict[str, Any] | None = (
+        {
+            "problem_statement": decisions[0].problem_statement,
+            "proposed_action": decisions[0].proposed_action,
+            "validation_plan": decisions[0].validation_plan,
+            "expected_impact": decisions[0].expected_impact,
+        }
+        if decisions
+        else None
+    )
 
     report = db.scalar(
         select(AutoAnalysisReport)
@@ -297,6 +447,8 @@ def _build_document_context(body: DocumentGenerate, db: Session, user: User) -> 
         "options": options,
         "document_type": body.document_type,
         "title": body.title,
+        "solution": solution_payload,
+        "decision": decision_payload,
         **collected,
     }
 
@@ -317,10 +469,18 @@ def _evidence_manifest(generation_timestamp: str, dataset_version_ids: set[str],
 
 def _document_system_prompt(document_type: str, audience: str) -> str:
     brief = _DOCUMENT_SECTION_BRIEFS.get(document_type, _DOCUMENT_SECTION_BRIEFS["prd"])
+    format_rules = (
+        "格式要求：发现清单用 Markdown 表格（|编号|发现|数据证据|严重程度|）；目标用 Markdown 表格（|目标|衡量指标|目标值|）"
+        "且每个目标必须量化；验收标准用 Markdown 表格（|编号|验收点|预期结果|）；功能设计必须包含边界情况与异常兜底（badcase）小节；"
+        "用户流程用「场景一/场景二…」编号叙述；每个目标必须有衡量指标与目标值。"
+        if document_type == "prd"
+        else "格式要求：使用 Markdown 小标题与列表，涉及数据必须引用具体数字。"
+    )
     return (
         "你是产品交付文档撰写助手。基于给定的证据材料（洞察、采访回答、已批准决策、数据集聚合、数据侧重点发现）撰写文档。"
         "artifact_type 为 finding 的条目是规则从数据中提炼的重点，正文应覆盖这些要点。"
         f"{brief}。"
+        f"{format_rules}"
         "所有论断必须来自给定上下文，并在内容中自然标注依据（引用证据标题或 id）；禁止编造数据；"
         "禁止出现英文模板句或占位文案；全文使用简体中文，语气面向指定读者。"
         f"输出面向读者：{audience}。"
