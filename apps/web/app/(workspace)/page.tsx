@@ -294,7 +294,8 @@ export default function WorkbenchPage() {
     const computed = result.report ?? null;
     if (computed?.id) {
       setReport(computed);
-      setHistory((current) => [computed, ...current.filter((item) => item.id !== computed.id)]);
+      // compute 服务端已删除全部旧报告（唯一化语义），本地历史整体替换，不做合并。
+      setHistory([computed]);
       setNarrationNotice("");
     }
     return computed;
