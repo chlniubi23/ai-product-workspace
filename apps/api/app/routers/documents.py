@@ -15,7 +15,7 @@ from ..models import Document, DocumentVersion, Project, User, Workspace, Worksp
 from ..schemas import DocumentCreate, DocumentGenerate, DocumentVersionCreate
 from ..services.access import _ensure_project_active, membership, project_for
 from ..services.audit import audit
-from ..services.documents import _document_payload, _render_document_markdown
+from ..services.documents import _document_payload
 from ..services.evidence import _require_confirmed_insight_refs
 from ..services.job_handlers import _job, _job_payload, job_executor
 from ..services.workspace_settings import _workspace_settings
@@ -63,9 +63,9 @@ def generate_document(body: DocumentGenerate, background_tasks: BackgroundTasks,
         raise error("AI_FEATURE_DISABLED", "Document generation is disabled for this workspace", 403)
     _require_confirmed_insight_refs(db, project.workspace_id, body.source_refs, project.id)
     # Find-or-create by (project, document_type): regenerating updates the
-    # title and appends a version to the same document instead of piling up
-    # same-type duplicates (batch 8).  Versions are still append-only for the
-    # audit trail.
+    # title and queues a new job on the same document instead of piling up
+    # same-type duplicates (batch 8).  The version is written by the job only
+    # (batch 17): one final version per generation, no template shell.
     document = db.scalar(
         select(Document).where(Document.project_id == project.id, Document.document_type == body.document_type).order_by(Document.created_at.desc()).limit(1)
     )
@@ -76,12 +76,10 @@ def generate_document(body: DocumentGenerate, background_tasks: BackgroundTasks,
         document = Document(workspace_id=project.workspace_id, project_id=project.id, document_type=body.document_type, title=body.title, status="draft", created_by=user.id)
         db.add(document)
         db.flush()
-    markdown, evidence = _render_document_markdown(body, db, user)
-    latest_version_number = db.scalar(select(func.max(DocumentVersion.version_number)).where(DocumentVersion.document_id == document.id)) or 0
-    version = DocumentVersion(document_id=document.id, version_number=latest_version_number + 1, content_markdown=markdown, evidence_json=evidence, created_by=user.id)
-    db.add(version)
-    db.flush()
-    document.current_version_id = version.id
+    # Batch 17: the route only creates/finds the document shell and queues the
+    # job -- NO template version here.  The job writes the one and only
+    # version (AI body on success, fallback template with a visible banner on
+    # AI failure), so the client never sees a half-product shell mid-flight.
     job = _job(
         db,
         project.workspace_id,
@@ -90,7 +88,7 @@ def generate_document(body: DocumentGenerate, background_tasks: BackgroundTasks,
             "document_id": document.id,
             "project_id": project.id,
             "title": body.title,
-            "source_refs": evidence,
+            "source_refs": body.source_refs,
             "template_options": body.template_options,
             "document_type": body.document_type,
             "_actor_id": user.id,
@@ -98,7 +96,7 @@ def generate_document(body: DocumentGenerate, background_tasks: BackgroundTasks,
         result_type="document",
         result_id=document.id,
     )
-    audit(db, project.workspace_id, user.id, "document.generated", "document", document.id, {"source_count": len(evidence)})
+    audit(db, project.workspace_id, user.id, "document.generated", "document", document.id, {"source_count": len(body.source_refs)})
     db.commit()
     job_executor.schedule(background_tasks, job.id)
     return ok({"document": _document_payload(document, db), "job": _job_payload(job)})

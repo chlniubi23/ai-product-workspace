@@ -357,6 +357,11 @@ def _handle_document_generation(context: JobContext) -> JobResult:
     context.db.add(version)
     context.db.flush()
     document.current_version_id = version.id
+    # Batch 17: this version is the document's FIRST and ONLY output -- the
+    # route no longer pre-writes a template shell.  A retried document carries
+    # status "generation_failed" from the earlier attempt; landing the final
+    # version clears it.
+    document.status = "draft"
     audit(
         context.db,
         document.workspace_id,

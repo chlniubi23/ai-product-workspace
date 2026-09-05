@@ -10,12 +10,14 @@ on top of the unchanged evidence manifest.
 
 from __future__ import annotations
 
+import contextlib
+
 from conftest import auth, data_of
 from sqlalchemy import select
 
 from app import db as database
 from app.ai_context import assert_safe_ai_context
-from app.models import AIRun
+from app.models import AIRun, DocumentVersion
 
 
 def add_manual_question(client, user, project_id: str, question: str, answer: str) -> dict:
@@ -93,8 +95,11 @@ def test_document_generation_without_key_falls_back_to_template(client, owner, p
 
     document = generate_doc(client, owner, ready)
     assert document["current_version"]["content_markdown"]
-    # v1 template immediately, v2 fallback after the inline job run
-    assert len(document["versions"]) >= 2
+    # Batch 17: exactly ONE version -- the job's fallback template with the
+    # visible provenance/状态 sections.  No pre-written template shell exists.
+    assert len(document["versions"]) == 1
+    assert document["versions"][0]["version_number"] == 1
+    assert document["versions"][0]["ai_status"] == "fallback"
     content = document["versions"][-1]["content_markdown"]
     assert "## 证据溯源" in content
     assert "## 草稿状态" in content
@@ -317,7 +322,9 @@ def test_regenerating_same_type_reuses_one_document(client, owner, project):
 
     assert first["id"] == second["id"], "same project+type must reuse the document"
     assert second["title"] == "第二次生成"
-    assert len(second["versions"]) >= 2
+    # Batch 17: each generation writes exactly one final version.
+    assert len(second["versions"]) == 2
+    assert [row["version_number"] for row in second["versions"]] == [1, 2]
 
 
 def test_generation_job_id_exposed_in_payload_across_lifecycle(client, owner, project):
@@ -362,3 +369,105 @@ def test_generation_job_id_exposed_in_payload_across_lifecycle(client, owner, pr
         db.commit()
     fetched = data_of(client.get(f"/api/v1/documents/{document_id}", headers=auth(owner)))
     assert fetched["generation_job_id"] is None
+
+
+def test_route_creates_shell_only_and_job_writes_the_single_final_version(client, owner, project):
+    """Batch 17 core: the route's response shows a version-less shell (the
+    body serializes before the inline job), and the job writes the first and
+    ONLY final version (v1)."""
+
+    ready = make_ready(client, owner, project)
+    insight = confirmed_insight(client, owner, ready)
+    ready["insight_id"] = insight["id"]
+
+    response = client.post(
+        "/api/v1/documents/generate",
+        headers=auth(owner),
+        json={
+            "project_id": ready["project"]["id"],
+            "document_type": "prd",
+            "title": "唯一终版",
+            "source_refs": [{"type": "insight", "id": ready["insight_id"]}],
+        },
+    )
+    payload = data_of(response)
+    document = payload["document"]
+    # Pre-job serialization: shell only, no template version was pre-written.
+    assert document["current_version"] is None
+    assert document["versions"] == []
+    assert payload["job"]["id"]
+
+    # The inline job then lands exactly one final version.
+    fetched = data_of(client.get(f"/api/v1/documents/{document['id']}", headers=auth(owner)))
+    assert len(fetched["versions"]) == 1
+    assert fetched["versions"][0]["version_number"] == 1
+    assert fetched["current_version"]["id"] == fetched["versions"][0]["id"]
+    assert fetched["status"] == "draft"
+
+
+def test_failed_job_leaves_no_version_and_retry_recovers(client, owner, project):
+    """A failed generation job leaves the shell version-less with
+    status=generation_failed; regenerating recovers to a normal v1."""
+
+    from app.models import Document as DocumentModel
+    from app.models import Job
+    from app.services.job_handlers import JobContext, _mark_document_failed, job_executor
+
+    ready = make_ready(client, owner, project)
+    insight = confirmed_insight(client, owner, ready)
+    ready["insight_id"] = insight["id"]
+
+    # Shell + queued job whose actor no longer exists (handler raises before
+    # any AI call or version write).  Run the handler directly to keep the
+    # failure deterministic.
+    with database.SessionLocal() as db:
+        shell = DocumentModel(
+            workspace_id=owner["workspace"]["id"],
+            project_id=project["id"],
+            document_type="retrospective",
+            title="会失败的生成",
+            status="draft",
+            created_by=owner["user"]["id"],
+        )
+        db.add(shell)
+        db.flush()
+        job = Job(
+            workspace_id=owner["workspace"]["id"],
+            job_type="document_generation",
+            status="queued",
+            progress=0,
+            current_step="queued",
+            input_json={
+                "document_id": shell.id,
+                "project_id": project["id"],
+                "document_type": "retrospective",
+                "_actor_id": "missing-actor",
+            },
+        )
+        db.add(job)
+        db.commit()
+        document_id, job_id = shell.id, job.id
+
+    with database.SessionLocal() as db:
+        context = JobContext(db, job_id)
+        handler = job_executor._handlers["document_generation"].run
+        # The real executor wrapper catches the raise and marks the job
+        # failed; here we suppress and call the marker directly.
+        with contextlib.suppress(Exception):
+            handler(context)
+        stored_job = db.get(Job, job_id)
+        _mark_document_failed(db, stored_job, "NOT_FOUND", "Narrating user no longer exists")
+        db.commit()
+
+    with database.SessionLocal() as db:
+        stored = db.get(DocumentModel, document_id)
+        assert stored.status == "generation_failed"
+        assert stored.current_version_id is None
+        assert db.scalars(select(DocumentVersion).where(DocumentVersion.document_id == document_id)).all() == []
+
+    # Retry through the route reuses the same shell and recovers to v1/draft.
+    retry = generate_doc(client, owner, ready, document_type="retrospective", title="重试")
+    assert retry["id"] == document_id
+    assert len(retry["versions"]) == 1
+    assert retry["versions"][0]["version_number"] == 1
+    assert retry["status"] == "draft"
