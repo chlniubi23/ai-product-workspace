@@ -298,7 +298,7 @@ export default function Stage11PrdPage() {
                 {busy ? progressNote || "生成中…" : "生成文档"}
               </button>
               {document && (
-                <button className="btn" onClick={download}>
+                <button className="btn" onClick={download} disabled={!editorText.trim()}>
                   <Download size={14} />
                   导出 Markdown
                 </button>
@@ -331,6 +331,32 @@ export default function Stage11PrdPage() {
               >
                 {fallbackBanner}
               </div>
+            )}
+
+            {/* Batch 17: a failed generation leaves a version-less shell --
+                tell the user plainly instead of showing an empty editor. */}
+            {document?.status === "generation_failed" && !document.generation_job_id && !document.current_version && (
+              <div
+                role="alert"
+                style={{
+                  marginTop: 14,
+                  padding: "10px 12px",
+                  border: "1px solid #efc4c0",
+                  borderRadius: 8,
+                  background: "#fdf1f0",
+                  color: "#a13e34",
+                  fontSize: 13,
+                  lineHeight: 1.6,
+                }}
+              >
+                上次生成失败，请重新生成。
+              </div>
+            )}
+
+            {document && !document.current_version && !document.generation_job_id && document.status !== "generation_failed" && (
+              <p style={{ color: "var(--muted)", fontSize: 13, margin: "14px 0 0" }}>
+                尚未生成文档；点击「生成文档」开始，生成期间可离开本页。
+              </p>
             )}
 
             {document && (
