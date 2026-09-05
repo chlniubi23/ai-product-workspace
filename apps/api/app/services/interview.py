@@ -52,21 +52,22 @@ def _normalise_question_text(text: str) -> str:
 def _latest_report_context(db: Session, project: Project) -> list[dict[str, Any]]:
     """Dataset aggregates of the project's report -- the grounding chain.
 
-    Batch 13: the interview and the distillation must reason from the report
-    the user confirmed (or, unconfirmed, the newest one), not only from raw
-    artifacts.  Shape mirrors ``documents._build_document_context`` so both
-    chains present the same evidence the same way; the per-report id prefix
-    avoids collisions across reports.
+    Batch 15: a project holds at most one report (compute deletes
+    predecessors), so "the latest" is simply the only one; the old
+    confirmed-first preference is gone.  Shape mirrors
+    ``documents._build_document_context`` so both chains present the same
+    evidence the same way; the per-report id prefix avoids collisions across
+    reports.
     """
 
-    reports = db.scalars(
-        select(AutoAnalysisReport).where(AutoAnalysisReport.project_id == project.id)
-    ).all()
-    if not reports:
-        return []
-    report = next((item for item in reports if item.confirmed_at is not None), None) or max(
-        reports, key=lambda item: item.created_at
+    report = db.scalar(
+        select(AutoAnalysisReport)
+        .where(AutoAnalysisReport.project_id == project.id)
+        .order_by(AutoAnalysisReport.created_at.desc())
+        .limit(1)
     )
+    if report is None:
+        return []
     deterministic = report.deterministic_json if isinstance(report.deterministic_json, dict) else {}
     datasets = deterministic.get("datasets")
     if not isinstance(datasets, list):

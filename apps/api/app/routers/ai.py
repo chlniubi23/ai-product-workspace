@@ -426,16 +426,10 @@ async def _compute_auto_report(project: Project, user: User, db: Session) -> Aut
 
     findings_digest = build_findings_digest(aggregates)
     _persist_report_findings(db, project, snapshots, findings_digest)
-    # Batch 13: every still-current predecessor loses its "live" status the
-    # moment a new report is computed; the newest report never carries the
-    # stamp.  Confirmation records stay on the old rows.
-    for predecessor in db.scalars(
-        select(AutoAnalysisReport).where(
-            AutoAnalysisReport.project_id == project.id,
-            AutoAnalysisReport.superseded_at.is_(None),
-        )
-    ).all():
-        predecessor.superseded_at = now()
+    # Batch 15: one live report per project.  The new report is created first
+    # (flushed for its id below) and every predecessor is deleted afterwards,
+    # so the project always holds at least one report inside the transaction.
+    # Confirmation history survives in audit_logs only.
     default_title, deterministic_summary, deterministic_sections, deterministic_findings = _deterministic_report_parts(
         project.name, aggregates, findings_digest
     )
@@ -460,6 +454,17 @@ async def _compute_auto_report(project: Project, user: User, db: Session) -> Aut
         generated_by=user.id,
     )
     db.add(report)
+    db.flush()
+    # New report is flushed and safe: drop every predecessor (confirmed or
+    # not) so the project keeps exactly one report.  Runs/audit rows are not
+    # touched -- the confirmation history lives in audit_logs.
+    for predecessor in db.scalars(
+        select(AutoAnalysisReport).where(
+            AutoAnalysisReport.project_id == project.id,
+            AutoAnalysisReport.id != report.id,
+        )
+    ).all():
+        db.delete(predecessor)
     db.flush()
     return report
 

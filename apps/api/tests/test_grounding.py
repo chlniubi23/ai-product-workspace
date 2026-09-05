@@ -1,8 +1,8 @@
-"""Batch 13: the grounding chain -- report as the interview's foundation.
+"""Batch 13/15: the grounding chain -- report as the interview's foundation.
 
 Covers the identifier-column noise filter, digest artifacts landing on real
-analysis runs (idempotent), the superseded-report semantics, and the
-interview/distillation grounding (latest report context + window 20).
+analysis runs (idempotent), the unique-report semantics (compute replaces),
+and the interview/distillation grounding (latest report context + window 20).
 """
 
 from __future__ import annotations
@@ -85,7 +85,7 @@ def test_identifier_columns_drop_top_value_noise():
         assert "report_id" not in (item.get("columns") or []), "identifier columns must not produce digest noise"
 
 
-def test_compute_lands_finding_artifacts_idempotently_and_supersedes(client, owner, project):
+def test_compute_lands_finding_artifacts_idempotently_and_replaces(client, owner, project):
     _upload_grounding(client, owner, project)
     data_of(client.post(f"/api/v1/projects/{project['id']}/auto-report/compute", headers=auth(owner)))
 
@@ -119,9 +119,8 @@ def test_compute_lands_finding_artifacts_idempotently_and_supersedes(client, own
             .where(AutoAnalysisReport.project_id == project["id"])
             .order_by(AutoAnalysisReport.created_at)
         ).all()
-        assert len(reports) == 2
-        assert reports[0].superseded_at is not None, "the older report must be superseded"
-        assert reports[-1].superseded_at is None, "the newest report stays current"
+        assert len(reports) == 1, "batch 15: compute replaces -- exactly one live report remains"
+        assert reports[0].confirmed_at is None, "the surviving report is the fresh draft"
 
 
 def test_dataset_without_succeeded_run_keeps_digest_without_artifacts(client, owner, project):
@@ -152,15 +151,16 @@ def _orm_project(db, project: dict):
     return db.get(Project, project["id"])
 
 
-def test_latest_report_context_prefers_confirmed_and_feeds_grounding(client, owner, project):
+def test_latest_report_context_follows_the_single_live_report(client, owner, project):
     _upload_grounding(client, owner, project)
     data_of(client.post(f"/api/v1/projects/{project['id']}/auto-report/compute", headers=auth(owner)))
     first_id = data_of(
         client.get(f"/api/v1/projects/{project['id']}/auto-reports?page_size=5", headers=auth(owner))
-    )[-1]["id"]
-    data_of(client.post(f"/api/v1/projects/{project['id']}/auto-report/compute", headers=auth(owner)))
-    # Confirm the superseded first report: it stays the grounding by policy.
+    )[0]["id"]
     data_of(client.post(f"/api/v1/auto-reports/{first_id}/confirm", headers=auth(owner)))
+    # Recompute: the confirmed predecessor is deleted, the fresh draft becomes
+    # the sole grounding.
+    data_of(client.post(f"/api/v1/projects/{project['id']}/auto-report/compute", headers=auth(owner)))
 
     with database.SessionLocal() as db:
         user = db.get(User, owner["user"]["id"])
@@ -171,10 +171,70 @@ def test_latest_report_context_prefers_confirmed_and_feeds_grounding(client, own
         )
         grounding = _grounding_artifacts(db, _orm_project(db, project))
     summaries = [item for item in grounding if item["artifact_type"] == "dataset_summary"]
-    assert summaries and summaries[0]["id"].startswith(f"{first_id}:"), "confirmed report wins over newer"
+    assert summaries, "the live report still feeds the grounding chain"
+    assert all(not item["id"].startswith(f"{first_id}:") for item in summaries), "the confirmed predecessor is gone"
     finding_items = [item for item in context["safe_context"]["artifacts"] if item["artifact_type"] == "finding"]
     assert finding_items, "documents read the landed finding artifacts"
     assert all(len(item["id"]) > 20 for item in finding_items), "persisted findings carry real ids"
+
+
+def test_narration_job_fails_gracefully_when_report_was_replaced(client, owner, project, monkeypatch):
+    """compute 删除旧报告后，仍在途的 narrate job 必须以 REPORT_MISSING 诚实失败，
+    不崩溃、不重试、不再触发任何 provider 调用。"""
+
+    _upload_grounding(client, owner, project)
+    report = data_of(
+        client.post(f"/api/v1/projects/{project['id']}/auto-report/compute", headers=auth(owner))
+    )["report"]
+    stale_report_id = report["id"]
+
+    class _FailSpy:
+        configured = True
+
+        def __init__(self):
+            self.calls = 0
+
+        async def complete(self, *, messages, response_schema, request_metadata):
+            self.calls += 1
+            raise AssertionError("provider must not be called for a missing report")
+
+    import app.services.ai_stages as ai_stages
+    from app.infrastructure.jobs import JobExecutionError
+
+    spy = _FailSpy()
+    monkeypatch.setattr(ai_stages, "DeepSeekAdapter", lambda _settings: spy)
+
+    # Simulate compute replacing the report while the narrate job is queued:
+    # compute once more, then run a job payload pointing at the deleted id.
+    data_of(client.post(f"/api/v1/projects/{project['id']}/auto-report/compute", headers=auth(owner)))
+
+    with database.SessionLocal() as db:
+        from app.models import Job
+
+        job = Job(
+            workspace_id=owner["workspace"]["id"],
+            job_type="auto_report_narration",
+            status="queued",
+            progress=0,
+            current_step="queued",
+            input_json={"report_id": stale_report_id, "_actor_id": owner["user"]["id"]},
+        )
+        db.add(job)
+        db.commit()
+        job_id = job.id
+
+    with database.SessionLocal() as db:
+        context = __import__("app.services.job_handlers", fromlist=["JobContext"]).JobContext(db, job_id)
+        registered = __import__("app.services.job_handlers", fromlist=["job_executor"]).job_executor
+        handler = registered._handlers["auto_report_narration"].run
+        try:
+            handler(context)
+        except JobExecutionError as exc:
+            assert exc.code == "REPORT_MISSING"
+            assert "取代" in str(exc)
+        else:
+            raise AssertionError("handler must raise REPORT_MISSING")
+    assert spy.calls == 0
 
 
 def test_artifact_window_caps_at_twenty(client, owner, project):

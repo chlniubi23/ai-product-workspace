@@ -421,7 +421,10 @@ def _handle_auto_report_narration(context: JobContext) -> JobResult:
 
     report = context.db.get(AutoAnalysisReport, context.input.get("report_id"))
     if report is None:
-        raise JobExecutionError("NOT_FOUND", "Report not found", retryable=False)
+        # Batch 15: compute deletes predecessor reports -- a narration job
+        # still in flight when its report is replaced must end as an honest
+        # failure, not a crash or a retry loop.
+        raise JobExecutionError("REPORT_MISSING", "报告已被新版本取代", retryable=False)
     user = context.db.get(User, context.input.get("_actor_id"))
     if user is None:
         raise JobExecutionError("NOT_FOUND", "Narrating user no longer exists", retryable=False)
