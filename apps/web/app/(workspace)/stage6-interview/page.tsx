@@ -41,7 +41,10 @@ export default function Stage6InterviewPage() {
   const [liveQuestion, setLiveQuestion] = useState<WorkflowInterviewQuestion | null>(null);
 
   const questions = useMemo(
-    () => [...(snapshot?.interviewQuestions || [])].sort((a, b) => (a.created_at || "").localeCompare(b.created_at || "")),
+    () =>
+      [...(snapshot?.interviewQuestions || [])].sort((a, b) =>
+        (a.created_at || "").localeCompare(b.created_at || ""),
+      ),
     [snapshot],
   );
   const answeredCount = questions.filter((q) => q.status === "answered").length;
@@ -89,19 +92,6 @@ export default function Stage6InterviewPage() {
       askNextInFlight.current = false;
       setAskingNext(false);
     }
-  }
-    if (result?.status === "complete") {
-      setInterviewEnded(true);
-      setCompleteNote(result.note || "");
-      await refresh();
-      const digest = await apiRequest<{ status?: string; summary?: InterviewSummary }>(
-        `/projects/${projectId}/interview/complete`,
-        { method: "POST" },
-      );
-      if (digest?.status === "ok" && digest.summary) setSummary(digest.summary);
-      return "complete";
-    }
-    return result?.status || "failed";
   }
 
   async function startInterview() {
@@ -246,7 +236,9 @@ export default function Stage6InterviewPage() {
                     <strong>已收集</strong>
                     <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
                       {summary.collected.map((item, index) => (
-                        <li key={index} style={{ lineHeight: 1.6 }}>{item}</li>
+                        <li key={index} style={{ lineHeight: 1.6 }}>
+                          {item}
+                        </li>
                       ))}
                     </ul>
                   </div>
@@ -254,7 +246,9 @@ export default function Stage6InterviewPage() {
                     <strong>未覆盖</strong>
                     <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
                       {summary.gaps.map((item, index) => (
-                        <li key={index} style={{ lineHeight: 1.6 }}>{item}</li>
+                        <li key={index} style={{ lineHeight: 1.6 }}>
+                          {item}
+                        </li>
                       ))}
                     </ul>
                   </div>
@@ -310,7 +304,11 @@ export default function Stage6InterviewPage() {
                       />
                     </label>
                     <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 8 }}>
-                      <button className="btn btn-subtle btn-sm" disabled={busyId === current.id} onClick={() => void skipCurrent()}>
+                      <button
+                        className="btn btn-subtle btn-sm"
+                        disabled={busyId === current.id}
+                        onClick={() => void skipCurrent()}
+                      >
                         跳过
                       </button>
                       <button
@@ -328,7 +326,11 @@ export default function Stage6InterviewPage() {
                     <strong>采访已结束</strong>
                     <p>{completeNote || "可手动补充要点，或前往第 7 步生成洞察草稿。"}</p>
                     {lastFailed && (
-                      <button className="btn btn-subtle btn-sm" disabled={busy} onClick={() => void startInterview()}>
+                      <button
+                        className="btn btn-subtle btn-sm"
+                        disabled={busy}
+                        onClick={() => void startInterview()}
+                      >
                         继续追问
                       </button>
                     )}
@@ -338,18 +340,24 @@ export default function Stage6InterviewPage() {
                     <MessageSquare size={18} />
                     <strong>还没有进行中的问题</strong>
                     <p>AI 会基于数据发现一次提一个问题，根据你的回答追问。</p>
-                    <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => void startInterview()}>
+                    <button
+                      className="btn btn-primary btn-sm"
+                      disabled={busy}
+                      onClick={() => void startInterview()}
+                    >
                       <Sparkles size={13} />
                       开始采访
                     </button>
                   </div>
                 )}
-                {notice && (
-                  <p style={{ color: "var(--muted)", marginTop: 8, marginBottom: 0 }}>{notice}</p>
-                )}
+                {notice && <p style={{ color: "var(--muted)", marginTop: 8, marginBottom: 0 }}>{notice}</p>}
                 {questions.length > 0 && !summary && (
                   <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
-                    <button className="btn btn-subtle btn-sm" disabled={busy} onClick={() => void finishInterview()}>
+                    <button
+                      className="btn btn-subtle btn-sm"
+                      disabled={busy}
+                      onClick={() => void finishInterview()}
+                    >
                       结束采访并生成小结
                     </button>
                   </div>
@@ -362,7 +370,9 @@ export default function Stage6InterviewPage() {
                 <div className="card-head">
                   <div>
                     <h2 className="card-title">采访记录</h2>
-                    <div className="card-kicker">已回答 {answeredCount} · 跳过 {history.filter((q) => q.status === "skipped").length}</div>
+                    <div className="card-kicker">
+                      已回答 {answeredCount} · 跳过 {history.filter((q) => q.status === "skipped").length}
+                    </div>
                   </div>
                   <button className="btn btn-subtle btn-sm" onClick={() => setShowHistory((v) => !v)}>
                     {showHistory ? "收起" : "展开"}
@@ -377,15 +387,20 @@ export default function Stage6InterviewPage() {
                             <strong>{question.question_text || "未命名问题"}</strong>
                             <div className="card-kicker">
                               {question.source === "manual" ? "手动补充" : `第 ${question.round_number} 问`}
-                              {question.topic ? ` · ${question.topic}` : ""} · {formatWorkflowDate(question.created_at)}
+                              {question.topic ? ` · ${question.topic}` : ""} ·{" "}
+                              {formatWorkflowDate(question.created_at)}
                             </div>
                           </div>
-                          <span className={`tag ${question.status === "answered" ? "tag-green" : "tag-rose"}`}>
+                          <span
+                            className={`tag ${question.status === "answered" ? "tag-green" : "tag-rose"}`}
+                          >
                             {question.status === "answered" ? "已回答" : "已跳过"}
                           </span>
                         </div>
                         {question.status === "answered" && (
-                          <p style={{ lineHeight: 1.6, margin: "8px 0 0", whiteSpace: "pre-wrap" }}>{question.answer_text}</p>
+                          <p style={{ lineHeight: 1.6, margin: "8px 0 0", whiteSpace: "pre-wrap" }}>
+                            {question.answer_text}
+                          </p>
                         )}
                       </div>
                     ))}
@@ -427,7 +442,11 @@ export default function Stage6InterviewPage() {
                 />
               </label>
               <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                <button className="btn btn-primary" disabled={busy || !manualText.trim()} onClick={() => void addManual()}>
+                <button
+                  className="btn btn-primary"
+                  disabled={busy || !manualText.trim()}
+                  onClick={() => void addManual()}
+                >
                   补充要点
                 </button>
               </div>
