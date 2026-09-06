@@ -297,12 +297,32 @@ def test_document_system_prompt_mentions_sections_and_audience(client, owner, pr
     outline_system = fake.calls[0]["system"]
     assert "大纲" in outline_system
     assert "产品团队" in outline_system
+    # batch 17 hotfix: the outline is capped at ~2k tokens of output
+    assert "2000 tokens" in outline_system
     section_system = fake.calls[1]["system"]
     assert "第 1/2 节" in section_system
     assert "|目标|衡量指标|目标值|" in section_system
     assert "|编号|验收点|预期结果|" in section_system
     assert "badcase" in section_system
     assert "禁止编造数据" in section_system
+    # batch 17 hotfix: a hard per-section length budget (no truncation retries)
+    assert "800–1500 字" in section_system
+    assert "表格 cell 保持简洁" in section_system
+
+
+def test_content_markdown_columns_use_mediumtext_on_mysql():
+    """Batch 17 hotfix: the deep-generated documents exceed TEXT's 64KB byte
+    cap on MySQL -- the model columns must compile to MEDIUMTEXT there while
+    staying plain TEXT on SQLite (the test database)."""
+
+    from sqlalchemy.dialects import mysql, sqlite
+
+    from app.models import AutoAnalysisReport, DocumentVersion
+
+    for model in (DocumentVersion, AutoAnalysisReport):
+        column = model.__table__.c.content_markdown
+        assert column.type.dialect_impl(mysql.dialect()).__class__.__name__ == "MEDIUMTEXT"
+        assert column.type.dialect_impl(sqlite.dialect()).__class__.__name__ == "Text"
 
 
 # --------------------------------------------------------------------------

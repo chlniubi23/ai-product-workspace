@@ -74,6 +74,7 @@ def _outline_system_prompt(document_type: str, audience: str) -> str:
         "severity 只能从 高/中/低 中选，evidence_hint 指明数据来源如 分析产物/采访/洞察）；"
         f"sections 按顺序给出本文档的章节计划（heading 与 purpose），{document_type} 文档必须依次覆盖：{plan}；"
         "root_cause 用 3-5 句话概括数据背后的根因判断，必须引用具体数字。"
+        "篇幅约束：大纲输出整体保持在 2000 tokens 以内——findings 每条一句话，purpose 每节不超过 40 字，不要展开正文。"
         "所有内容必须来自给定上下文，禁止编造数据。输出面向读者：" f"{audience}。"
     )
 
@@ -118,7 +119,14 @@ def _section_system_prompt(
         if document_type == "prd"
         else "格式要求：使用 Markdown 小标题与列表，涉及数据必须引用具体数字。"
     )
-    depth = "content 至少 400 字，写深写透，不要罗列式敷衍。" if document_type == "prd" else "content 至少 200 字。"
+    depth = (
+        # Batch 17 hotfix: a hard per-section budget keeps every first attempt
+        # under the output ceiling (no truncation-retry) and lands the whole
+        # document at ~10-15k chars -- the quality benchmark.
+        "本节正文 800–1500 字；表格 cell 保持简洁；不要重复其他章节内容。写深写透但严格遵守篇幅上限。"
+        if document_type == "prd"
+        else "本节正文 400–800 字；不要重复其他章节内容。"
+    )
     return (
         f"你负责撰写《{title}》的第 {index}/{total} 节「{heading}」。本节目的：{purpose or '按标题展开'}。"
         f"{axis}{format_rules}"

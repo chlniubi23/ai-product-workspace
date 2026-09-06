@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy.dialects.mysql import MEDIUMTEXT
 from sqlalchemy.orm import relationship
 from sqlalchemy.types import JSON
 
@@ -501,7 +502,9 @@ class DocumentVersion(Base):
     id = Column(String(36), primary_key=True, default=new_id)
     document_id = Column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
     version_number = Column(Integer, nullable=False)
-    content_markdown = Column(Text, nullable=False)
+    # Batch 17 hotfix: deep-generated documents exceed TEXT's 64KB byte cap
+    # (Chinese ≈21k chars) -- MEDIUMTEXT on MySQL, plain TEXT elsewhere.
+    content_markdown = Column(Text().with_variant(MEDIUMTEXT(), "mysql"), nullable=False)
     evidence_json = Column(JSON, default=list, nullable=False)
     ai_run_id = Column(String(36), nullable=True)
     # NULL = legacy row; succeeded = AI-written; fallback = deterministic
@@ -593,7 +596,8 @@ class AutoAnalysisReport(Base):
     # draft | succeeded | not_configured | failed | confirmed
     status = Column(String(32), default="draft", nullable=False)
     summary = Column(Text, default="", nullable=False)
-    content_markdown = Column(Text, default="", nullable=False)
+    # Same failure class as document_versions.content_markdown (batch 17 hotfix).
+    content_markdown = Column(Text().with_variant(MEDIUMTEXT(), "mysql"), default="", nullable=False)
     sections_json = Column(JSON, default=list, nullable=False)
     key_findings = Column(JSON, default=list, nullable=False)
     recommendations = Column(JSON, default=list, nullable=False)
