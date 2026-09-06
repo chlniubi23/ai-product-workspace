@@ -24,6 +24,9 @@ type Column = {
   nullable?: boolean;
   unique_ratio?: number;
   source?: string;
+  // Batch 21: LLM field-semantics dictionary (NULL when not interpreted).
+  semantic_label?: string | null;
+  semantic_description?: string | null;
 };
 type ExtractionReportRow = { source_column?: string; metric?: string; coverage?: number };
 type QualitySummary = {
@@ -325,9 +328,7 @@ function Dictionary({
       <div className="card-head" style={{ padding: "15px 17px 0" }}>
         <div>
           <h2 className="card-title">数据字典</h2>
-          <div className="card-kicker">
-            字段类型与角色由解析引擎自动推断（上传即确认），此处只读展示。
-          </div>
+          <div className="card-kicker">字段类型与角色由解析引擎自动推断（上传即确认），此处只读展示。</div>
         </div>
         <span className={`tag ${rolesComplete ? "tag-green" : "tag-amber"}`}>
           {confirmedRequiredRoles}/3 个必需角色
@@ -372,9 +373,21 @@ function Dictionary({
                   <small style={{ display: "block", color: "#8793a5", fontSize: 9, marginTop: 3 }}>
                     {column.name}
                   </small>
+                  {column.semantic_description && (
+                    <small style={{ display: "block", color: "#5b6b84", fontSize: 9, marginTop: 3 }}>
+                      {column.semantic_description}
+                    </small>
+                  )}
                 </td>
                 <td>
-                  <span className="tag tag-slate">{column.confirmed_type || column.inferred_type || "unknown"}</span>
+                  <span className="tag tag-slate">
+                    {column.confirmed_type || column.inferred_type || "unknown"}
+                  </span>
+                  {column.semantic_label && (
+                    <span className="tag tag-blue" style={{ marginLeft: 4 }}>
+                      {column.semantic_label}
+                    </span>
+                  )}
                   {column.source === "extracted" && (
                     <span className="tag tag-blue" style={{ marginLeft: 4 }}>
                       抽取
@@ -393,7 +406,9 @@ function Dictionary({
                   )}
                 </td>
                 <td>
-                  {typeof column.unique_ratio === "number" ? `${Math.round(column.unique_ratio * 100)}%` : "-"}
+                  {typeof column.unique_ratio === "number"
+                    ? `${Math.round(column.unique_ratio * 100)}%`
+                    : "-"}
                 </td>
                 <td>
                   <MoreHorizontal size={15} color="#a0aaba" />

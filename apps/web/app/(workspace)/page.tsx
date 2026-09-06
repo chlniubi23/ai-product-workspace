@@ -67,7 +67,9 @@ const POLL_LIMIT = 150;
 
 const STATUS_META: Record<string, { label: string; tone: string }> = {
   succeeded: { label: "AI 生成 · 草稿", tone: "tag-amber" },
-  not_configured: { label: "确定性统计", tone: "tag-slate" },
+  // Batch 21: narration is manual now -- this status means "numbers ready,
+  // waiting for the user to click 开始 AI 解读".
+  not_configured: { label: "待 AI 解读 · 数据已就绪", tone: "tag-blue" },
   failed: { label: "AI 失败 · 仅统计", tone: "tag-rose" },
   confirmed: { label: "已确认", tone: "tag-green" },
   draft: { label: "草稿", tone: "tag-slate" },
@@ -115,6 +117,9 @@ export default function WorkbenchPage() {
   const [deletingProject, setDeletingProject] = useState(false);
   const [narratingId, setNarratingId] = useState<string | null>(null);
   const [narrationNotice, setNarrationNotice] = useState("");
+  // Batch 21: a "hint" notice invites the manual AI narration; an "error"
+  // notice reports a failed narration and carries the retry button.
+  const [narrationNoticeTone, setNarrationNoticeTone] = useState<"hint" | "error">("hint");
   const reportAnchor = useRef<HTMLDivElement>(null);
   const mountedRef = useRef(true);
 
@@ -179,7 +184,9 @@ export default function WorkbenchPage() {
       );
       const wanted = new Set(versions);
       const relevant = runs
-        .filter((run) => run.status === "succeeded" && (!wanted.size || wanted.has(run.dataset_version_id || "")))
+        .filter(
+          (run) => run.status === "succeeded" && (!wanted.size || wanted.has(run.dataset_version_id || "")),
+        )
         .slice(0, 4);
       const next: ReportChart[] = [];
       for (const run of relevant) {
@@ -298,6 +305,7 @@ export default function WorkbenchPage() {
       // compute 服务端已删除全部旧报告（唯一化语义），本地历史整体替换，不做合并。
       setHistory([computed]);
       setNarrationNotice("");
+      setNarrationNoticeTone("hint");
     }
     return computed;
   }, []);
@@ -320,11 +328,13 @@ export default function WorkbenchPage() {
     async (targetReportId: string, jobId: string) => {
       setNarratingId(targetReportId);
       setNarrationNotice("");
+      setNarrationNoticeTone("hint");
       const outcome = jobId ? await waitForJob(jobId) : "failed";
       if (!mountedRef.current) return;
       const fresh = await refreshReport(targetReportId);
       if (!fresh || fresh.status !== "succeeded") {
         setNarrationNotice(narrationFailureNotice(fresh?.error_code, outcome));
+        setNarrationNoticeTone("error");
       }
       if (mountedRef.current) setNarratingId(null);
     },
@@ -335,10 +345,14 @@ export default function WorkbenchPage() {
     async (targetReportId: string) => {
       setNarratingId(targetReportId);
       setNarrationNotice("");
+      setNarrationNoticeTone("hint");
       try {
-        const result = await apiRequest<{ job?: { id?: string } }>(`/auto-reports/${targetReportId}/narrate`, {
-          method: "POST",
-        });
+        const result = await apiRequest<{ job?: { id?: string } }>(
+          `/auto-reports/${targetReportId}/narrate`,
+          {
+            method: "POST",
+          },
+        );
         await pollNarration(targetReportId, result.job?.id || "");
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : "AI 解读失败，请重试。";
@@ -349,6 +363,7 @@ export default function WorkbenchPage() {
         }
         if (mountedRef.current) {
           setNarrationNotice(message);
+          setNarrationNoticeTone("error");
           setNarratingId(null);
         }
       }
@@ -417,8 +432,10 @@ export default function WorkbenchPage() {
       setPhase("idle");
       setFiles([]);
       if (computed) {
-        // Numbers are rendered; AI narration continues as a background job.
-        void narrateReport(computed.id);
+        // Batch 21: narration waits for the user -- show the numbers, let
+        // them read, then click 开始 AI 解读.  No automatic narrate call.
+        setNarrationNotice("数据概况已生成，请先查看数据，再点击「开始 AI 解读」。");
+        setNarrationNoticeTone("hint");
         window.setTimeout(() => reportAnchor.current?.scrollIntoView({ behavior: "smooth" }), 120);
       } else {
         setFailure((current) => current || "报告生成失败，请稍后重试。");
@@ -436,7 +453,9 @@ export default function WorkbenchPage() {
     try {
       const computed = await computeReport(projectId);
       if (computed) {
-        void narrateReport(computed.id);
+        // Batch 21: same manual narration contract as the upload flow.
+        setNarrationNotice("数据概况已生成，请先查看数据，再点击「开始 AI 解读」。");
+        setNarrationNoticeTone("hint");
         window.setTimeout(() => reportAnchor.current?.scrollIntoView({ behavior: "smooth" }), 120);
       }
     } catch (cause) {
@@ -450,7 +469,9 @@ export default function WorkbenchPage() {
     if (!report || confirming) return;
     setConfirming(true);
     try {
-      const confirmed = await apiRequest<AutoReport>(`/auto-reports/${report.id}/confirm`, { method: "POST" });
+      const confirmed = await apiRequest<AutoReport>(`/auto-reports/${report.id}/confirm`, {
+        method: "POST",
+      });
       setReport(confirmed);
       setHistory((current) => current.map((item) => (item.id === confirmed.id ? confirmed : item)));
     } catch (cause) {
@@ -618,7 +639,9 @@ export default function WorkbenchPage() {
                   ? `已选择 ${files.length} 个文件（共 ${formatFileSize(totalSize)}）`
                   : "点击选择或拖入文件，可多选"}
               </strong>
-              <p>{files.length ? "点击下方按钮开始，无需再做别的操作" : "自动识别 UTF-8、UTF-8-SIG、GBK 编码"}</p>
+              <p>
+                {files.length ? "点击下方按钮开始，无需再做别的操作" : "自动识别 UTF-8、UTF-8-SIG、GBK 编码"}
+              </p>
             </div>
           </div>
           {files.length > 0 && (
@@ -626,10 +649,18 @@ export default function WorkbenchPage() {
               {files.map((file) => (
                 <div
                   key={`${file.name}-${file.size}`}
-                  style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--muted)" }}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    fontSize: 12,
+                    color: "var(--muted)",
+                  }}
                 >
                   <FileSpreadsheet size={13} />
-                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  <span
+                    style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                  >
                     {file.name}
                   </span>
                   <span>{formatFileSize(file.size)}</span>
@@ -682,22 +713,26 @@ export default function WorkbenchPage() {
               <h2 className="card-title">{report.title || "数据分析报告"}</h2>
               <div className="card-kicker">
                 {formatDateTime(report.created_at)}
-                {report.dataset_version_ids?.length ? ` · 覆盖 ${report.dataset_version_ids.length} 个数据版本` : ""}
+                {report.dataset_version_ids?.length
+                  ? ` · 覆盖 ${report.dataset_version_ids.length} 个数据版本`
+                  : ""}
               </div>
             </div>
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              <span className={`tag ${statusMeta?.tone || "tag-slate"}`}>{statusMeta?.label || report.status}</span>
+              <span className={`tag ${statusMeta?.tone || "tag-slate"}`}>
+                {statusMeta?.label || report.status}
+              </span>
               {(report.status === "not_configured" || report.status === "failed") &&
                 !narratingId &&
-                !narrationNotice &&
+                narrationNoticeTone !== "error" &&
                 !report.narration_job_id && (
                   <button
-                    className="btn btn-subtle btn-sm"
+                    className="btn btn-primary btn-sm"
                     onClick={() => void narrateReport(report.id)}
-                    title="对当前确定性报告补一次 AI 解读"
+                    title="对当前确定性报告做一次 AI 解读"
                   >
                     <Sparkles size={13} />
-                    补生成 AI 解读
+                    开始 AI 解读
                   </button>
                 )}
               {report.status !== "confirmed" && (
@@ -724,7 +759,7 @@ export default function WorkbenchPage() {
                 AI 解读生成中…页面可以正常操作，离开本页不影响后台生成；返回后报告会显示最新状态。
               </div>
             )}
-            {narrationNotice && !narratingId && (
+            {narrationNotice && !narratingId && narrationNoticeTone === "error" && (
               <div
                 role="alert"
                 style={{
@@ -743,6 +778,11 @@ export default function WorkbenchPage() {
                 </button>
               </div>
             )}
+            {narrationNotice && !narratingId && narrationNoticeTone === "hint" && (
+              <div className="card-kicker" role="status" style={{ marginTop: 8 }}>
+                {narrationNotice}
+              </div>
+            )}
           </div>
           <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
             <Link className="btn btn-primary btn-sm" href="/stage6-interview">
@@ -758,7 +798,9 @@ export default function WorkbenchPage() {
           <div className="card-head">
             <div>
               <h2 className="card-title">报告背后的计算图表</h2>
-              <div className="card-kicker">共 {charts.length} 张，全部由 Pandas 计算结果直接绘制，可复现。</div>
+              <div className="card-kicker">
+                共 {charts.length} 张，全部由 Pandas 计算结果直接绘制，可复现。
+              </div>
             </div>
             <span className="tag tag-green">计算层 · 无 AI</span>
           </div>
@@ -813,7 +855,9 @@ export default function WorkbenchPage() {
               >
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <Sparkles size={13} color={item.status === "confirmed" ? "#1f9d63" : "#8e9ab0"} />
-                  <strong style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  <strong
+                    style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                  >
                     {item.title || "数据分析报告"}
                   </strong>
                   <span className={`tag ${(STATUS_META[item.status] || STATUS_META.draft).tone}`}>
