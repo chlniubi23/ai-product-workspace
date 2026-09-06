@@ -66,7 +66,11 @@ def test_extreme_trend_shift_fires():
             trend={
                 "metric_column": "dau",
                 "first_value": 1000,
+                "previous_value": 1000,
                 "last_value": 500,
+                "last_period": "2026-08-04",
+                "previous_count": 4,
+                "last_count": 4,
                 "last_period_change": -0.5,
             }
         )
@@ -77,7 +81,36 @@ def test_extreme_trend_shift_fires():
     assert findings[0]["severity"] == 3
     assert "下降" in findings[0]["statement"]
     assert "50.0%" in findings[0]["statement"]
-    assert "1000" in findings[0]["statement"] and "500" in findings[0]["statement"]
+    assert "上期 1000 → 本期 500" in findings[0]["statement"]
+    assert "2026-08-04" in findings[0]["statement"]
+    # numbers in the statement come from the same rows as the percentage
+    assert "10 → 8" not in findings[0]["statement"]
+
+
+def test_trend_without_previous_value_does_not_fire():
+    """Batch 20: no comparable previous period -> no claim (honest default)."""
+
+    aggregates = [_dataset(trend={"metric_column": "dau", "last_period_change": -0.5})]
+    assert build_findings_digest(aggregates) == []
+
+
+def test_thin_sample_trend_is_downgraded_and_disclosed():
+    aggregates = [
+        _dataset(
+            trend={
+                "metric_column": "meetings",
+                "previous_value": 4.0,
+                "last_value": 8.0,
+                "last_period": "2026-08-03",
+                "previous_count": 1,
+                "last_count": 1,
+                "last_period_change": 1.0,
+            }
+        )
+    ]
+    findings = build_findings_digest(aggregates)
+    assert findings[0]["severity"] == 1
+    assert "样本量较小" in findings[0]["statement"]
 
 
 def test_small_trend_shift_does_not_fire():

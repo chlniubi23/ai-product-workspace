@@ -6,7 +6,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from ..analytics.engine import AnalysisEngine
+from ..analytics.engine import AnalysisEngine, choose_trend_frequency
 from ..common import _require_pandas, error, pd, serialize
 from ..models import AnalysisArtifact, AnalysisRun, DataColumn, DataQualityReport, DatasetVersion, Project, now
 from ..schemas import AnalysisCreate
@@ -27,12 +27,20 @@ def _analysis_artifacts(frame: pd.DataFrame, version: DatasetVersion, analysis_t
     # implementation so an identical version/config produces the same evidence.
     engine_artifact = None
     if kind in {"trend", "time_series"}:
+        trend_time_column = str(config.get("time_column") or config.get("event_time_column") or config.get("date_column") or "event_time")
+        trend_frequency = str(config.get("frequency") or "").strip().upper()
+        if not trend_frequency:
+            # Batch 20: no explicit frequency -> choose from data density so
+            # sparse tables stop producing walls of empty daily buckets.
+            parsed_time = pd.to_datetime(frame[trend_time_column], errors="coerce", utc=True, format="mixed").dropna()
+            span_days = (parsed_time.max() - parsed_time.min()).days if len(parsed_time) >= 2 else 0
+            trend_frequency = choose_trend_frequency(span_days, len(frame))
         engine_artifact = engine.run_trend_analysis(
             frame,
-            time_column=str(config.get("time_column") or config.get("event_time_column") or config.get("date_column") or "event_time"),
+            time_column=trend_time_column,
             metric_column=str(config.get("metric_column")),
             group_column=str(config["group_column"]) if config.get("group_column") else None,
-            frequency=str(config.get("frequency") or "D"),
+            frequency=trend_frequency,
             aggregation=str(config.get("aggregation") or "mean"),
             field_mapping=field_mapping,
         )

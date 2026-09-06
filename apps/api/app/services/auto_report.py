@@ -13,7 +13,7 @@ from ..ai_context import (
     empty_report_output,
     validate_report_output,
 )
-from ..analytics.engine import AnalysisEngine
+from ..analytics.engine import AnalysisEngine, choose_trend_frequency
 from ..analytics.text_metrics import extract_text_metrics
 from ..common import _require_pandas, model_dict
 from ..config import settings
@@ -151,7 +151,9 @@ def _compute_report_aggregates(snapshot: dict[str, Any]) -> dict[str, Any]:
         try:
             parsed = pd.to_datetime(frame[datetime_column], errors="coerce", utc=True, format="mixed").dropna()
             span_days = (parsed.max() - parsed.min()).days if len(parsed) >= 2 else 0
-            frequency = "W" if span_days > 70 else "D"
+            # Batch 20: frequency is chosen from data density (shared with the
+            # parse-time auto analysis), replacing the span>70 hardcode.
+            frequency = choose_trend_frequency(span_days, len(frame))
             trend = engine.run_trend_analysis(frame, time_column=datetime_column, metric_column=numeric_column, frequency=frequency).to_dict()
             rows = [row for row in (trend.get("payload_json") or {}).get("rows", []) if isinstance(row, Mapping)]
             if rows:
@@ -162,11 +164,16 @@ def _compute_report_aggregates(snapshot: dict[str, Any]) -> dict[str, Any]:
                 parsed_periods = pd.Series(
                     pd.to_datetime([row.get("period") for row in rows], errors="coerce")
                 ).dropna()
+                step_days = {"D": 1, "W": 7, "M": 30}.get(frequency, 1)
                 gaps = 0
                 if len(parsed_periods) >= 2:
-                    step = pd.Timedelta(days=7 if frequency == "W" else 1)
+                    step = pd.Timedelta(days=step_days)
                     expected = int((parsed_periods.iloc[-1] - parsed_periods.iloc[0]) / step) + 1
                     gaps = max(0, expected - len(parsed_periods))
+                # Batch 20: honest period-over-period -- the change value must
+                # compare with the SAME two rows it is computed from.
+                previous_value = values[-2] if len(values) >= 2 else None
+                previous_period = str(rows[-2].get("period")) if len(rows) >= 2 else None
                 aggregates["trend"] = {
                     "time_column": datetime_column,
                     "metric_column": numeric_column,
@@ -175,6 +182,11 @@ def _compute_report_aggregates(snapshot: dict[str, Any]) -> dict[str, Any]:
                     "counts": values[:_REPORT_TREND_POINT_LIMIT],
                     "first_value": values[0],
                     "last_value": values[-1],
+                    "previous_value": previous_value,
+                    "previous_period": previous_period,
+                    "last_period": str(rows[-1].get("period")) if rows else None,
+                    "last_count": int(rows[-1].get("count") or 0) if rows else 0,
+                    "previous_count": int(rows[-2].get("count") or 0) if len(rows) >= 2 else None,
                     "max_value": max(numeric_values) if numeric_values else None,
                     "min_value": min(numeric_values) if numeric_values else None,
                     "last_period_change": rows[-1].get("period_over_period"),

@@ -47,6 +47,11 @@ def _missing_findings(dataset: dict[str, Any], findings: list[dict[str, Any]]) -
     for column in dataset.get("metrics") or []:
         if not isinstance(column, dict):
             continue
+        # Batch 20: extracted columns ("src__label") are derived -- their
+        # missing cells reflect extraction coverage (already disclosed in the
+        # extraction report), not source-data quality.
+        if "__" in str(column.get("name") or ""):
+            continue
         rate = column.get("missing_rate")
         if not isinstance(rate, (int, float)) or rate < MISSING_RATE_THRESHOLD:
             continue
@@ -95,19 +100,40 @@ def _trend_findings(dataset: dict[str, Any], findings: list[dict[str, Any]]) -> 
     change = trend.get("last_period_change")
     if not isinstance(change, (int, float)) or abs(float(change)) < TREND_SHIFT_THRESHOLD:
         return
+    # Batch 20: honest period-over-period.  The numbers quoted in the
+    # statement MUST be the same two rows the percentage is computed from
+    # (previous_value -> last_value, period label included) -- mixing the
+    # percentage with the whole-span first/last values produced findings that
+    # contradicted themselves.  Thin samples are disclosed and downgraded.
+    previous_value = trend.get("previous_value")
+    last_value = trend.get("last_value")
+    if previous_value is None or last_value is None:
+        return  # honest default: no comparable previous period, no claim
     direction = "上升" if change > 0 else "下降"
     severity = 3 if abs(float(change)) >= 0.50 else 2
     metric_column = str(trend.get("metric_column") or "")
     # Batch 14: a derived metric column (source__label) makes this an
     # extracted-metric trend finding -- same rule, marked provenance.
     derived_mark = "（抽取指标）" if "__" in metric_column else ""
+    period_label = str(trend.get("last_period") or "最近一期")
+    previous_count = trend.get("previous_count")
+    last_count = trend.get("last_count")
+    thin_sample = (
+        isinstance(previous_count, int)
+        and isinstance(last_count, int)
+        and previous_count + last_count < 3
+    )
+    if thin_sample:
+        severity = 1
+    sample_note = "（样本量较小，仅供参考）" if thin_sample else ""
     findings.append(
         {
             "kind": "trend_shift",
             "dataset": str(dataset.get("name") or ""),
             "statement": (
-                f"「{dataset.get('name')}」{metric_column}{derived_mark} 最近一期环比{direction} "
-                f"{_pct(abs(float(change)))}（{trend.get('first_value')} → {trend.get('last_value')}）。"
+                f"「{dataset.get('name')}」{metric_column}{derived_mark} "
+                f"最近一期（{period_label}）环比{direction} {_pct(abs(float(change)))}"
+                f"（上期 {previous_value} → 本期 {last_value}）{sample_note}。"
             ),
             "severity": severity,
             "columns": [metric_column] if metric_column else [],
@@ -164,12 +190,14 @@ def _duplicate_findings(dataset: dict[str, Any], findings: list[dict[str, Any]])
 
 
 def _constant_findings(dataset: dict[str, Any], findings: list[dict[str, Any]]) -> None:
-    """Batch 14: one merged finding per dataset for its constant columns."""
+    """One merged finding per dataset for its constant source columns
+    (batch 20: extracted columns are skipped -- a derived metric repeating
+    one value is an extraction artifact, not a data-quality signal)."""
 
     names = [
         str(column.get("name"))
         for column in dataset.get("metrics") or []
-        if isinstance(column, dict) and column.get("constant")
+        if isinstance(column, dict) and column.get("constant") and "__" not in str(column.get("name") or "")
     ]
     if not names:
         return

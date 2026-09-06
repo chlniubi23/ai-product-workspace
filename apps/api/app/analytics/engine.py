@@ -183,6 +183,31 @@ class AnalysisArtifact:
         return self.to_dict().get(key, default)
 
 
+# Batch 20: trend frequency chosen by row density over the date span, so a
+# sparse table no longer produces a wall of empty daily buckets.  Thresholds
+# are fixed constants (compute layer is frozen).
+DAILY_DENSITY_MIN = 0.4      # rows per day at/above this -> daily buckets
+WEEKLY_DENSITY_MIN = 0.06    # at/above this (below daily) -> weekly buckets
+# anything sparser -> monthly buckets
+
+
+def choose_trend_frequency(span_days: int, row_count: int) -> str:
+    """Pick the trend bucket size from data density.
+
+    density = rows / max(span_days, 1).  Dense series (>= 0.4 rows/day, e.g.
+    several events per day) get daily buckets; medium series get weekly;
+    everything sparser gets monthly, so empty buckets never dominate the
+    chart or the period-over-period math.
+    """
+
+    density = row_count / max(int(span_days), 1)
+    if density >= DAILY_DENSITY_MIN:
+        return "D"
+    if density >= WEEKLY_DENSITY_MIN:
+        return "W"
+    return "M"
+
+
 def _normalise_frequency(frequency: str) -> str:
     value = str(frequency or "D").strip().lower()
     return {"day": "D", "daily": "D", "week": "W", "weekly": "W", "month": "M", "monthly": "M"}.get(value, str(frequency or "D").upper())

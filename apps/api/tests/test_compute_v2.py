@@ -130,7 +130,12 @@ def test_digest_v2_unit_rules():
         "trend": {
             "metric_column": "metrics_summary__DAU",
             "first_value": 100000,
+            "previous_value": 100000,
             "last_value": 60000,
+            "previous_period": "2026-08-04",
+            "last_period": "2026-08-11",
+            "previous_count": 14,
+            "last_count": 14,
             "last_period_change": -0.4,
             "gaps": 2,
         },
