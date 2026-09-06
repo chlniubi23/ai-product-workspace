@@ -12,49 +12,136 @@ import {
 } from "@/components/workflow/WorkflowFrame";
 import { formatWorkflowDate, type WorkflowInterviewQuestion } from "@/lib/workflow";
 
+type InterviewSummary = {
+  collected: string[];
+  gaps: string[];
+  ready_for: string;
+};
+
 export default function Stage6InterviewPage() {
   const { snapshot, loading, error, completion, refresh } = useWorkflowSnapshot();
   const [busy, setBusy] = useState(false);
   const [busyId, setBusyId] = useState("");
   const [notice, setNotice] = useState("");
-  const [roundNote, setRoundNote] = useState("");
+  const [answerDraft, setAnswerDraft] = useState("");
+  const [summary, setSummary] = useState<InterviewSummary | null>(null);
+  const [completeNote, setCompleteNote] = useState("");
+  const [interviewEnded, setInterviewEnded] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
   const [manualTopic, setManualTopic] = useState("");
   const [manualText, setManualText] = useState("");
   const [manualInfo, setManualInfo] = useState("");
-  const [answerDrafts, setAnswerDrafts] = useState<Record<string, string>>({});
 
   const questions = useMemo(
     () => [...(snapshot?.interviewQuestions || [])].sort((a, b) => (a.created_at || "").localeCompare(b.created_at || "")),
     [snapshot],
   );
   const answeredCount = questions.filter((q) => q.status === "answered").length;
-  const pendingCount = questions.filter((q) => q.status === "pending").length;
+  const current = questions.find((q) => q.status === "pending") || null;
+  const history = questions.filter((q) => q.status !== "pending");
   const projectId = snapshot?.activeDataset?.project_id;
 
-  async function generateRound() {
+  // Batch 18: one question at a time.  After the user answers or skips, the
+  // next question is fetched automatically; when the AI (or the cap) ends the
+  // interview, the completion digest is fetched in the same flow.
+  async function askNext() {
+    if (!projectId || !accessToken()) return "stopped";
+    const result = await apiRequest<{
+      status?: string;
+      reason?: string;
+      note?: string;
+      question?: WorkflowInterviewQuestion;
+    }>(`/projects/${projectId}/interview/next-question`, { method: "POST" });
+    if (result?.status === "ok") {
+      await refresh();
+      return "asked";
+    }
+    if (result?.status === "complete") {
+      setInterviewEnded(true);
+      setCompleteNote(result.note || "");
+      await refresh();
+      const digest = await apiRequest<{ status?: string; summary?: InterviewSummary }>(
+        `/projects/${projectId}/interview/complete`,
+        { method: "POST" },
+      );
+      if (digest?.status === "ok" && digest.summary) setSummary(digest.summary);
+      return "complete";
+    }
+    return result?.status || "failed";
+  }
+
+  async function startInterview() {
     if (!projectId || !accessToken()) return;
     setBusy(true);
-    setRoundNote("");
+    setNotice("");
     try {
-      const result = await apiRequest<{
-        status?: string;
-        round_number?: number;
-        questions?: WorkflowInterviewQuestion[];
-        duplicates_dropped?: number;
-      }>(`/projects/${projectId}/interview/rounds`, { method: "POST" });
-      if (result?.status === "succeeded" && (result.questions?.length || 0) > 0) {
-        const dropped = result.duplicates_dropped || 0;
-        setRoundNote(
-          `第 ${result.round_number} 轮生成了 ${result.questions?.length} 个问题${dropped ? `（去重丢弃 ${dropped} 个重复）` : ""}。`,
-        );
-      } else {
-        setRoundNote("AI 采访暂不可用，可先手动补充要点。");
+      const outcome = await askNext();
+      if (outcome === "not_configured" || outcome === "failed") {
+        setNotice("AI 采访暂不可用，可先手动补充要点。");
       }
-      await refresh();
-    } catch (roundError) {
-      setRoundNote(roundError instanceof Error ? roundError.message : "生成失败");
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : "开始采访失败");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function finishInterview() {
+    if (!projectId || !accessToken()) return;
+    setBusy(true);
+    setNotice("");
+    try {
+      const digest = await apiRequest<{ status?: string; summary?: InterviewSummary; message?: string }>(
+        `/projects/${projectId}/interview/complete`,
+        { method: "POST" },
+      );
+      if (digest?.status === "ok" && digest.summary) {
+        setSummary(digest.summary);
+        setInterviewEnded(true);
+      } else {
+        setNotice(digest?.message || "小结生成暂不可用。");
+      }
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : "小结生成失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitAnswer() {
+    if (!current || !answerDraft.trim() || !accessToken()) return;
+    setBusyId(current.id);
+    setNotice("");
+    try {
+      await apiRequest(`/interview-questions/${current.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ answer_text: answerDraft.trim() }),
+      });
+      setAnswerDraft("");
+      await refresh();
+      await askNext();
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : "提交失败");
+    } finally {
+      setBusyId("");
+    }
+  }
+
+  async function skipCurrent() {
+    if (!current || !accessToken()) return;
+    setBusyId(current.id);
+    setNotice("");
+    try {
+      await apiRequest(`/interview-questions/${current.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status: "skipped" }),
+      });
+      await refresh();
+      await askNext();
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : "操作失败");
+    } finally {
+      setBusyId("");
     }
   }
 
@@ -84,50 +171,12 @@ export default function Stage6InterviewPage() {
     }
   }
 
-  async function answerQuestion(id: string) {
-    const text = (answerDrafts[id] || "").trim();
-    if (!text || !accessToken()) return;
-    setBusyId(id);
-    setNotice("");
-    try {
-      await apiRequest(`/interview-questions/${id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ answer_text: text }),
-      });
-      setAnswerDrafts((prev) => ({ ...prev, [id]: "" }));
-      setNotice("已记录回答。");
-      await refresh();
-    } catch (answerError) {
-      setNotice(answerError instanceof Error ? answerError.message : "回答失败");
-    } finally {
-      setBusyId("");
-    }
-  }
-
-  async function skipQuestion(id: string) {
-    if (!accessToken()) return;
-    setBusyId(id);
-    setNotice("");
-    try {
-      await apiRequest(`/interview-questions/${id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ status: "skipped" }),
-      });
-      setNotice("已跳过。");
-      await refresh();
-    } catch (skipError) {
-      setNotice(skipError instanceof Error ? skipError.message : "操作失败");
-    } finally {
-      setBusyId("");
-    }
-  }
-
   return (
     <div className="page">
       <WorkflowHeader
         step={6}
         title="AI 采访"
-        description="AI 基于数据结论每轮提出关键问题，你逐个回答或跳过，也可手动补充信息。"
+        description="一次一问、围绕数据发现、最多 10 问、可随时结束；结束时生成信息小结，带着明确依据进入下一步。"
         completion={completion}
         loading={loading || busy}
       />
@@ -149,92 +198,156 @@ export default function Stage6InterviewPage() {
           </section>
         ) : (
           <>
-            <section className="card card-pad" style={{ marginTop: 16 }}>
-              <div className="card-head">
-                <div>
-                  <h2 className="card-title">采访进度</h2>
-                  <div className="card-kicker">
-                    共 {questions.length} 个问题 · 已回答 {answeredCount} · 待回答 {pendingCount}
+            {summary ? (
+              <section className="card card-pad" style={{ marginTop: 16, borderColor: "#cfe3d4" }}>
+                <div className="card-head">
+                  <div>
+                    <h2 className="card-title">采访小结</h2>
+                    <div className="card-kicker">带着这些依据进入第 7 步洞察蒸馏。</div>
+                  </div>
+                  <span className="tag tag-green">采访完成</span>
+                </div>
+                <div style={{ display: "grid", gap: 10, marginTop: 8 }}>
+                  <div>
+                    <strong>已收集</strong>
+                    <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+                      {summary.collected.map((item, index) => (
+                        <li key={index} style={{ lineHeight: 1.6 }}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div>
+                    <strong>未覆盖</strong>
+                    <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+                      {summary.gaps.map((item, index) => (
+                        <li key={index} style={{ lineHeight: 1.6 }}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div>
+                    <strong>下一步建议</strong>
+                    <p style={{ margin: "4px 0 0", lineHeight: 1.6 }}>{summary.ready_for}</p>
                   </div>
                 </div>
-                <span className="tag tag-blue">AI 辅助</span>
-              </div>
-              <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                <button className="btn btn-primary" disabled={busy} onClick={() => void generateRound()}>
-                  <Sparkles size={14} />
-                  {questions.length === 0 ? "开始采访" : "下一轮提问"}
-                </button>
-              </div>
-              {roundNote && (
-                <p style={{ color: "var(--muted)", marginTop: 8, marginBottom: 0 }}>{roundNote}</p>
-              )}
-            </section>
-
-            {questions.length > 0 && (
+                <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+                  <Link className="btn btn-primary btn-sm" href="/stage7-copilot">
+                    前往决策副驾 <ChevronRight size={13} />
+                  </Link>
+                </div>
+              </section>
+            ) : (
               <section className="card card-pad" style={{ marginTop: 16 }}>
                 <div className="card-head">
                   <div>
-                    <h2 className="card-title">采访问题</h2>
-                    <div className="card-kicker">回答会作为第 7 步生成洞察草稿的依据；跳过的问题不会进入蒸馏。</div>
-                  </div>
-                </div>
-                <div className="list" style={{ marginTop: 8 }}>
-                  {questions.map((question) => (
-                    <div className="card card-pad" key={question.id} style={{ marginBottom: 10 }}>
-                      <div className="card-head">
-                        <div>
-                          <strong>{question.question_text || "未命名问题"}</strong>
-                          <div className="card-kicker">
-                            {question.source === "manual" ? "手动补充" : `第 ${question.round_number} 轮`}
-                            {question.topic ? ` · ${question.topic}` : ""} · {formatWorkflowDate(question.created_at)}
-                          </div>
-                        </div>
-                        <span
-                          className={`tag ${question.status === "answered" ? "tag-green" : question.status === "skipped" ? "tag-rose" : "tag-amber"}`}
-                        >
-                          {question.status === "answered" ? "已回答" : question.status === "skipped" ? "已跳过" : "待回答"}
-                        </span>
-                      </div>
-                      {question.rationale && (
-                        <p style={{ color: "var(--muted)", fontSize: 13, margin: "4px 0 0" }}>
-                          为什么问这个：{question.rationale}
-                        </p>
-                      )}
-                      {question.status === "answered" ? (
-                        <p style={{ lineHeight: 1.6, margin: "8px 0 0", whiteSpace: "pre-wrap" }}>{question.answer_text}</p>
-                      ) : question.status === "pending" ? (
-                        <>
-                          <label className="field" style={{ marginTop: 8 }}>
-                            <textarea
-                              rows={3}
-                              placeholder="写下你的回答…"
-                              value={answerDrafts[question.id] || ""}
-                              onChange={(event) =>
-                                setAnswerDrafts((prev) => ({ ...prev, [question.id]: event.target.value }))
-                              }
-                            />
-                          </label>
-                          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 8 }}>
-                            <button
-                              className="btn btn-subtle btn-sm"
-                              disabled={busyId === question.id}
-                              onClick={() => void skipQuestion(question.id)}
-                            >
-                              跳过
-                            </button>
-                            <button
-                              className="btn btn-primary btn-sm"
-                              disabled={busyId === question.id || !(answerDrafts[question.id] || "").trim()}
-                              onClick={() => void answerQuestion(question.id)}
-                            >
-                              提交回答
-                            </button>
-                          </div>
-                        </>
-                      ) : null}
+                    <h2 className="card-title">当前问题</h2>
+                    <div className="card-kicker">
+                      已回答 {answeredCount} · AI 一次只问一个问题，回答后自动追问
                     </div>
-                  ))}
+                  </div>
+                  <span className="tag tag-blue">AI 辅助</span>
                 </div>
+                {current ? (
+                  <div style={{ marginTop: 8 }}>
+                    <strong style={{ fontSize: 15, lineHeight: 1.6, display: "block" }}>
+                      {current.question_text}
+                    </strong>
+                    <div className="card-kicker" style={{ marginTop: 4 }}>
+                      {current.source === "manual" ? "手动补充" : `第 ${current.round_number} 问`}
+                      {current.topic ? ` · ${current.topic}` : ""}
+                    </div>
+                    {current.rationale && (
+                      <p style={{ color: "var(--muted)", fontSize: 13, margin: "4px 0 0" }}>
+                        为什么问这个：{current.rationale}
+                      </p>
+                    )}
+                    <label className="field" style={{ marginTop: 10 }}>
+                      <textarea
+                        rows={3}
+                        placeholder="写下你的回答…"
+                        value={answerDraft}
+                        onChange={(event) => setAnswerDraft(event.target.value)}
+                      />
+                    </label>
+                    <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 8 }}>
+                      <button className="btn btn-subtle btn-sm" disabled={busyId === current.id} onClick={() => void skipCurrent()}>
+                        跳过
+                      </button>
+                      <button
+                        className="btn btn-primary btn-sm"
+                        disabled={busyId === current.id || !answerDraft.trim()}
+                        onClick={() => void submitAnswer()}
+                      >
+                        提交回答
+                      </button>
+                    </div>
+                  </div>
+                ) : interviewEnded ? (
+                  <div className="empty-state" style={{ minHeight: 120 }}>
+                    <MessageSquare size={18} />
+                    <strong>采访已结束</strong>
+                    <p>{completeNote || "可手动补充要点，或前往第 7 步生成洞察草稿。"}</p>
+                    <button className="btn btn-subtle btn-sm" disabled={busy} onClick={() => void startInterview()}>
+                      继续追问
+                    </button>
+                  </div>
+                ) : (
+                  <div className="empty-state" style={{ minHeight: 120 }}>
+                    <MessageSquare size={18} />
+                    <strong>还没有进行中的问题</strong>
+                    <p>AI 会基于数据发现一次提一个问题，根据你的回答追问。</p>
+                    <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => void startInterview()}>
+                      <Sparkles size={13} />
+                      开始采访
+                    </button>
+                  </div>
+                )}
+                {notice && (
+                  <p style={{ color: "var(--muted)", marginTop: 8, marginBottom: 0 }}>{notice}</p>
+                )}
+                {questions.length > 0 && !summary && (
+                  <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
+                    <button className="btn btn-subtle btn-sm" disabled={busy} onClick={() => void finishInterview()}>
+                      结束采访并生成小结
+                    </button>
+                  </div>
+                )}
+              </section>
+            )}
+
+            {history.length > 0 && (
+              <section className="card card-pad" style={{ marginTop: 16 }}>
+                <div className="card-head">
+                  <div>
+                    <h2 className="card-title">采访记录</h2>
+                    <div className="card-kicker">已回答 {answeredCount} · 跳过 {history.filter((q) => q.status === "skipped").length}</div>
+                  </div>
+                  <button className="btn btn-subtle btn-sm" onClick={() => setShowHistory((v) => !v)}>
+                    {showHistory ? "收起" : "展开"}
+                  </button>
+                </div>
+                {showHistory && (
+                  <div className="list" style={{ marginTop: 8 }}>
+                    {history.map((question) => (
+                      <div className="card card-pad" key={question.id} style={{ marginBottom: 10 }}>
+                        <div className="card-head">
+                          <div>
+                            <strong>{question.question_text || "未命名问题"}</strong>
+                            <div className="card-kicker">
+                              {question.source === "manual" ? "手动补充" : `第 ${question.round_number} 问`}
+                              {question.topic ? ` · ${question.topic}` : ""} · {formatWorkflowDate(question.created_at)}
+                            </div>
+                          </div>
+                          <span className={`tag ${question.status === "answered" ? "tag-green" : "tag-rose"}`}>
+                            {question.status === "answered" ? "已回答" : "已跳过"}
+                          </span>
+                        </div>
+                        {question.status === "answered" && (
+                          <p style={{ lineHeight: 1.6, margin: "8px 0 0", whiteSpace: "pre-wrap" }}>{question.answer_text}</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </section>
             )}
 
@@ -285,7 +398,7 @@ export default function Stage6InterviewPage() {
           </>
         )}
       </WorkflowGate>
-      {notice && (
+      {notice && !summary && (
         <div className="toast show" role="status">
           {notice}
         </div>

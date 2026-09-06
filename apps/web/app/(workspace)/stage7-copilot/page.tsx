@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Check, ChevronRight, Lightbulb, Sparkles, X } from "lucide-react";
+import { Check, ChevronRight, Lightbulb, Pencil, Sparkles, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { apiRequest, accessToken } from "@/lib/api";
 import {
@@ -11,28 +11,24 @@ import {
   EvidenceStatus,
   useWorkflowSnapshot,
 } from "@/components/workflow/WorkflowFrame";
-import { formatWorkflowDate } from "@/lib/workflow";
-
-type Claim = { text?: string; evidence?: Array<{ type?: string; id?: string }> };
-type DistillResult = {
-  facts?: Claim[];
-  hypotheses?: Claim[];
-  recommendations?: Claim[];
-  limitations?: string[];
-  summary?: string;
-};
+import { formatWorkflowDate, type WorkflowInsight } from "@/lib/workflow";
 
 export default function Stage7CopilotPage() {
   const { snapshot, loading, error, completion, refresh } = useWorkflowSnapshot();
   const [busyId, setBusyId] = useState("");
   const [notice, setNotice] = useState("");
   const [distilling, setDistilling] = useState(false);
-  const [output, setOutput] = useState<DistillResult | null>(null);
+  // Batch 18: inline edit state per insight (null = not editing).
+  const [editingId, setEditingId] = useState("");
+  const [editTitle, setEditTitle] = useState("");
+  const [editContent, setEditContent] = useState("");
+  const [confirmingRest, setConfirmingRest] = useState(false);
 
   // 手工结论
   const [manualText, setManualText] = useState("");
   const projectId = snapshot?.activeDataset?.project_id;
   const insights = snapshot?.insights || [];
+  const draftInsights = insights.filter((item) => item.status === "draft");
 
   async function distill() {
     if (!projectId || !accessToken()) return;
@@ -42,67 +38,27 @@ export default function Stage7CopilotPage() {
       const result = await apiRequest<{
         status?: string;
         error_code?: string | null;
-        output?: DistillResult;
-        interview_answer_count?: number;
+        created?: WorkflowInsight[];
       }>("/ai/distill-interview", { method: "POST", body: JSON.stringify({ project_id: projectId }) });
-      const output = result?.output;
-      const hasClaims = Boolean(
-        output &&
-          ((output.facts?.length || 0) + (output.hypotheses?.length || 0) + (output.recommendations?.length || 0) > 0),
-      );
-      if (result?.status === "succeeded" && hasClaims) {
-        setOutput(output || null);
-        setNotice("洞察草稿已生成，请逐条检查引用后保存为草稿。");
+      if (result?.status === "succeeded") {
+        await refresh();
+        const count = result.created?.length || 0;
+        setNotice(
+          count > 0
+            ? `AI 已按证据生成 ${count} 条草稿：弃用不行的，必要时修改，其余一键确认。`
+            : "AI 未能产出有证据支撑的结论，可补充采访回答后重试，或手写结论。",
+        );
+      } else if (result?.error_code === "LLM_TRUNCATED") {
+        setNotice("AI 输出过长被截断，已自动重试仍失败。可稍后再试，或把采访回答写得更精炼。");
+      } else if (result?.error_code === "INVALID_AI_OUTPUT") {
+        setNotice("AI 返回格式异常，请重试。");
       } else {
-        setOutput(null);
-        // A truncated/unparseable payload used to render as an empty "success";
-        // surface the real reason instead.
-        if (result?.error_code === "LLM_TRUNCATED") {
-          setNotice("AI 输出过长被截断，已自动重试仍失败。可稍后再试，或把采访回答写得更精炼。");
-        } else if (result?.error_code === "INVALID_AI_OUTPUT") {
-          setNotice("AI 返回格式异常，请重试。");
-        } else {
-          setNotice("AI 蒸馏暂不可用，可手写结论或稍后再试。");
-        }
+        setNotice("AI 蒸馏暂不可用，可手写结论或稍后再试。");
       }
     } catch (distillError) {
       setNotice(distillError instanceof Error ? distillError.message : "蒸馏失败");
     } finally {
       setDistilling(false);
-    }
-  }
-
-  async function saveDraftClaims() {
-    if (!output || !projectId) return;
-    const sections: Array<[keyof DistillResult, string]> = [
-      ["facts", "fact"],
-      ["hypotheses", "hypothesis"],
-      ["recommendations", "recommendation"],
-    ];
-    setNotice("");
-    try {
-      let saved = 0;
-      for (const [section, type] of sections) {
-        for (const claim of (output[section] as Claim[] | undefined) || []) {
-          if (!claim.text || !(claim.evidence || []).length) continue;
-          await apiRequest("/insights", {
-            method: "POST",
-            body: JSON.stringify({
-              project_id: projectId,
-              title: claim.text.slice(0, 120),
-              insight_type: type,
-              content: claim.text,
-              evidence: claim.evidence,
-            }),
-          });
-          saved += 1;
-        }
-      }
-      setNotice(`已保存 ${saved} 条洞察草稿，请在下方逐条裁决。`);
-      setOutput(null);
-      await refresh();
-    } catch (saveError) {
-      setNotice(saveError instanceof Error ? saveError.message : "洞察保存失败");
     }
   }
 
@@ -155,13 +111,62 @@ export default function Stage7CopilotPage() {
     setBusyId(id);
     setNotice("");
     try {
+      // The insight carries its own evidence; confirming keeps it as-is.
       await apiRequest(`/insights/${id}`, { method: "PATCH", body: JSON.stringify({ status }) });
-      setNotice(status === "confirmed" ? "已采纳，可以进入产品问题。" : "已否决，这条洞察不会进入后续步骤。");
+      setNotice(status === "confirmed" ? "已确认。" : "已弃用，保留在审计记录中。");
       await refresh();
     } catch (patchError) {
       setNotice(patchError instanceof Error ? patchError.message : "操作失败");
     } finally {
       setBusyId("");
+    }
+  }
+
+  function startEdit(insight: WorkflowInsight) {
+    setEditingId(insight.id);
+    setEditTitle(insight.title || "");
+    setEditContent(insight.content || "");
+  }
+
+  async function saveEdit(id: string) {
+    if (!accessToken()) return;
+    setBusyId(id);
+    setNotice("");
+    try {
+      await apiRequest(`/insights/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ title: editTitle.trim(), content: editContent.trim() }),
+      });
+      setEditingId("");
+      setNotice("已保存修改。");
+      await refresh();
+    } catch (editError) {
+      setNotice(editError instanceof Error ? editError.message : "保存失败");
+    } finally {
+      setBusyId("");
+    }
+  }
+
+  // Batch 18: "confirm the rest" -- sequentially confirm every still-draft
+  // insight.  A failure on one card is reported but the rest carry on.
+  async function confirmRest() {
+    if (!accessToken() || confirmingRest) return;
+    setConfirmingRest(true);
+    setNotice("");
+    const failures: string[] = [];
+    for (const insight of draftInsights) {
+      try {
+        await apiRequest(`/insights/${insight.id}`, { method: "PATCH", body: JSON.stringify({ status: "confirmed" }) });
+      } catch {
+        failures.push(insight.title || insight.id.slice(0, 8));
+      }
+    }
+    await refresh();
+    setConfirmingRest(false);
+    if (failures.length) {
+      setNotice(`部分确认失败（${failures.join("、")}），通常是缺少证据引用；其余已完成。`);
+    } else {
+      setNotice(`已确认 ${draftInsights.length} 条草稿。`);
     }
   }
 
@@ -216,52 +221,12 @@ export default function Stage7CopilotPage() {
     return label || `引用 ${(reference.id || "").slice(0, 8)}…`;
   }
 
-  const renderClaims = (title: string, claims: Claim[] | undefined) => (
-    <section className="card card-pad">
-      <div className="card-head">
-        <h2 className="card-title">{title}</h2>
-        <EvidenceStatus
-          count={(claims || []).reduce((total, claim) => total + (claim.evidence?.length || 0), 0)}
-        />
-      </div>
-      {claims?.length ? (
-        <div className="list">
-          {claims.map((claim, index) => (
-            <div className="list-row" key={`${title}-${index}`}>
-              <div className="list-main">
-                {/* inline overrides: .list-main strong is a nowrap ellipsis
-                    rule for the old full-width rows; these narrow grid cards
-                    need wrapping to stay readable. */}
-                <strong style={{ whiteSpace: "normal" }}>{claim.text || "未返回内容"}</strong>
-                <small style={{ whiteSpace: "normal" }}>
-                  {claim.evidence?.length
-                    ? claim.evidence.map((item) => evidenceLabel(item)).join("、")
-                    : "无数据支撑，不能确认"}
-                </small>
-              </div>
-              {claim.evidence?.length ? (
-                <Check size={15} color="#0f9f91" />
-              ) : (
-                <span className="tag tag-rose">待补证据</span>
-              )}
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="empty-state" style={{ minHeight: 110 }}>
-          <Lightbulb size={17} />
-          <strong>暂无内容</strong>
-        </div>
-      )}
-    </section>
-  );
-
   return (
     <div className="page">
       <WorkflowHeader
         step={7}
         title="决策副驾"
-        description="把第 6 步的采访问答与数据结论蒸馏成洞察草稿，逐条裁决：采纳需要证据引用，AI 只提供建议。"
+        description="AI 已按证据生成草稿：弃用不行的，必要时修改，其余一键确认；采纳需要证据引用。"
         completion={completion}
         loading={loading || distilling}
       />
@@ -276,41 +241,149 @@ export default function Stage7CopilotPage() {
           <div className="card-head">
             <div>
               <h2 className="card-title">从采访生成洞察草稿</h2>
-              <div className="card-kicker">AI 把采访问答 + 数据结论蒸馏成草稿；没有引用的句子不会落库。</div>
+              <div className="card-kicker">
+                蒸馏结果自动落库为草稿（条数由证据决定）；没有证据的句子不会落库。
+              </div>
             </div>
             <button className="btn btn-primary" disabled={distilling} onClick={() => void distill()}>
               <Sparkles size={14} />
-              {distilling ? "蒸馏中…" : "从采访生成洞察草稿"}
+              {distilling ? "蒸馏中…" : draftInsights.length ? "重新蒸馏（刷新草稿）" : "从采访生成洞察草稿"}
             </button>
           </div>
+          {draftInsights.length > 0 && (
+            <p style={{ color: "var(--muted)", marginTop: 8, marginBottom: 0 }}>
+              再次蒸馏会刷新仍是草稿的条目；已确认/已弃用的不受影响。
+            </p>
+          )}
         </section>
 
-        {output && (
-          <>
-            <div className="grid grid-3" style={{ marginTop: 16 }}>
-              {renderClaims("事实", output.facts)}
-              {renderClaims("推断", output.hypotheses)}
-              {renderClaims("建议", output.recommendations)}
-            </div>
-            <section className="card card-pad" style={{ marginTop: 16 }}>
-              <div className="card-head">
-                <div>
-                  <h2 className="card-title">保存洞察草稿</h2>
-                  <div className="card-kicker">保存后仍是草稿，采纳与否在下方裁决。</div>
-                </div>
-                <button className="btn btn-primary" onClick={() => void saveDraftClaims()}>
-                  <Check size={14} />
-                  保存为草稿
-                </button>
+        <section className="card card-pad" style={{ marginTop: 16 }}>
+          <div className="card-head">
+            <div>
+              <h2 className="card-title">待裁决洞察</h2>
+              <div className="card-kicker">
+                共 {insights.length} 条 · 已确认 {insights.filter((item) => item.status === "confirmed").length} · 已弃用{" "}
+                {insights.filter((item) => item.status === "rejected").length} · 待裁决 {draftInsights.length}
               </div>
-              {output.limitations?.length ? (
-                <p style={{ color: "var(--muted)" }}>{output.limitations.join("；")}</p>
-              ) : (
-                <p style={{ color: "var(--muted)" }}>请检查每条引用是否真实可溯。</p>
+            </div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              {draftInsights.length > 1 && (
+                <button className="btn btn-primary btn-sm" disabled={confirmingRest} onClick={() => void confirmRest()}>
+                  <Check size={13} />
+                  {confirmingRest ? "确认中…" : `确认其余 ${draftInsights.length} 条`}
+                </button>
               )}
-            </section>
-          </>
-        )}
+              <span className="tag tag-blue">人工做减法</span>
+            </div>
+          </div>
+          {insights.length === 0 ? (
+            <p style={{ color: "var(--muted)" }}>还没有洞察草稿。先从采访蒸馏，或写一条手工结论。</p>
+          ) : (
+            <div className="list" style={{ marginTop: 8 }}>
+              {insights.map((insight) => {
+                const evidenceCount = insight.evidence_json?.length || 0;
+                const settled = insight.status === "confirmed" || insight.status === "rejected";
+                const editing = editingId === insight.id;
+                return (
+                  <div className="card card-pad" key={insight.id} style={{ marginBottom: 12 }}>
+                    <div className="card-head">
+                      <div>
+                        <strong>{insight.title || "未命名洞察"}</strong>
+                        <div className="card-kicker">
+                          {formatWorkflowDate(insight.created_at)}
+                          {insight.insight_type ? ` · ${insight.insight_type}` : ""}
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <EvidenceStatus count={evidenceCount} />
+                        <span
+                          className={`tag ${insight.status === "confirmed" ? "tag-green" : insight.status === "rejected" ? "tag-rose" : "tag-amber"}`}
+                        >
+                          {insight.status === "confirmed"
+                            ? "已确认"
+                            : insight.status === "rejected"
+                              ? "已弃用"
+                              : insight.status || "draft"}
+                        </span>
+                      </div>
+                    </div>
+                    {editing ? (
+                      <>
+                        <label className="field" style={{ marginTop: 8 }}>
+                          <span className="field-label">标题</span>
+                          <input value={editTitle} onChange={(event) => setEditTitle(event.target.value)} />
+                        </label>
+                        <label className="field">
+                          <span className="field-label">正文</span>
+                          <textarea
+                            rows={3}
+                            value={editContent}
+                            onChange={(event) => setEditContent(event.target.value)}
+                          />
+                        </label>
+                        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 8 }}>
+                          <button className="btn btn-subtle btn-sm" disabled={busyId === insight.id} onClick={() => setEditingId("")}>
+                            取消
+                          </button>
+                          <button
+                            className="btn btn-primary btn-sm"
+                            disabled={busyId === insight.id || !editTitle.trim() || !editContent.trim()}
+                            onClick={() => void saveEdit(insight.id)}
+                          >
+                            保存修改
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <p style={{ color: "var(--muted)", lineHeight: 1.6 }}>
+                          {insight.content || "这条洞察没有正文。"}
+                        </p>
+                        <p style={{ color: "var(--muted)", fontSize: 13, margin: "4px 0 0" }}>
+                          证据：{(insight.evidence_json || []).map((item) => evidenceLabel(item as { type?: string; id?: string })).join("、") || "无数据支撑"}
+                        </p>
+                        {!settled && (
+                          <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+                            <button
+                              className="btn btn-primary btn-sm"
+                              disabled={busyId === insight.id || evidenceCount === 0}
+                              onClick={() => void decide(insight.id, "confirmed")}
+                            >
+                              <Check size={13} />
+                              确认
+                            </button>
+                            <button
+                              className="btn btn-subtle btn-sm"
+                              disabled={busyId === insight.id}
+                              onClick={() => void decide(insight.id, "rejected")}
+                            >
+                              <X size={13} />
+                              弃用
+                            </button>
+                            <button className="btn btn-subtle btn-sm" disabled={busyId === insight.id} onClick={() => startEdit(insight)}>
+                              <Pencil size={13} />
+                              编辑
+                            </button>
+                            {evidenceCount === 0 && (
+                              <span style={{ color: "var(--muted)", fontSize: 13, alignSelf: "center" }}>
+                                缺少证据引用，无法确认
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
+            <Link className="btn btn-primary btn-sm" href="/stage8-problem">
+              下一步·产品问题 <ChevronRight size={13} />
+            </Link>
+          </div>
+        </section>
 
         <section className="card card-pad" style={{ marginTop: 16 }}>
           <div className="card-head">
@@ -318,6 +391,7 @@ export default function Stage7CopilotPage() {
               <h2 className="card-title">手工结论</h2>
               <div className="card-kicker">自动引用最近一次分析产物，保存后同为草稿。</div>
             </div>
+            <Lightbulb size={16} color="#8e9ab0" />
           </div>
           <label className="field">
             <span className="field-label">手工结论</span>
@@ -333,81 +407,6 @@ export default function Stage7CopilotPage() {
               <Check size={14} />
               保存手工洞察
             </button>
-          </div>
-        </section>
-
-        <section className="card card-pad" style={{ marginTop: 16 }}>
-          <div className="card-head">
-            <div>
-              <h2 className="card-title">待判断洞察</h2>
-              <div className="card-kicker">
-                共 {insights.length} 条 · 已采纳 {insights.filter((item) => item.status === "confirmed").length} 条
-              </div>
-            </div>
-            <span className="tag tag-blue">AI 辅助 · 人工裁决</span>
-          </div>
-          {insights.length === 0 ? (
-            <p style={{ color: "var(--muted)" }}>还没有洞察草稿。先从采访生成，或写一条手工结论。</p>
-          ) : (
-            <div className="list" style={{ marginTop: 8 }}>
-              {insights.map((insight) => {
-                const evidenceCount = insight.evidence_json?.length || 0;
-                const settled = insight.status === "confirmed" || insight.status === "rejected";
-                return (
-                  <div className="card card-pad" key={insight.id} style={{ marginBottom: 12 }}>
-                    <div className="card-head">
-                      <div>
-                        <strong>{insight.title || "未命名洞察"}</strong>
-                        <div className="card-kicker">
-                          {formatWorkflowDate(insight.created_at)} · 置信度 {insight.confidence || "未标注"}
-                        </div>
-                      </div>
-                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                        <EvidenceStatus count={evidenceCount} />
-                        <span
-                          className={`tag ${insight.status === "confirmed" ? "tag-green" : insight.status === "rejected" ? "tag-rose" : "tag-amber"}`}
-                        >
-                          {insight.status || "draft"}
-                        </span>
-                      </div>
-                    </div>
-                    <p style={{ color: "var(--muted)", lineHeight: 1.6 }}>
-                      {insight.content || "这条洞察没有正文。"}
-                    </p>
-                    {!settled && (
-                      <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
-                        <button
-                          className="btn btn-primary btn-sm"
-                          disabled={busyId === insight.id || evidenceCount === 0}
-                          onClick={() => void decide(insight.id, "confirmed")}
-                        >
-                          <Check size={13} />
-                          采纳
-                        </button>
-                        <button
-                          className="btn btn-subtle btn-sm"
-                          disabled={busyId === insight.id}
-                          onClick={() => void decide(insight.id, "rejected")}
-                        >
-                          <X size={13} />
-                          否决
-                        </button>
-                        {evidenceCount === 0 && (
-                          <span style={{ color: "var(--muted)", fontSize: 13, alignSelf: "center" }}>
-                            缺少证据引用，无法采纳
-                          </span>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
-            <Link className="btn btn-primary btn-sm" href="/stage8-problem">
-              下一步·产品问题 <ChevronRight size={13} />
-            </Link>
           </div>
         </section>
       </WorkflowGate>
