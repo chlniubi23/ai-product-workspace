@@ -564,19 +564,37 @@ def test_next_question_caps_at_ten_without_provider_calls(client, owner, project
 
 
 def test_next_question_duplicate_retries_once_then_completes(client, owner, project, monkeypatch):
-    # 3 provider calls total: ask -> duplicate (retry) -> duplicate (give up)
-    fake = _FakeAdapter([_question_result("验证码到达率如何？")] * 3)
+    # Batch 20: duplicates no longer end the interview.  Flow: ask (ok) ->
+    # answer it -> ask again -> duplicate (fresh-angle retry) -> duplicate
+    # (retry) -> template fallback on a report finding.  No provider call is
+    # wasted on the template.  NOTE: report findings are absent in this
+    # fixture, so the template falls back to the generic wording.
+    # 4 scripted results: ask 1 (consumed before the answer), then the second
+    # call retries duplicates twice and lands the template fallback.
+    fake = _FakeAdapter([_question_result("验证码到达率如何？")] * 5)
     _patch_adapter(monkeypatch, fake)
 
     first = data_of(next_question(client, owner, project["id"]))
     assert first["status"] == "ok"
+    answered = data_of(
+        client.patch(
+            f"/api/v1/interview-questions/{first['question']['id']}",
+            headers=auth(owner),
+            json={"answer_text": "验证码基本都收到了。"},
+        )
+    )
+    assert answered["status"] == "answered"
 
     second = data_of(next_question(client, owner, project["id"]))
-    assert second["status"] == "complete"
-    assert second["reason"] == "no_new_question"
-    assert len(fake.calls) == 3
+    assert second["status"] == "ok"
+    assert len(fake.calls) == 4  # first ask 1 + this call's 3 attempts
     # the retry attempt saw the first question as asked_question context
     assert "asked_question" in fake.calls[1]["user"]
+
+    question = second["question"]
+    assert question["status"] == "pending"
+    assert question["source"] == "ai"
+    assert "实际情况与预期的差距" in question["question_text"] or "关键数据发现" in question["question_text"]
 
 
 def test_interview_complete_generates_and_persists_digest(client, owner, project, monkeypatch):

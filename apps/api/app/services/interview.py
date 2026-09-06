@@ -137,19 +137,28 @@ def _project_context(db: Session, project: Project, question: str) -> dict[str, 
 async def generate_next_question(
     *, db: Session, user: User, workspace: Workspace, project: Project
 ) -> dict[str, Any]:
-    """Adaptive interview: propose the next single question (batch 18).
+    """Adaptive interview: propose the next single question (batch 18/20).
 
-    One provider call per question.  Termination is triadic: the model may
-    declare the interview complete (``interview_complete``), the hard cap of
-    ``_INTERVIEW_QUESTION_CAP`` AI questions is checked pre-provider, or the
-    user ends manually via the completion summary.  Duplicate questions
-    (server-normalized) get exactly one provider retry; a second duplicate
-    ends the interview with ``no_new_question``.
+    One provider call per question.  Idempotent: if a pending AI question is
+    already on record (a duplicate request raced or the user navigated away),
+    it is returned as-is with no provider call and no new row.  Termination
+    is triadic: the model may declare the interview complete
+    (``interview_complete``), the hard cap of ``_INTERVIEW_QUESTION_CAP`` AI
+    questions is checked pre-provider, or the user ends manually via the
+    completion summary.  Duplicate questions no longer end the interview --
+    the model is asked for a different angle, then a template follow-up on an
+    unexplored report finding is used as the last resort.
     """
 
     existing = db.scalars(
         select(InterviewQuestion).where(InterviewQuestion.project_id == project.id)
     ).all()
+    # Batch 20 idempotency: a still-pending AI question IS the next question.
+    # Repeated calls (double clicks, remounts, parallel tabs) reuse it instead
+    # of queueing another provider call.
+    pending = next((q for q in existing if q.source == "ai" and q.status == "pending"), None)
+    if pending is not None:
+        return {"status": "ok", "question": model_dict(pending), "reused": True}
     seen = {_normalise_question_text(q.question_text) for q in existing if q.question_text}
     ai_asked = sum(1 for q in existing if q.source == "ai")
     if ai_asked >= _INTERVIEW_QUESTION_CAP:
@@ -182,7 +191,12 @@ async def generate_next_question(
 
     next_round = ai_asked + 1
     last_error = "AI_UNAVAILABLE"
-    for _attempt in (1, 2):  # one retry for duplicate questions
+    for attempt in (1, 2, 3):  # up to 3 provider calls chasing a fresh angle
+        extra = ""
+        if attempt > 1:
+            # Batch 20: duplicates no longer end the interview -- ask the
+            # model to attack the topic from an unexplored angle.
+            extra = "此前提出的问题与已有问题重复。换一个此前从未问过的角度重新提问，仍然不得与已有问题重复。"
         result = await _run_ai_stage(
             db=db,
             user=user,
@@ -192,8 +206,10 @@ async def generate_next_question(
                 "你是产品分析师（采访者），正在进行一次一问的自适应采访。"
                 "基于给定的项目目标、报告聚合与数据发现，以及已回答的问答对，判断："
                 "若数据发现中最重要的未澄清点都已覆盖，返回 interview_complete=true 并在 completion_note 说明已收集到什么、还差什么、建议直接进入洞察蒸馏；"
+                "仅当用户的回答已覆盖关键开放问题、或明确表示无更多补充时才可置 true；不确定时默认继续提问；"
+                "置 true 时 completion_note 必须逐条说明依据了哪些回答。"
                 "否则只提出一个问题（优先围绕数据发现中最重要的未澄清点，并根据已有回答追问），输出 topic、question_text、rationale（引用哪条结论）。"
-                "新问题不得与已有问题重复（含语义重复）。输出默认是 draft。"
+                "新问题不得与已有问题重复（含语义重复）。" + extra + " 输出默认是 draft。"
             ),
             context=context,
             flag_name="insight_suggestions_enabled",
@@ -239,10 +255,48 @@ async def generate_next_question(
             audit(db, workspace.id, user.id, "interview.next_question", "project", project.id, {"outcome": "asked", "round": next_round})
             db.commit()
             return {"status": "ok", "question": model_dict(question)}
-        # duplicate: retry once, then end the interview honestly
-    audit(db, workspace.id, user.id, "interview.next_question", "project", project.id, {"outcome": "no_new_question"})
+    # Batch 20: the model keeps repeating itself -- fall back to a template
+    # follow-up on an unexplored report finding instead of ending the
+    # interview.  Only an explicit interview_complete or the cap ends it.
+    report = db.scalar(
+        select(AutoAnalysisReport)
+        .where(AutoAnalysisReport.project_id == project.id)
+        .order_by(AutoAnalysisReport.created_at.desc())
+        .limit(1)
+    )
+    findings = (
+        report.deterministic_json.get("findings")
+        if report is not None and isinstance(report.deterministic_json, dict)
+        else None
+    ) or []
+    asked_texts = {q.question_text for q in existing}
+    unexplored = next(
+        (
+            item
+            for item in findings
+            if isinstance(item, dict) and item.get("statement") not in asked_texts
+        ),
+        None,
+    )
+    statement = str((unexplored or {}).get("statement") or "报告中的关键数据发现")
+    audit(db, workspace.id, user.id, "interview.next_question", "project", project.id, {"outcome": "template_fallback"})
     db.commit()
-    return {"status": "complete", "reason": "no_new_question", "note": "AI 未能提出新的不重复问题，采访到此结束。"}
+    template_question = InterviewQuestion(
+        workspace_id=project.workspace_id,
+        project_id=project.id,
+        round_number=next_round,
+        topic="数据发现追问",
+        question_text=f"关于「{statement[:150]}」，实际情况与预期的差距主要来自什么？",
+        rationale="AI 连续未能提出新角度，改用模板追问以继续收集信息。",
+        status="pending",
+        answer_text="",
+        source="ai",
+        ai_run_id=None,
+        created_by=user.id,
+    )
+    db.add(template_question)
+    db.commit()
+    return {"status": "ok", "question": model_dict(template_question)}
 
 
 async def complete_interview(
