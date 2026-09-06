@@ -1,6 +1,6 @@
 # PROJECT_CONTEXT — AI Product Workspace 项目事实基准
 
-> 本文档记录截至 2026-09-03 对本项目的实际代码阅读结论，作为后续规划与开发对话的事实基准（批 1–8 的演进以各节内标注的批次说明为准）。
+> 本文档记录截至 2026-09-06 对本项目的实际代码阅读结论，作为后续规划与开发对话的事实基准（批 1–8 的演进以各节内标注的批次说明为准）。
 > 所有结论均来自实际代码阅读与测试运行，不是推测。行号引用为写作时快照，代码变动后以函数/类名为准。
 
 ---
@@ -40,13 +40,13 @@
 - **鉴权**：HS256 JWT（`app/auth.py`），bcrypt 密码（>72 字节自动 pre-hash 标记 `bcrypt_sha256$`，兼容旧 pbkdf2 哈希并登录时升级）。JWT 存前端 localStorage；登录时镜像一个 `apw_session=1` cookie（max-age 对齐 JWT exp），Next.js middleware 只检查 cookie 存在性做**页面级软门禁**，真实鉴权在 API 层。
 - **异步任务**：无外部队列。`app/infrastructure/jobs.py` 的 `JobExecutor` 通过 FastAPI BackgroundTasks 在进程内执行 DB 持久化的 Job（状态机 queued→running→succeeded/failed/cancelled），启动时 `recover_pending()` 重放未完成 job。handler 通过 `_register_job_handlers()`（main.py 末尾）注册：`dataset_parse`、`analysis_run`、`feedback_import`、`feedback_clusters`、`document_generation`、`auto_report_narration`（`dataset_cleaning` 已随第十一批删除）。
 - **数据库**：生产 MySQL 8（docker-compose 只含 mysql 一个服务）；`DATABASE_URL` 未配置或 `ALLOW_SQLITE_FALLBACK=true` 时可回退 SQLite（`app/db.py`，fallback 状态通过 `/health/ready` 暴露）。`db.py` 还含 `_repair_missing_columns()` 运行时补列安全网（dev 便利，与 Alembic 并行的第二套 schema 机制）。
-- **迁移**：`apps/api/alembic/versions/0001..0014`（0013 = data_columns.source；0014 = drop auto_analysis_reports.superseded_at，第十五批），其中 `0005_v11_slim_schema` 在 `V11_DROP_LEGACY_TABLES=true` 时删除 legacy 表（默认只加不减）。
+- **迁移**：`apps/api/alembic/versions/0001..0017`（0013 = data_columns.source；0014 = drop auto_analysis_reports.superseded_at；0015 = content_markdown MEDIUMTEXT；0016 = interview_summaries；0017 = data_columns.semantic_label/semantic_description，第二十一批），其中 `0005_v11_slim_schema` 在 `V11_DROP_LEGACY_TABLES=true` 时删除 legacy 表（默认只加不减）。
 
 ---
 
 ## 3. 目录结构（实际状态）
 
-**第三批（2026-08-30 完成）**：`main.py` 已从 6027 行拆为「app 组装层（146 行）+ `common.py` + 10 个 services + 13 个 routers」，路由清单由 `tests/test_route_manifest.py` 冻结守护。
+**第三批（2026-08-30 完成）**：`main.py` 已从 6027 行拆为「app 组装层（146 行）+ `common.py` + 12 个 services + 13 个 routers」，路由清单由 `tests/test_route_manifest.py` 冻结守护。
 
 ```
 AI_Product_Workspace/
@@ -71,8 +71,9 @@ AI_Product_Workspace/
     │   │   │   ├── ai_stages.py          #   _run_ai_stage 模板/_deepseek_answer/Copilot 编排胶水/AI 上下文投影
     │   │   │   ├── auto_report.py        #   项目级自动报告（pandas 聚合 + 确定性骨架）
     │   │   │   ├── documents.py          #   文档 payload + Markdown 渲染 + generate_document
-    │   │   │   ├── interview.py          #   AI 采访轮次生成/强制去重 + 第 7 步蒸馏（第四批）
-    │   │   │   └── job_handlers.py       #   job_executor 唯一实例 + 全部 _handle_* job handler + _register_job_handlers 定义
+│   │   │   ├── interview.py          #   AI 采访轮次生成/强制去重 + 第 7 步蒸馏（第四批）
+│   │   │   ├── field_semantics.py    #   LLM 字段语义解读（第二十一批）：解析尾部可选 AI 调用 + 字典落库
+│   │   │   └── job_handlers.py       #   job_executor 唯一实例 + 全部 _handle_* job handler + _register_job_handlers 定义
     │   │   ├── routers/         #   路由层：APIRouter + @router.<method>("/api/v1/...")（路径全写）
     │   │   │   ├── auth.py / workspaces.py / projects.py / datasets.py / analysis.py
     │   │   │   ├── insights.py / feedback.py / interview.py / problems.py / decisions.py
@@ -80,8 +81,8 @@ AI_Product_Workspace/
     │   │   │   └── （/ai/draft-document 在 documents.py、/ai/cluster-feedback 在 feedback.py——别名路由跟随其调用的服务函数所在 router，避免 routers 互导）
     │   │   ├── analytics/       #   engine.py / quality.py（未改动；顶层 import pandas 属既有行为）
     │   │   └── infrastructure/  #   jobs.py / llm/deepseek.py（未改动）
-    │   ├── alembic/versions/    #   14 个迁移（0013 = data_columns.source；0014 = drop superseded_at）
-    │   ├── tests/               #   12 个测试文件，179 用例（含 route manifest 冻结测试 + 采访/守护测试）
+│   ├── alembic/versions/    #   17 个迁移（0016 = interview_summaries；0017 = semantic_label/description）
+│   ├── tests/               #   23 个测试文件，329 用例（含 route manifest 冻结测试 + 采访/守护测试）
     │   └── pyproject.toml
     └── web/                     # Next.js 14 前端
         ├── middleware.ts        #   登录门禁 + legacy 路由重定向
@@ -141,6 +142,9 @@ AI_Product_Workspace/
 **新增于迁移 0010/0011（第七/九批）**：
 `document_versions.ai_status/ai_error_code`（版本产出来源：NULL=旧数据、succeeded=AI、fallback=模板回退，交付页据此显示提示条）/ `projects.archived_at`（第九批「一个项目=一次工作流」：归档时间戳，与 status="archived" 成对出现）
 
+**新增于迁移 0017（第二十一批，2026-09-06）**：
+`data_columns.semantic_label`（VARCHAR 120）/ `data_columns.semantic_description`（VARCHAR 600）——LLM 字段语义字典（NULL=未解读/无 key 降级）；数据集整体标签不入列，存 `dataset_versions.schema_json["dataset_label"]`。
+
 关键模型语义（来自 docstring）：
 - `DatasetVersion.schema_reviewed_at`（用户看过字段角色）与 `schema_auto_accepted_at`（解析 job 代接受）**是两列**——UI 必须区分「人看过」和「系统猜的」。
 - `ProductProblem.source_insight_ids`：问题必须回链洞察才能 confirm，否则"凭直觉的问题"会流入决策。
@@ -161,7 +165,7 @@ AI_Product_Workspace/
 | 3 质量报告 | 工作台 | version 有 quality_report | `GET /dataset-versions/{id}/quality-report` |
 | 4 分析运行 | 工作台 | 存在 succeeded 的 AnalysisRun | `POST /analysis-runs`、`POST /analysis-runs/validate-config` |
 | 5 分析产物 | 工作台 | run 有 artifacts/result_summary | `GET /analysis-runs/{id}/artifacts` |
-| 5.5 AI 报告 | 工作台 | （非门控，独立 confirm） | `POST /projects/{id}/auto-report/compute`（秒级确定性，第十批）、`POST /auto-reports/{id}/narrate`（异步 AI 解读 job）、`POST /auto-reports/{id}/confirm`；旧 `POST /projects/{id}/auto-report` 保留为兼容串联 |
+| 5.5 AI 报告 | 工作台 | （非门控，独立 confirm） | `POST /projects/{id}/auto-report/compute`（秒级确定性，第十批）、`POST /auto-reports/{id}/narrate`（异步 AI 解读 job；**第二十一批起前端改手动触发**，上传/重新生成不再自动排队）、`POST /auto-reports/{id}/confirm`；旧 `POST /projects/{id}/auto-report` 保留为兼容串联 |
 | 6 AI 采访 | stage6-interview | 存在 ≥1 条 answered 采访问题或手动补充 | `POST /projects/{id}/interview/next-question`（**第十八批：一次一问自适应**，上限 10 问，AI 可判 interview_complete，去重重试一次）、`POST /projects/{id}/interview/complete`（三段式小结 collected/gaps/ready_for，落 interview_summaries，幂等覆盖）、`GET/POST/PATCH /interview-questions`（回答/跳过/手动补充）。原 rounds 端点已删除 |
 | 7 决策副驾 | stage7-copilot | 存在 status=confirmed 的洞察 | `POST /ai/distill-interview`（**第十八批：服务端自动落库**——证据支持的 claim 直接创建 draft 洞察，条数可变宁少勿凑，幂等刷新：重蒸馏替换旧 draft、confirmed/rejected 不动）→ `PATCH /insights/{id}`（减法裁决：弃用 rejected / 编辑 / 确认 confirmed；确认**强制 evidence 非空**；前端「确认其余」批量）。`/ai/interpret` 端点保留但 UI 不再使用 |
 | 8 产品问题 | stage8-problem | problem.status=confirmed | `POST /ai/frame-problem`（草稿，**第十九批**：schema 增 used_insight_ids，路由与已验证洞察 id 求交集、空/幻觉回退全部入参 id）→ `POST /problems`（落库，confirm 需 source_insight_ids；**前端不再手选洞察**，证据自动携带、已确认洞察只读展示） |
@@ -178,7 +182,7 @@ AI_Product_Workspace/
 > **第二批流程收敛（2026-08-30 完成，纯前端）**：第 6 步只产草稿、第 7 步统一裁决；第 11 步提交与审批分离（`submit()` 不再自动 approve，页面新增待审批区块，数据来自 `GET /approval-requests`）；第 12 步渲染门控从"有已确认洞察"改为"存在 approved 决策"。后端零改动。
 
 **上传后的自动管线**（`services/job_handlers.py:_handle_dataset_parse`）：
-解析 → 行列数/空表校验 → 质量评估 → 写字段字典 → **`schema_auto_accepted_at` 打点 + 内联跑 `_auto_analysis_plan`（第十二批起 ≤4 个：EDA 恒在 + 事件表选留存、指标表选趋势、业务表（低基数类别+数值）选 group 分组 + `group_comparison` Pareto 分组对比、数值列选异常；漏斗永不自动选；幂等，失败不拖垮解析）。第十二批同时修复 `_replace_version_columns` 的关系缓存缺陷（见 §11.16）——此前所有非 EDA 自动分析因列校验拿不到列而从未真正落库。
+解析 → 行列数/空表校验 → 质量评估 → 写字段字典 → **`schema_auto_accepted_at` 打点 + 内联跑 `_auto_analysis_plan`（第十二批起 ≤4 个：EDA 恒在 + 事件表选留存、指标表选趋势、业务表（低基数类别+数值）选 group 分组 + `group_comparison` Pareto 分组对比、数值列选异常；漏斗永不自动选；幂等，失败不拖垮解析）。第十二批同时修复 `_replace_version_columns` 的关系缓存缺陷（见 §11.16）——此前所有非 EDA 自动分析因列校验拿不到列而从未真正落库。**解析尾部可选「AI 字段语义解读」（第二十一批，2026-09-06）：自动分析 commit 之后，`services/field_semantics.py:interpret_fields` 用 frame 仍在内存的窗口跑一次 `_run_ai_stage`（feature=`field_semantics`、`FIELD_SEMANTICS_SCHEMA`/`validate_field_semantics`——幻觉列名丢弃、重名保序去重、≤60 条、label ≤40/description ≤200、flag=`insight_suggestions_enabled`、出站画像走 adapter 层 PII 脱敏、无 key 静默跳过），为每列生成业务短标签+一句解读并按列名精确匹配落库 `data_columns.semantic_label/semantic_description`，数据集整体标签写 `schema_json["dataset_label"]`；隔离模式与 `_run_auto_analyses` 相同——任何异常/降级只写审计（成功 `dataset.fields_interpreted` {labeled, skipped}，失败 `dataset.field_semantics_failed`），绝不使解析失败，也绝无「重新解读」入口。
 
 **数据集版本链**：重名重传追加不可变新版本（BUG-015 修复语义）；~~清洗（`POST /dataset-versions/{id}/cleaning-operations`）~~ 已随第十一批删除（版本只经上传产生）。
 
@@ -221,6 +225,10 @@ AI_Product_Workspace/
 - **注入点仅两处**：narrate（`_report_ai_context` 把 digest 逐条作为 `{"id": "finding-N", "artifact_type": "finding"}` artifact 走 artifacts 通道，payload 键 kind/dataset/severity/rate/metrics 全在防火墙白名单内——**ai_context.py 零改动**；system prompt 要求逐条覆盖）与文档生成（`_build_document_context` 第五类证据，同形状 ≤12 条）。蒸馏/采访不注入（合成 id 会被证据归一丢弃）。
 - **`AnalysisEngine.run_group_comparison(group_column, value_column, aggregation="mean", top_n=10)`**：按类别列分组聚合数值列（count/mean/sum/min/max + sum 口径占比，按占比降序 top_n）；分组行列表用白名单键 `categories`（任务建议键名 `groups` 不在 `_AGGREGATE_LIST_KEYS`，防火墙禁改，故偏离）；`SUPPORTED_ANALYSIS_TYPES`/`_analysis_artifacts`（bar 图 option）/`_analysis_config_validation` 均有对应分支。
 - `_compute_report_aggregates` 内联调 run_group_comparison，把 top 组摘要并入该数据集聚合的 `breakdown` 键（同为白名单键）；自动分析计划上限 3→4，业务表追加 group_comparison（reason=`..._for_pareto`）。前端 `chartOption.ts` 新增 bar 渲染（group_comparison 占比柱状图）。
+
+### 7.4a 字段语义标签贯通（第二十一批，2026-09-06 完成）
+
+「让下游 AI 知道字段是什么」。`data_columns.semantic_label/description` 与 `schema_json.dataset_label` 写好后自动进入报告链路：compute 的 snapshot 携带 `dataset_label` 与逐列 `label/description`（`routers/ai.py:_compute_auto_report`），`_compute_report_aggregates` 把 label 透传到每个 metrics 条目、`dataset_label` 透传到聚合顶层（**有值才带键**——无标签数据的全部输出与批 20 逐字节一致，回归由测试锁定）；`analytics/digest.py` 新增展示助手 `display_name/column_display/dataset_display`，缺失/相关/趋势/集中/固化/离群各陈述改用 `name（label）` 展示（`columns` 证据字段保持原始列名，证据范围校验不受影响），`_deterministic_report_parts` 的数据概况/维度分布/数值统计/趋势行同步。报告叙述、采访（`_latest_report_context`）、文档（deterministic_json.datasets）经持久化聚合自动携带标签，零额外改动。
 
 ### 7.4b 计算层 v2 能力清单与封版说明（第十四批，2026-09-04 完成——计算层就此封版）
 
@@ -269,7 +277,7 @@ AI_Product_Workspace/
 
 - **认证流**：login 页 `POST /auth/login` → `saveSession()`（localStorage + 镜像 cookie，cookie max-age 解析 JWT exp 对齐，`lib/api.ts:43`）→ middleware 放行；任意 401 统一 `clearSession()` + 跳 `/login`（`api.ts:22`）。
 - **工作台数据流**：`loadWorkflowSnapshot()` `Promise.allSettled` 并行拉 11 类列表（含 `/approval-requests` 仅 pending、第四批新增的 `/interview-questions`）+ `/me`，容错收集 loadErrors → `hydrateActiveVersion` 补拉 schema/质量报告 → `stepCompletion()` 算门控（11 阶段；第 6 步=存在 answered 采访问题或手动补充）→ `WorkflowFrame` 渲染门控/进度。
-- **工作台上传流**（`app/(workspace)/page.tsx`，第十批两步链路）：选文件 → `upload-batch` → 轮询 job（`TERMINAL_JOB_STATUS`，POLL_LIMIT=150）→ `POST auto-report/compute` **秒级渲染数据概况**（ReportMarkdown + ECharts 图表，标签「确定性统计」）→ 紧接着 `POST auto-reports/{id}/narrate` 拿 job id 并轮询，期间报告下方显示「AI 解读生成中…」轻量进行条、**页面其余部分与导航完全可操作**（离开页面不影响服务端 job；回来从报告列表读到最新状态）；叙述失败/旧 `not_configured` 报告显示按错误码分类的中文原因 + 「重试 AI 解读」/「补生成 AI 解读」按钮（重调 narrate）→ confirm/重新生成走同一 compute+narrate 链。
+- **工作台上传流**（`app/(workspace)/page.tsx`，第十批两步链路；**第二十一批改手动触发**）：选文件 → `upload-batch` → 轮询 job（`TERMINAL_JOB_STATUS`，POLL_LIMIT=150）→ `POST auto-report/compute` **秒级渲染数据概况**（ReportMarkdown + ECharts 图表，标签「确定性统计」）→ **到此为止，不再自动排队叙述**：报告下方显示中性提示「数据概况已生成，请先查看数据，再点击『开始 AI 解读』」，`STATUS_META.not_configured` 标签为「待 AI 解读 · 数据已就绪」（tag-blue）；用户点醒目的「开始 AI 解读」（btn-primary）才走 `POST auto-reports/{id}/narrate` + 轮询（narrationNotice 区分 hint/error 两种语气，error 才显示红色 + 重试按钮）。「重新生成」同样仅 compute + 提示。叙述失败/旧 `not_configured` 报告显示按错误码分类的中文原因 + 「重试 AI 解读」→ confirm/重新生成走同一链路；第十六批的跨页恢复轮询（`narration_job_id`）对手动触发同样生效、逻辑未动。
 - **各阶段页**均为「门控包裹 + API 薄封装」模式；AI 起草按钮调用对应 `/ai/*` 端点，返回的 draft 填充表单，用户修改后走常规 POST/PATCH 落库。
 - **设置页**：workspace 设置（时区/AI 模型/输出上限/双层 token 预算/feature flags）+ `/health/ai`、`/health/ready` 健康面板。
 - **当前项目作用域（第九批）**：`getActiveProjectId/setActiveProjectId`（lib/workflow.ts）持久化到 localStorage `apw_active_project` 并派发 `apw-project-changed`；`loadWorkflowSnapshot` 先解析项目列表（include_archived）再发起作用域请求（insights/problems/solutions/decision-proposals/documents/datasets/analysis-runs/interview-questions 追加 `?project_id=`，approvals 保持 workspace 级）；持久化 id 失效（删除/归档）回退到第一个活跃项目。`setActiveProjectId` 幂等（第九批修复，2026-09-04）：事件仅在实际变更时派发；快照回退比较使用归一化 null（`activeProject?.id ?? null`），修复了「归档最后一个活跃项目后历史页无限刷新」的死循环（原守卫 `null !== undefined` 恒真 + 无条件派发事件形成循环）。无活跃项目时快照业务列表为空（第九批逻辑修复，2026-09-04）——`activeProjectId === null` 时跳过全部十类业务列表请求，已归档数据不进入全局快照，门控回到初始状态；`projects?include_archived=true` 与 `/me` 不受影响（历史页与切换器仍需要）。`useWorkflowSnapshot` 监听该事件自动刷新。`/history` 列表页 + `/history/[projectId]` 只读回看页（自拉九类列表，复用 ReportMarkdown 渲染报告与文档）。
@@ -280,8 +288,8 @@ AI_Product_Workspace/
 ## 10. 当前完成度
 
 **已实现且验证**：
-- 后端测试套件 **285 passed, 1 xfailed，0 警告**（2026-09-04 实测运行；第十五批 test_grounding.py 改写为报告唯一化语义并新增 REPORT_MISSING 优雅降级用例；第十四批新增 test_parsing.py 34 个与 test_compute_v2.py 4 个计算层 v2 测试；第十二批新增 test_digest.py 与 test_group_comparison.py 19 个计算加强测试；第十批新增 test_auto_report_split.py 10 个先算后叙测试，第九批新增 test_archive.py 9 个归档/守卫测试）；含 route manifest 冻结测试、test_guardrails.py 守护测试、test_interview.py 采访/蒸馏测试、第七批 test_document_generation.py、第八批 test_budget_model.py 直花/硬顶/总阀门测试）。覆盖：RBAC 与 workspace 隔离、数据管线（上传/版本/清洗/质量）、分析引擎全类型、AI 降级边界（无 key 绝不 500、输出契约、上下文白名单、反馈原文不外泄）、决策链规则（证据强制/落选理由/审批失效）、项目级联删除、报告叙述消毒。
-- 14 个 Alembic 迁移可从零建库（0014 = drop superseded_at）；`.env` 已配置 DeepSeek；前后端均可本地跑通。
+- 后端测试套件 **328 passed, 1 xfailed，0 警告**（2026-09-06 实测运行两遍；第二十一批新增 test_field_semantics.py 13 个：契约校验/标签贯通回归锁定/解析集成与无 key 降级；第十五批 test_grounding.py 改写为报告唯一化语义并新增 REPORT_MISSING 优雅降级用例；第十四批新增 test_parsing.py 34 个与 test_compute_v2.py 4 个计算层 v2 测试；第十二批新增 test_digest.py 与 test_group_comparison.py 19 个计算加强测试；第十批新增 test_auto_report_split.py 10 个先算后叙测试，第九批新增 test_archive.py 9 个归档/守卫测试）；含 route manifest 冻结测试、test_guardrails.py 守护测试、test_interview.py 采访/蒸馏测试、第七批 test_document_generation.py、第八批 test_budget_model.py 直花/硬顶/总阀门测试）。覆盖：RBAC 与 workspace 隔离、数据管线（上传/版本/清洗/质量）、分析引擎全类型、AI 降级边界（无 key 绝不 500、输出契约、上下文白名单、反馈原文不外泄）、决策链规则（证据强制/落选理由/审批失效）、项目级联删除、报告叙述消毒。
+- 17 个 Alembic 迁移可从零建库（0017 = data_columns.semantic_label/semantic_description）；`.env` 已配置 DeepSeek；前后端均可本地跑通。
 - 前端 11 阶段页面、工作台、数据管理、设置页齐全（第四批起）。
 - **全链路已真实手动冒烟走通**（12 阶段版 2026-08-30：上传→报告→洞察→讨论→问题→方案→决策→PRD；11 阶段版 2026-09-01：上传→报告→采访→蒸馏→裁决→问题→方案→决策→PRD）。
 - **`ruff check app tests` 零告警**（第四批清掉 tests 基线 3 条 + 连带 2 条；unittest 弃用告警从 2494 → 0）。
@@ -315,6 +323,7 @@ AI_Product_Workspace/
 14. **文档生成上下文丢失洞察正文（第八批冒烟实证，未修）**：`_build_document_context` 的洞察 payload 用 `content` 键，而 `content` 在 `_FEEDBACK_CONTENT_KEYS` 黑名单内——`build_ai_context` 装配时洞察正文被静默剥离，文档 AI 实际只能看到洞察标题/置信度/证据骨架（采访回答的 question/answer 键不受影响）。修复方向：洞察 payload 改用非保留键（如 `body`）或为洞察开专用通道；因涉防火墙（第八批禁改）未动。
 15. **设置项 `ai_per_request_token_budget` 已无拦截职责但仍在设置 UI 展示**（第八批起仅作 worst_case 预留的兜底参数），用户可能误以为它限流；建议后续在设置页标注或移除展示。
 16. **`_replace_version_columns` 关系缓存缺陷（第十二批发现并修复，2026-09-04）**：新列经裸 `db.add(DataColumn(dataset_version_id=...))` 落库（FK 不经 back_populates 更新已加载的 `version.columns` 缓存），导致自动管线内所有非 EDA 分析（留存/趋势/异常/分组）的列校验拿到空列集而全部以 `reason=config` 被跳过——**自自动管线引入以来这些分析从未真正落库**（既有测试只锁 plan 未锁 run，故未暴露）。修复：新列经 `version.columns.append()` 追加；test_group_comparison.py 以业务表上传断言 group_comparison run 真实落库锁定。
+17. **stage6 页面悬挂代码块（第二十一批发现并修复，2026-09-06）**：批 20 提交 5b398d5 重写 `askNext` 时旧函数体尾部残留为函数外孤儿代码，`tsc --noEmit`/eslint 对整个前端解析直接失败（前端三检被阻塞）。修复：删除孤儿块（新 `askNext` 已完整覆盖其逻辑），无行为变化。根源与 §11.13 同类——对同一函数的新旧两版拼接未跑整体验证就提交。
 
 ---
 
@@ -328,7 +337,7 @@ AI_Product_Workspace/
 - 归档语义（第九批）：归档只能走 `POST /projects/{id}/archive|unarchive`（ProjectPatch 不含 status）；归档项目的 editor+ 写路径全部 409 `PROJECT_ARCHIVED`（project_for 与各路由的 `_ensure_project_active` 守卫），viewer 读与 owner 删除不受限。前端「当前项目」持久化键为 localStorage `apw_active_project`。
 - 数据页语义（第十一批，2026-09-04 完成）：清洗全链路已删除（`cleaning_operations` 表与模型保留、不提交 cleanup 迁移）；`GET /datasets` 的 versions 携带水合 `quality_report`（统计卡真实数字）；数据页「项目上下文」只读展示当前活跃项目（`getActiveProjectId()` + `apw-project-changed` 事件跟随刷新），切换/新建项目统一在工作台完成，上传绑定当前活跃项目；数据集详情页字段定义为只读（后端 PATCH schema 端点保留）。
 - 计算加强（第十二批，2026-09-04 完成）：新分析类型 `group_comparison`（engine `run_group_comparison`，自动计划上限 4，业务表自动选中）；`analytics/digest.py` 的 findings digest 写入报告 `deterministic_json.findings` 并注入叙述/文档 AI 上下文（firewall 白名单零改动）；新增测试 `test_digest.py`/`test_group_comparison.py`（后端 240 用例）。
-- 新增 AI 能力：服务逻辑进 `services/ai_stages.py`（复用 `_run_ai_stage()` 模板，可传 `response_schema`/`output_validator`/`empty_output` 定义阶段契约），路由壳进 `routers/ai.py`；上下文必须过 `build_ai_context`，AI 结果一律 draft；Copilot 的 insights 上下文由服务端注入，客户端传入的一律丢弃。
+- 新增 AI 能力：服务逻辑进 `services/ai_stages.py`（复用 `_run_ai_stage()` 模板，可传 `response_schema`/`output_validator`/`empty_output` 定义阶段契约），路由壳进 `routers/ai.py`；上下文必须过 `build_ai_context`，AI 结果一律 draft；Copilot 的 insights 上下文由服务端注入，客户端传入的一律丢弃。**例外（第二十一批）**：字段语义解读是 job 内可选增强，服务在独立文件 `services/field_semantics.py`（无路由、仅 `_handle_dataset_parse` 调用），出站画像走直接结构化 dict（同 `ai_frame_problem` 惯例，adapter 层脱敏兜底），结果按列名落库而非 draft。
 - 分析类型扩展点：`analytics/engine.py`（计算）+ `services/analysis_pipeline.py`（`_analysis_artifacts` 持久化映射、`_analysis_config_validation`、`_auto_analysis_plan`）+ `deepseek.py` 工具白名单（若暴露给 Copilot）。
 - 前端新页面的惯例：`app/(workspace)/` 下建目录，用 `WorkflowFrame` 的 `WorkflowHeader/WorkflowGate` 包裹，门控逻辑改 `lib/workflow.ts` 的 `stepCompletion()`，导航加 `lib/navigation.ts`。
 - 测试运行：`cd apps/api && .venv/Scripts/python.exe -m pytest tests -q`（Windows；测试自备隔离 SQLite 与空 DeepSeek key）。
