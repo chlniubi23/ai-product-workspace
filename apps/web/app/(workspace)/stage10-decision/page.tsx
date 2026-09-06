@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Check, ChevronRight, Gavel, Send, ShieldCheck } from "lucide-react";
+import { Check, ChevronRight, Gavel, Send, ShieldCheck, Sparkles } from "lucide-react";
 import { useMemo, useState } from "react";
 import { apiRequest, accessToken } from "@/lib/api";
 import {
@@ -84,6 +84,50 @@ export default function Stage11DecisionPage() {
     setImpact(activeProblem.impact_scope || "");
     setRisk((selectedSolution.cons || []).join("；"));
     setPriority(activeProblem.priority || "P2");
+  }
+
+  // Batch 19: AI drafts the whole proposal from the selected solution + the
+  // confirmed problem + insights + report findings.  Draft only -- nothing
+  // is persisted until the user submits through the existing flow.
+  async function draftWithAi() {
+    if (!activeProblemId || !accessToken()) return;
+    setBusy(true);
+    setNotice("");
+    try {
+      const result = await apiRequest<{
+        status?: string;
+        error_code?: string | null;
+        output?: {
+          title?: string;
+          problem_statement?: string;
+          proposed_action?: string;
+          expected_impact?: string;
+          risk_summary?: string;
+          validation_plan?: string;
+        };
+      }>("/ai/draft-decision", {
+        method: "POST",
+        body: JSON.stringify({ problem_id: activeProblemId }),
+      });
+      if (result?.status === "succeeded" && result.output) {
+        setTitle(result.output.title || title);
+        setAction(result.output.proposed_action || action);
+        setValidation(result.output.validation_plan || validation);
+        setImpact(result.output.expected_impact || impact);
+        setRisk(result.output.risk_summary || risk);
+        setNotice("AI 起草完成，请审阅修改后保存并提交审批。");
+      } else if (result?.error_code === "LLM_TRUNCATED") {
+        setNotice("AI 输出过长被截断，已自动重试仍失败，可再试或手写。");
+      } else if (result?.error_code === "INVALID_AI_OUTPUT") {
+        setNotice("AI 返回格式异常，请重试或手写。");
+      } else {
+        setNotice("AI 起草暂不可用，可手写或用选定方案填充。");
+      }
+    } catch (draftError) {
+      setNotice(draftError instanceof Error ? draftError.message : "AI 起草失败");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function create() {
@@ -214,11 +258,43 @@ export default function Stage11DecisionPage() {
           </section>
         ) : (
           <>
+            <section className="card card-pad" style={{ marginTop: 16, borderColor: "#cfe3d4" }}>
+              <div className="card-head">
+                <div>
+                  <h2 className="card-title">选定方案</h2>
+                  <div className="card-kicker">这是本次决策提案的对象（来自第 9 步）。</div>
+                </div>
+                <span className="tag tag-green">已选定</span>
+              </div>
+              <strong>{selectedSolution.title || "选定方案"}</strong>
+              <p style={{ lineHeight: 1.6, margin: "6px 0 0" }}>{selectedSolution.approach}</p>
+              <div className="grid grid-2" style={{ gap: 12, marginTop: 10 }}>
+                <div>
+                  <div className="card-kicker">优点</div>
+                  <ul style={{ margin: "4px 0 0", paddingLeft: 18, color: "var(--muted)" }}>
+                    {(selectedSolution.pros || []).map((item, index) => (
+                      <li key={index}>{item}</li>
+                    ))}
+                  </ul>
+                </div>
+                <div>
+                  <div className="card-kicker">代价</div>
+                  <ul style={{ margin: "4px 0 0", paddingLeft: 18, color: "var(--muted)" }}>
+                    {(selectedSolution.cons || []).map((item, index) => (
+                      <li key={index}>{item}</li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            </section>
+
             <section className="card card-pad" style={{ marginTop: 16 }}>
               <div className="card-head">
                 <div>
                   <h2 className="card-title">写一条决策</h2>
-                  <div className="card-kicker">基于「{selectedSolution.title || "选定方案"}」</div>
+                  <div className="card-kicker">
+                    基于「{selectedSolution.title || "选定方案"}」；AI 可起草整份提案，审阅修改后再提交。
+                  </div>
                 </div>
                 <EvidenceStatus count={evidence.length} />
               </div>
@@ -298,6 +374,10 @@ export default function Stage11DecisionPage() {
                   flexWrap: "wrap",
                 }}
               >
+                <button className="btn btn-subtle btn-sm" disabled={busy} onClick={() => void draftWithAi()}>
+                  <Sparkles size={13} />
+                  {busy ? "AI 起草中…" : "AI 起草决策提案"}
+                </button>
                 <button className="btn btn-subtle btn-sm" disabled={busy} onClick={prefill}>
                   用选定方案填充
                 </button>

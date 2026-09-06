@@ -21,7 +21,10 @@ export default function Stage9ProblemPage() {
   const [statement, setStatement] = useState("");
   const [impact, setImpact] = useState("");
   const [priority, setPriority] = useState("P2");
-  const [selected, setSelected] = useState<string[]>([]);
+  // Batch 19: evidence is no longer hand-picked.  The caller sends every
+  // confirmed insight; after an AI draft, `used` narrows to the ids the model
+  // actually cited (validated server-side against the caller's list).
+  const [used, setUsed] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [busyId, setBusyId] = useState("");
   const [notice, setNotice] = useState("");
@@ -30,12 +33,12 @@ export default function Stage9ProblemPage() {
     () => (snapshot?.insights || []).filter((item) => item.status === "confirmed"),
     [snapshot],
   );
+  const evidenceIds = useMemo(
+    () => (used.length ? used : confirmedInsights.map((item) => item.id)),
+    [used, confirmedInsights],
+  );
   const problems = snapshot?.problems || [];
   const projectId = snapshot?.activeDataset?.project_id;
-
-  function toggle(id: string) {
-    setSelected((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]));
-  }
 
   async function draftWithAi() {
     if (!projectId || !accessToken()) return;
@@ -50,12 +53,14 @@ export default function Stage9ProblemPage() {
           impact_scope?: string;
           priority?: string;
           limitations?: string[];
+          used_insight_ids?: string[];
         };
+        used_insight_ids?: string[];
       }>("/ai/frame-problem", {
         method: "POST",
         body: JSON.stringify({
           project_id: projectId,
-          insight_ids: selected.length ? selected : confirmedInsights.map((item) => item.id),
+          insight_ids: confirmedInsights.map((item) => item.id),
           question: title.trim(),
         }),
       });
@@ -66,11 +71,14 @@ export default function Stage9ProblemPage() {
         if (result.output.priority && PRIORITIES.includes(result.output.priority)) {
           setPriority(result.output.priority);
         }
-        setNotice("AI 起草完成，这是草稿，请你改成自己的说法再保存。");
+        // The server already intersected the model's citations with the
+        // validated insight ids (falling back to all of them when empty).
+        setUsed(result.used_insight_ids || result.output.used_insight_ids || []);
+        setNotice("AI 起草完成，证据已自动关联；这是草稿，请改成自己的说法再保存。");
       } else {
-        setNotice("AI 起草不可用，可手写。");
+        setUsed(confirmedInsights.map((item) => item.id));
+        setNotice("AI 起草不可用，可手写；已确认洞察仍会作为证据。");
       }
-      if (!selected.length) setSelected(confirmedInsights.map((item) => item.id));
     } catch (draftError) {
       setNotice(draftError instanceof Error ? draftError.message : "AI 起草失败，可以手写。");
     } finally {
@@ -90,7 +98,7 @@ export default function Stage9ProblemPage() {
           title: title.trim(),
           statement: statement.trim(),
           impact_scope: impact.trim(),
-          source_insight_ids: selected,
+          source_insight_ids: evidenceIds,
           priority,
           status,
         }),
@@ -98,8 +106,10 @@ export default function Stage9ProblemPage() {
       setTitle("");
       setStatement("");
       setImpact("");
-      setSelected([]);
-      setNotice(status === "confirmed" ? "问题已确认，可以进入方案讨论。" : "已存为草稿。");
+      setUsed([]);
+      setNotice(
+        status === "confirmed" ? "问题已确认，可以进入方案讨论；也可以继续定义下一个问题。" : "已存为草稿，可继续定义下一个问题。",
+      );
       await refresh();
     } catch (saveError) {
       setNotice(saveError instanceof Error ? saveError.message : "保存失败");
@@ -128,7 +138,7 @@ export default function Stage9ProblemPage() {
       <WorkflowHeader
         step={8}
         title="问题定义"
-        description="把讨论收敛成一句能被验证的问题陈述。确认问题必须引用至少一条已采纳洞察，避免凭感觉立项。"
+        description="把讨论收敛成一句能被验证的问题陈述。已采纳的洞察会自动作为证据来源，无需手动勾选。"
         completion={completion}
         loading={loading || busy}
       />
@@ -154,35 +164,31 @@ export default function Stage9ProblemPage() {
               <div className="card-head">
                 <div>
                   <h2 className="card-title">定义一个问题</h2>
-                  <div className="card-kicker">先勾选证据，再写陈述。AI 起草可选。</div>
+                  <div className="card-kicker">
+                    {used.length
+                      ? `AI 起草依据了 ${used.length} 条洞察；保存后可继续定义下一个问题。`
+                      : "已确认洞察将自动作为证据来源。AI 起草可选。"}
+                  </div>
                 </div>
-                <EvidenceStatus count={selected.length} />
+                <EvidenceStatus count={evidenceIds.length} />
               </div>
 
               <div className="field">
-                <span className="field-label">证据来源（已采纳洞察 {confirmedInsights.length} 条）</span>
+                <span className="field-label">证据来源（已采纳洞察 {confirmedInsights.length} 条，将自动作为证据）</span>
                 <div className="list">
                   {confirmedInsights.map((insight) => (
-                    <label
-                      key={insight.id}
-                      style={{
-                        display: "flex",
-                        gap: 8,
-                        alignItems: "flex-start",
-                        padding: "8px 0",
-                        cursor: "pointer",
-                      }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={selected.includes(insight.id)}
-                        onChange={() => toggle(insight.id)}
-                      />
+                    <div key={insight.id} style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "8px 0" }}>
+                      <span
+                        className="tag tag-slate"
+                        title="将自动作为证据来源"
+                      >
+                        证据
+                      </span>
                       <span>
                         <strong>{insight.title || "未命名洞察"}</strong>
                         <div className="card-kicker">{formatWorkflowDate(insight.created_at)}</div>
                       </span>
-                    </label>
+                    </div>
                   ))}
                 </div>
               </div>
@@ -245,16 +251,16 @@ export default function Stage9ProblemPage() {
                 </button>
                 <button
                   className="btn btn-primary"
-                  disabled={busy || !title.trim() || !statement.trim() || selected.length === 0}
+                  disabled={busy || !title.trim() || !statement.trim() || evidenceIds.length === 0}
                   onClick={() => void save("confirmed")}
                 >
                   <Check size={14} />
                   确认问题
                 </button>
               </div>
-              {selected.length === 0 && (
+              {evidenceIds.length === 0 && (
                 <p style={{ color: "var(--muted)", fontSize: 13, textAlign: "right", marginTop: 8 }}>
-                  勾选至少一条洞察后才能确认。
+                  至少需要一条洞察作为证据。
                 </p>
               )}
             </section>
@@ -266,7 +272,7 @@ export default function Stage9ProblemPage() {
                     <h2 className="card-title">已定义问题</h2>
                     <div className="card-kicker">
                       共 {problems.length} 条 · 已确认{" "}
-                      {problems.filter((item) => item.status === "confirmed").length} 条
+                      {problems.filter((item) => item.status === "confirmed").length} 条；可以继续定义下一个问题。
                     </div>
                   </div>
                 </div>

@@ -20,6 +20,8 @@ type AiSolutionDraft = {
   pros: string[];
   cons: string[];
   effort: string;
+  recommended?: boolean;
+  recommendation_reason?: string;
 };
 
 function splitLines(value: string): string[] {
@@ -65,12 +67,19 @@ export default function Stage10SolutionPage() {
         output?: { options?: AiSolutionDraft[]; limitations?: string[] };
       }>("/ai/propose-solutions", {
         method: "POST",
-        body: JSON.stringify({ problem_id: activeProblemId, option_count: 3 }),
+        body: JSON.stringify({ problem_id: activeProblemId }),
       });
       const drafts = (result?.output?.options || []).filter((item) => item?.title && item?.approach);
       if (result?.status === "succeeded" && drafts.length > 0) {
-        setAiDrafts(drafts);
-        setNotice("AI 已给出候选方案草稿，请检查后逐个填入表单再保存。");
+        // Batch 19: the model marks exactly one recommended option (the
+        // validator enforces it); sort it to the front for the card list.
+        setAiDrafts([...drafts].sort((a, b) => Number(Boolean(b.recommended)) - Number(Boolean(a.recommended))));
+        const pick = drafts.find((item) => item.recommended);
+        setNotice(
+          pick
+            ? `AI 最推荐「${pick.title}」${pick.recommendation_reason ? `：${pick.recommendation_reason}` : ""}。请检查后逐个填入表单再保存。`
+            : "AI 已给出候选方案草稿，请检查后逐个填入表单再保存。",
+        );
       } else {
         setAiDrafts([]);
         setNotice("AI 起草不可用，可手写。");
@@ -440,9 +449,26 @@ export default function Stage10SolutionPage() {
                           <strong>{draft.title}</strong>
                           <div className="card-kicker">工作量 {draft.effort}</div>
                         </div>
-                        <span className="tag tag-amber">草稿</span>
+                        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                          {draft.recommended && <span className="tag tag-green">AI 最推荐</span>}
+                          <span className="tag tag-amber">草稿</span>
+                        </div>
                       </div>
                       <p style={{ lineHeight: 1.6 }}>{draft.approach}</p>
+                      {draft.recommended && draft.recommendation_reason && (
+                        <p
+                          style={{
+                            color: "#1f7a4d",
+                            fontSize: 13,
+                            margin: "4px 0 8px",
+                            background: "#effaf3",
+                            borderRadius: 6,
+                            padding: "6px 10px",
+                          }}
+                        >
+                          推荐理由：{draft.recommendation_reason}
+                        </p>
+                      )}
                       {draft.pros?.length || draft.cons?.length ? (
                         <div className="grid grid-2" style={{ gap: 12 }}>
                           <div>
