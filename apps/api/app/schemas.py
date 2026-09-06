@@ -318,6 +318,12 @@ class AIProposeSolutionsRequest(BaseModel):
     option_count: int = Field(default=3, ge=2, le=5)
 
 
+class AIDraftDecisionRequest(BaseModel):
+    """Batch 19: body for the AI-drafted decision proposal (draft only)."""
+
+    problem_id: str
+
+
 class DecisionCreate(BaseModel):
     project_id: str
     task_id: str | None = None

@@ -863,6 +863,10 @@ PROBLEM_DRAFT_SCHEMA: dict[str, Any] = {
         "impact_scope": {"type": "string"},
         "priority": {"type": "string", "enum": ["P0", "P1", "P2", "P3"]},
         "limitations": {"type": "array", "maxItems": 10, "items": {"type": "string"}},
+        # Batch 19: the draft must cite which insight ids it actually leans on;
+        # the route intersects this with the caller's validated insight ids, so
+        # a hallucinated id can never survive into source_insight_ids.
+        "used_insight_ids": {"type": "array", "maxItems": 20, "items": {"type": "string"}},
     },
 }
 
@@ -877,7 +881,7 @@ SOLUTION_DRAFTS_SCHEMA: dict[str, Any] = {
     "properties": {
         "options": {
             "type": "array",
-            "maxItems": 5,
+            "maxItems": 4,
             "items": {
                 "type": "object",
                 "additionalProperties": False,
@@ -888,6 +892,10 @@ SOLUTION_DRAFTS_SCHEMA: dict[str, Any] = {
                     "pros": {"type": "array", "maxItems": 8, "items": {"type": "string"}},
                     "cons": {"type": "array", "maxItems": 8, "items": {"type": "string"}},
                     "effort": {"type": "string", "enum": ["S", "M", "L"]},
+                    # Batch 19: exactly one option is the model's top pick (the
+                    # validator enforces this deterministically).
+                    "recommended": {"type": "boolean"},
+                    "recommendation_reason": {"type": "string"},
                 },
             },
         },
@@ -926,6 +934,16 @@ def validate_problem_draft(value: Any) -> dict[str, Any]:
         if priority_text not in {"P0", "P1", "P2", "P3"}:
             raise AIOutputValidationError("problem draft priority must be one of P0, P1, P2, P3")
         result["priority"] = priority_text
+    # Batch 19: cite ids as strings, deduped preserving first-seen order.
+    used: list[str] = []
+    for item in value.get("used_insight_ids") or []:
+        if isinstance(item, str) and item.strip():
+            candidate = item.strip()
+            if candidate not in used:
+                used.append(candidate)
+        if len(used) >= 20:
+            break
+    result["used_insight_ids"] = used
     return result
 
 
@@ -961,14 +979,61 @@ def validate_solution_drafts(value: Any) -> dict[str, Any]:
                 "pros": _clamped_strings(item.get("pros"), limit=8, max_length=500, label="pros"),
                 "cons": _clamped_strings(item.get("cons"), limit=8, max_length=500, label="cons"),
                 "effort": effort,
+                # Batch 19: recommendation flags are normalized AFTER the loop --
+                # exactly one winner, deterministically.
+                "recommended": bool(item.get("recommended")),
+                "recommendation_reason": str(item.get("recommendation_reason") or "").strip()[:300],
             }
         )
     if not options:
         raise AIOutputValidationError("solution drafts require at least one option")
+    # Batch 19: exactly one recommended option.  The model marked none -> the
+    # first option wins; it marked several -> the first flag survives.
+    recommended_seen = False
+    for option in options:
+        if option["recommended"] and not recommended_seen:
+            recommended_seen = True
+        else:
+            option["recommended"] = False
+    if not recommended_seen:
+        options[0]["recommended"] = True
+        if not options[0]["recommendation_reason"]:
+            options[0]["recommendation_reason"] = "综合可行性、成本与风险后的首选方案。"
     return {
         "options": options,
         "limitations": _clamped_strings(value.get("limitations"), limit=10, max_length=1000, label="limitations"),
     }
+
+
+# Batch 19: the AI-drafted decision proposal.  A pure draft contract -- the
+# route never persists it; the user reviews/edits and posts it through the
+# regular decision-proposal + approval flow.
+DECISION_DRAFT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["title", "problem_statement", "proposed_action", "expected_impact", "risk_summary", "validation_plan"],
+    "properties": {
+        "title": {"type": "string"},
+        "problem_statement": {"type": "string"},
+        "proposed_action": {"type": "string"},
+        "expected_impact": {"type": "string"},
+        "risk_summary": {"type": "string"},
+        "validation_plan": {"type": "string"},
+    },
+}
+
+
+def validate_decision_draft(value: Any) -> dict[str, Any]:
+    """Validate and normalize the AI-drafted decision proposal (batch 19)."""
+
+    if not isinstance(value, Mapping):
+        raise AIOutputValidationError("decision draft must be a JSON object")
+    required = ("title", "problem_statement", "proposed_action", "expected_impact", "risk_summary", "validation_plan")
+    missing = [key for key in required if not str(value.get(key) or "").strip()]
+    if missing:
+        raise AIOutputValidationError(f"decision draft is missing required fields: {', '.join(missing)}")
+    limits = {"title": 120, "problem_statement": 2000, "proposed_action": 4000, "expected_impact": 2000, "risk_summary": 2000, "validation_plan": 2000}
+    return {key: str(value.get(key)).strip()[:limit] for key, limit in limits.items()}
 
 
 # Stage 6 contract: one AI-interview round.  The model proposes up to five
@@ -1115,6 +1180,7 @@ __all__ = [
     "PROBLEM_DRAFT_SCHEMA",
     "SUMMARY_SCHEMA",
     "REPORT_OUTPUT_SCHEMA",
+    "DECISION_DRAFT_SCHEMA",
     "SOLUTION_DRAFTS_SCHEMA",
     "assert_safe_ai_context",
     "build_ai_context",
@@ -1124,6 +1190,7 @@ __all__ = [
     "empty_report_output",
     "extract_ai_insights",
     "validate_ai_output",
+    "validate_decision_draft",
     "validate_interview_questions",
     "validate_interview_summary",
     "validate_next_question",

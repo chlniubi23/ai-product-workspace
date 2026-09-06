@@ -12,11 +12,13 @@ from sqlalchemy.orm import Session
 
 from ..ai_context import (
     AI_OUTPUT_SCHEMA,
+    DECISION_DRAFT_SCHEMA,
     PROBLEM_DRAFT_SCHEMA,
     SOLUTION_DRAFTS_SCHEMA,
     AIOutputValidationError,
     empty_ai_output,
     validate_ai_output,
+    validate_decision_draft,
     validate_problem_draft,
     validate_solution_drafts,
 )
@@ -46,7 +48,7 @@ from ..models import (
     WorkspaceMember,
     now,
 )
-from ..schemas import AIFrameProblemRequest, AIInterpretRequest, AIProposeSolutionsRequest
+from ..schemas import AIDraftDecisionRequest, AIFrameProblemRequest, AIInterpretRequest, AIProposeSolutionsRequest
 from ..services.access import _dataset_version_for, _problem_for, membership, project_for
 from ..services.ai_stages import (
     _ai_interpret_context,
@@ -260,14 +262,21 @@ async def ai_frame_problem(body: AIFrameProblemRequest, user: User = Depends(get
             "你是产品分析助手。只根据给定的洞察证据，把观察归纳成一个清晰的产品问题草稿，不要猜测原始数据。"
             "title 是一句可验证的问题标题；statement 说明谁在什么场景遇到什么障碍、造成什么后果；"
             "impact_scope 说明影响范围与量级；priority 从 P0/P1/P2/P3 中选；limitations 写出该判断的局限。"
+            "used_insight_ids 必须标注你的陈述实际依据了哪些洞察 id（只能从给定洞察中选）。"
         ),
         context=context,
         flag_name="insight_suggestions_enabled",
         response_schema=PROBLEM_DRAFT_SCHEMA,
         output_validator=validate_problem_draft,
-        empty_output={"title": "", "statement": "", "impact_scope": "", "priority": "P2", "limitations": ["AI provider is not configured."]},
+        empty_output={"title": "", "statement": "", "impact_scope": "", "priority": "P2", "limitations": ["AI provider is not configured."], "used_insight_ids": []},
     )
-    return ok({**result, "provider": "deepseek", "draft": True, "source_insight_ids": insight_ids})
+    # Batch 19: keep the evidence chain unbroken -- the route's answer carries
+    # only the intersection of what the AI cited and the caller's validated
+    # insight ids.  An empty/hallucinated citation falls back to ALL caller
+    # ids, so a saved problem never loses its grounding.
+    used_ids = [item for item in (result.get("output") or {}).get("used_insight_ids") or [] if item in insight_ids]
+    grounded_ids = used_ids or insight_ids
+    return ok({**result, "provider": "deepseek", "draft": True, "source_insight_ids": insight_ids, "used_insight_ids": grounded_ids})
 
 
 @router.post("/api/v1/dataset-versions/{version_id}/report-narration")
@@ -612,7 +621,6 @@ async def ai_propose_solutions(body: AIProposeSolutionsRequest, user: User = Dep
     existing = db.scalars(select(SolutionOption).where(SolutionOption.problem_id == problem.id)).all()
     context = {
         "problem": {"id": problem.id, "title": problem.title, "statement": problem.statement, "impact_scope": problem.impact_scope, "priority": problem.priority},
-        "option_count": body.option_count,
         "existing_options": [{"id": row.id, "title": row.title, "approach": row.approach} for row in existing],
     }
     result = await _run_ai_stage(
@@ -621,9 +629,10 @@ async def ai_propose_solutions(body: AIProposeSolutionsRequest, user: User = Dep
         workspace=workspace,
         feature_name="propose_solutions",
         system_prompt=(
-            f"你是产品方案助手。针对给定的产品问题，提出 {body.option_count} 个互不重复的候选方案，"
+            "你是产品方案助手。针对给定的产品问题，按问题复杂度提出 2-4 个互不重复的候选方案（宁少勿凑），"
             "每个方案输出 title（方案名称）、approach（具体做法）、pros（优点列表）、cons（缺点或代价列表）、"
             "effort（工作量，只能是 S/M/L）。不要重复已有方案。"
+            "其中恰好一个是你综合可行性、成本与风险后最推荐的：该方案 recommended=true 且给出 recommendation_reason（一句话），其余方案 recommended=false。"
         ),
         context=context,
         flag_name="insight_suggestions_enabled",
@@ -632,6 +641,93 @@ async def ai_propose_solutions(body: AIProposeSolutionsRequest, user: User = Dep
         empty_output={"options": [], "limitations": ["AI provider is not configured."]},
     )
     return ok({**result, "provider": "deepseek", "draft": True, "problem_id": problem.id})
+
+
+@router.post("/api/v1/ai/draft-decision")
+async def ai_draft_decision(body: AIDraftDecisionRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Stage 10: draft the decision proposal from the selected solution (batch 19).
+
+    Pure draft endpoint -- nothing is persisted; the client fills its form
+    from ``output`` and posts back through the regular decision-proposal +
+    approval flow.
+    """
+
+    problem = _problem_for(db, user, body.problem_id, "editor")
+    project = db.get(Project, problem.project_id)
+    workspace = db.get(Workspace, problem.workspace_id)
+    if workspace is None:
+        raise error("NOT_FOUND", "Workspace not found", 404)
+    solutions = db.scalars(select(SolutionOption).where(SolutionOption.problem_id == problem.id)).all()
+    selected = next((item for item in solutions if item.status == "selected"), None)
+    if selected is None:
+        raise error("SOLUTION_NOT_SELECTED", "请先在方案讨论中选定一个方案，再起草决策提案", 422)
+    rejected = [
+        {"title": item.title, "reject_reason": item.reject_reason}
+        for item in solutions
+        if item.status == "rejected"
+    ]
+    insights = db.scalars(
+        select(Insight)
+        .where(Insight.project_id == project.id, Insight.status == "confirmed")
+        .order_by(Insight.created_at.desc())
+        .limit(20)
+    ).all()
+    report = db.scalar(
+        select(AutoAnalysisReport).where(AutoAnalysisReport.project_id == project.id).order_by(AutoAnalysisReport.created_at.desc()).limit(1)
+    )
+    findings = []
+    if report is not None and isinstance(report.deterministic_json, dict):
+        findings = [item for item in report.deterministic_json.get("findings") or [] if isinstance(item, dict)][:12]
+
+    context = {
+        "problem": {
+            "id": problem.id,
+            "title": problem.title,
+            "statement": problem.statement,
+            "impact_scope": problem.impact_scope,
+            "priority": problem.priority,
+        },
+        "selected_solution": {
+            "title": selected.title,
+            "approach": selected.approach,
+            "pros": list(selected.pros or []),
+            "cons": list(selected.cons or []),
+            "effort": selected.effort,
+        },
+        "rejected_solutions": rejected,
+        "confirmed_insights": [
+            {"title": row.title, "content": row.content, "confidence": row.confidence, "evidence": row.evidence_json}
+            for row in insights
+        ],
+        "report_findings": findings,
+    }
+    result = await _run_ai_stage(
+        db=db,
+        user=user,
+        workspace=workspace,
+        feature_name="draft_decision",
+        system_prompt=(
+            "你是产品负责人，把选定方案写成正式的决策提案草稿。"
+            "title 概括本次决策；problem_statement 沿用问题的陈述并补上数据佐证（引用给定洞察/发现中的数字）；"
+            "proposed_action 按选定方案的具体做法展开为可执行的行动计划；expected_impact 尽量量化（给出指标与预期幅度）；"
+            "risk_summary 写清主要风险与依赖；validation_plan 必须结合数据本身给出可执行路径——"
+            "用哪个数据版本或指标、观察什么变化、什么周期内达到什么幅度算达标——不得写空话。"
+            "所有内容必须来自给定上下文，禁止编造数据；全文使用简体中文。"
+        ),
+        context=context,
+        flag_name="insight_suggestions_enabled",
+        response_schema=DECISION_DRAFT_SCHEMA,
+        output_validator=validate_decision_draft,
+        empty_output={
+            "title": "",
+            "problem_statement": "",
+            "proposed_action": "",
+            "expected_impact": "",
+            "risk_summary": "",
+            "validation_plan": "",
+        },
+    )
+    return ok({**result, "provider": "deepseek", "draft": True, "problem_id": problem.id, "solution_id": selected.id})
 
 
 @router.get("/api/v1/ai/usage")

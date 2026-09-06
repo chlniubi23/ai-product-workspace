@@ -13,6 +13,7 @@ from app.main import app
 ROUTE_MANIFEST: list[tuple[str, tuple[str, ...], str]] = [
     ('/api/v1/ai/cluster-feedback', ('POST',), 'ai_cluster_feedback'),
     ('/api/v1/ai/distill-interview', ('POST',), 'ai_distill_interview'),
+    ('/api/v1/ai/draft-decision', ('POST',), 'ai_draft_decision'),
     ('/api/v1/ai/draft-document', ('POST',), 'ai_draft_document'),
     ('/api/v1/ai/frame-problem', ('POST',), 'ai_frame_problem'),
     ('/api/v1/ai/interpret', ('POST',), 'ai_interpret'),
