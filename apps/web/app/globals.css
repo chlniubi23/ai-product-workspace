@@ -175,7 +175,7 @@ button {
   display: flex;
   align-items: center;
   gap: 11px;
-  min-height: 38px;
+  min-height: 40px;
   padding: 0 11px;
   border-radius: var(--radius-sm);
   color: var(--muted);
@@ -205,14 +205,6 @@ button {
   gap: 2px;
   flex: 1;
 }
-.nav-item-copy small {
-  color: var(--faint);
-  font-size: 9px;
-  line-height: 1;
-}
-.nav-item.active .nav-item-copy small {
-  color: var(--brand);
-}
 .nav-item-ai {
   background: transparent;
 }
@@ -224,18 +216,114 @@ button {
   color: var(--brand);
   box-shadow: inset 2px 0 0 var(--brand);
 }
-.nav-state {
+
+/* ------------------------------------------------------------------ */
+/* 批 23：侧边栏实时工作流 stepper                                      */
+/* ------------------------------------------------------------------ */
+.flow-nav {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+}
+.flow-item {
+  list-style: none;
+}
+/* 流转连接线：1px 竖线 + 底部向下小箭头；上游完成 = 品牌实线 */
+.flow-connector {
+  list-style: none;
+  width: 17px;
+  height: 14px;
+  margin-left: 11px;
+  position: relative;
+  flex: 0 0 auto;
+}
+.flow-connector::before {
+  content: "";
+  position: absolute;
+  left: 8px;
+  top: 0;
+  width: 1px;
+  height: 100%;
+  background: var(--line-strong);
+}
+.flow-connector::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  bottom: 0;
+  width: 5px;
+  height: 5px;
+  border-right: 1px solid var(--line-strong);
+  border-bottom: 1px solid var(--line-strong);
+  transform: rotate(45deg);
+}
+.flow-connector.done::before {
+  background: var(--brand);
+}
+.flow-connector.done::after {
+  border-color: var(--brand);
+}
+/* 实时状态副标题：已完成 / 进行中 / 未开始 */
+.flow-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 400;
+}
+.flow-status.done {
+  color: var(--muted);
+}
+.flow-status.current {
+  color: var(--brand);
+  font-weight: 600;
+}
+.flow-status.pending {
+  color: var(--faint);
+}
+/* 右侧状态图标：完成 = success ✓；进行中 = 品牌圆点（轻 pulse）；未开始 = 无 */
+.flow-state-icon {
+  flex: 0 0 auto;
   width: 17px;
   height: 17px;
   display: grid;
   place-items: center;
-  color: var(--faint);
-  border: 1px solid var(--line-strong);
-  border-radius: 50%;
 }
-.nav-state.complete {
+.flow-state-icon.done {
   color: var(--success);
-  border-color: var(--success-border);
+}
+.flow-state-icon.current {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--brand);
+  animation: flow-pulse 1.6s ease-in-out infinite;
+}
+@keyframes flow-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+  50% {
+    box-shadow: 0 0 0 4px var(--brand-soft);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .flow-state-icon.current {
+    animation: none;
+  }
+}
+/* 底部钉住：工具组 + 工作区 + 用户信息推到侧边栏底端，消除大片留空 */
+.sidebar-bottom {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+}
+.sidebar-bottom .sidebar-foot {
+  margin-top: 12px;
 }
 .nav-divider {
   display: flex;
@@ -243,9 +331,8 @@ button {
   gap: 8px;
   padding: 11px 11px 5px;
   color: var(--faint);
-  font-size: 9px;
+  font-size: 11px;
   letter-spacing: 0.08em;
-  text-transform: uppercase;
   list-style: none;
 }
 .nav-divider::before,
@@ -266,7 +353,6 @@ button {
   background: var(--line);
 }
 .sidebar-foot {
-  margin-top: auto;
   border-top: 1px solid var(--line);
   padding-top: 15px;
 }

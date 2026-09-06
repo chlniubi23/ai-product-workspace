@@ -7,7 +7,6 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
-  Circle,
   Database,
   FileText,
   Gavel,
@@ -54,6 +53,9 @@ export function Icon({ name, size = 16 }: { name: IconName; size?: number }) {
   const Component = iconMap[name];
   return <Component size={size} strokeWidth={1.8} />;
 }
+
+/** Live sidebar status of one pipeline entry (batch 23). */
+type FlowStatus = "done" | "current" | "pending";
 
 export function AppShell({ children }: Readonly<{ children: React.ReactNode }>) {
   const pathname = usePathname();
@@ -130,34 +132,77 @@ export function AppShell({ children }: Readonly<{ children: React.ReactNode }>) 
   const pageTitle = currentNav?.label ?? (datasetRoute ? "数据" : "工作台");
   const completion = workflow ? stepCompletion(workflow) : emptyCompletion();
 
+  const isActiveNav = (href: string) =>
+    href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(`${href}/`);
+
+  // Batch 23: pure display derivation over the unchanged stepCompletion array.
+  // The first incomplete stage is the pipeline frontier ("进行中"); everything
+  // before it is done, everything after is pending.
+  const firstIncomplete = completion.findIndex((value) => !value);
+  const flowStatus = (step: number): FlowStatus => {
+    const index = step - 1;
+    return completion[index] ? "done" : index === firstIncomplete ? "current" : "pending";
+  };
+  // The workbench hosts stages 1-5 (batch 4 IA): per the design spec it shows
+  // no status subtitle, but it still drives the workbench -> interview
+  // connector, which turns brand once ALL of stages 1-5 are complete.
+  const workbenchDone = firstIncomplete < 0 || firstIncomplete >= 5;
+  // `phase` is lifted onto the entry so the group-label logic below needs no
+  // `in`-narrowing over the const-union nav item types.
+  const flowEntries: Array<{ item: NavItem; status: FlowStatus; phase?: string }> = [
+    { item: workbenchNavItem, status: workbenchDone ? "done" : "current" },
+    ...pipelineNavItems.map((item) => ({ item, status: flowStatus(item.step), phase: item.phase })),
+  ];
+
+  // Utility entries keep the plain batch-22 treatment: no subtitle, no icon.
   const renderNavItem = (item: NavItem) => {
-    const isActive =
-      item.href === "/" ? pathname === "/" : pathname === item.href || pathname.startsWith(`${item.href}/`);
-    const step = "step" in item ? item.step : undefined;
-    const complete = step ? completion[step - 1] : false;
-    const showAiTreatment = "ai" in item && item.ai;
+    const isActive = isActiveNav(item.href);
     return (
       <Link
         key={item.href}
         href={item.href}
         onClick={() => setSidebarOpen(false)}
-        className={`nav-item ${isActive ? "active" : ""} ${showAiTreatment ? "nav-item-ai" : ""}`}
+        className={`nav-item ${isActive ? "active" : ""}`}
         aria-current={isActive ? "page" : undefined}
       >
         <Icon name={item.icon as IconName} />
         <span className="nav-item-copy">
           <span>{item.label}</span>
-          {step && <small>第 {step} 步</small>}
         </span>
-        {step && (
-          <span
-            className={`nav-state ${complete ? "complete" : "pending"}`}
-            aria-label={complete ? "已完成" : "未完成"}
-          >
-            {complete ? <Check size={12} /> : <Circle size={10} />}
-          </span>
-        )}
       </Link>
+    );
+  };
+
+  const renderFlowEntry = (item: NavItem, status: FlowStatus, showStatus: boolean) => {
+    const isActive = isActiveNav(item.href);
+    const showAiTreatment = "ai" in item && item.ai;
+    return (
+      <li className="flow-item">
+        <Link
+          href={item.href}
+          onClick={() => setSidebarOpen(false)}
+          className={`nav-item ${isActive ? "active" : ""} ${showAiTreatment ? "nav-item-ai" : ""}`}
+          aria-current={isActive ? "page" : undefined}
+        >
+          <Icon name={item.icon as IconName} />
+          <span className="nav-item-copy">
+            <span>{item.label}</span>
+            {showStatus && (
+              <span className={`flow-status ${status}`}>
+                {status === "done" ? "已完成" : status === "current" ? "进行中" : "未开始"}
+              </span>
+            )}
+          </span>
+          {showStatus && status === "done" && (
+            <span className="flow-state-icon done" aria-hidden="true">
+              <Check size={12} />
+            </span>
+          )}
+          {showStatus && status === "current" && (
+            <span className="flow-state-icon current" aria-label="进行中" />
+          )}
+        </Link>
+      </li>
     );
   };
 
@@ -174,37 +219,62 @@ export function AppShell({ children }: Readonly<{ children: React.ReactNode }>) 
           </div>
         </div>
         <div className="nav-label">工作流</div>
-        <nav className="nav-list" aria-label="主导航">
-          {renderNavItem(workbenchNavItem)}
-          {pipelinePhases.map((phase) => (
-            <Fragment key={phase.key}>
-              <div
-                className={`nav-divider ${phase.key === "insight" ? "ai-divider" : ""}`}
-                aria-hidden="true"
-              >
-                <span>{phase.label}</span>
-              </div>
-              {pipelineNavItems.filter((item) => item.phase === phase.key).map(renderNavItem)}
-            </Fragment>
-          ))}
+        <nav aria-label="工作流">
+          <ol className="flow-nav">
+            {flowEntries.map((entry, index) => {
+              const item = entry.item;
+              const phase = entry.phase ? pipelinePhases.find((p) => p.key === entry.phase) : undefined;
+              const previousPhase = index > 0 ? flowEntries[index - 1].phase : undefined;
+              const opensPhase = phase !== undefined && previousPhase !== phase.key;
+              // Connectors run between every consecutive pair of flow entries,
+              // EXCEPT the decision-band boundary where the group label marks
+              // the break (洞察层's own label sits beside the workbench ->
+              // interview connector, which the spec requires to be drawn).
+              const connector =
+                index > 0 && !(opensPhase && index > 1) ? (
+                  <li
+                    key={`connector-${item.href}`}
+                    className={`flow-connector ${flowEntries[index - 1].status === "done" ? "done" : "pending"}`}
+                    aria-hidden="true"
+                  />
+                ) : null;
+              const label =
+                opensPhase && phase ? (
+                  <li className="nav-divider" key={`label-${phase.key}`} aria-hidden="true">
+                    <span>{phase.label}</span>
+                  </li>
+                ) : null;
+              return (
+                <Fragment key={item.href}>
+                  {connector}
+                  {label}
+                  {renderFlowEntry(item, entry.status, "step" in item)}
+                </Fragment>
+              );
+            })}
+          </ol>
+        </nav>
+        <div className="sidebar-bottom">
           <div className="nav-divider" aria-hidden="true">
             <span>其他</span>
           </div>
-          {utilityNavItems.map(renderNavItem)}
-        </nav>
-        <div className="sidebar-foot">
-          <div className="workspace-select">
-            <div>
-              <small>当前工作空间</small>
-              <strong>{identity.workspace}</strong>
+          <nav className="nav-list" aria-label="工具">
+            {utilityNavItems.map(renderNavItem)}
+          </nav>
+          <div className="sidebar-foot">
+            <div className="workspace-select">
+              <div>
+                <small>当前工作空间</small>
+                <strong>{identity.workspace}</strong>
+              </div>
+              <ChevronDown size={14} />
             </div>
-            <ChevronDown size={14} />
-          </div>
-          <div className="user-mini">
-            <div className="avatar">{identity.name.slice(0, 2)}</div>
-            <div>
-              <p>{identity.name}</p>
-              <small>{identity.role}</small>
+            <div className="user-mini">
+              <div className="avatar">{identity.name.slice(0, 2)}</div>
+              <div>
+                <p>{identity.name}</p>
+                <small>{identity.role}</small>
+              </div>
             </div>
           </div>
         </div>
