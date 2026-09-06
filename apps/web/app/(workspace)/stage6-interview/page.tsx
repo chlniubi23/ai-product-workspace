@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { ChevronRight, MessageSquare, Sparkles } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { apiRequest, accessToken } from "@/lib/api";
 import {
   WorkflowGate,
@@ -31,6 +31,14 @@ export default function Stage6InterviewPage() {
   const [manualTopic, setManualTopic] = useState("");
   const [manualText, setManualText] = useState("");
   const [manualInfo, setManualInfo] = useState("");
+  // Batch 20: askNext needs a visible loading state (one LLM call, 5-15s).
+  // The question card shows "AI 正在构思下一个问题…" while this is set.
+  const [askingNext, setAskingNext] = useState(false);
+  const [lastFailed, setLastFailed] = useState(false);
+  const askNextInFlight = useRef(false);
+  // The question returned by next-question is rendered immediately from the
+  // response; the snapshot refresh remains a background sync.
+  const [liveQuestion, setLiveQuestion] = useState<WorkflowInterviewQuestion | null>(null);
 
   const questions = useMemo(
     () => [...(snapshot?.interviewQuestions || [])].sort((a, b) => (a.created_at || "").localeCompare(b.created_at || "")),
@@ -41,21 +49,47 @@ export default function Stage6InterviewPage() {
   const history = questions.filter((q) => q.status !== "pending");
   const projectId = snapshot?.activeDataset?.project_id;
 
-  // Batch 18: one question at a time.  After the user answers or skips, the
-  // next question is fetched automatically; when the AI (or the cap) ends the
-  // interview, the completion digest is fetched in the same flow.
+  // Batch 18/20: one question at a time.  After the user answers or skips,
+  // the next question is fetched automatically (visible loading state, guarded
+  // against concurrent re-entry); when the AI (or the cap) ends the interview,
+  // the completion digest is fetched in the same flow.
   async function askNext() {
-    if (!projectId || !accessToken()) return "stopped";
-    const result = await apiRequest<{
-      status?: string;
-      reason?: string;
-      note?: string;
-      question?: WorkflowInterviewQuestion;
-    }>(`/projects/${projectId}/interview/next-question`, { method: "POST" });
-    if (result?.status === "ok") {
-      await refresh();
-      return "asked";
+    if (!projectId || !accessToken() || askNextInFlight.current) return "stopped";
+    askNextInFlight.current = true;
+    setAskingNext(true);
+    try {
+      const result = await apiRequest<{
+        status?: string;
+        reason?: string;
+        note?: string;
+        question?: WorkflowInterviewQuestion;
+      }>(`/projects/${projectId}/interview/next-question`, { method: "POST" });
+      if (result?.status === "ok" && result.question) {
+        setLiveQuestion(result.question);
+        setInterviewEnded(false);
+        setLastFailed(false);
+        await refresh();
+        return "asked";
+      }
+      if (result?.status === "complete") {
+        setInterviewEnded(true);
+        setLastFailed(false);
+        setLiveQuestion(null);
+        setCompleteNote(result.note || "");
+        await refresh();
+        const digest = await apiRequest<{ status?: string; summary?: InterviewSummary }>(
+          `/projects/${projectId}/interview/complete`,
+          { method: "POST" },
+        );
+        if (digest?.status === "ok" && digest.summary) setSummary(digest.summary);
+        return "complete";
+      }
+      return result?.status || "failed";
+    } finally {
+      askNextInFlight.current = false;
+      setAskingNext(false);
     }
+  }
     if (result?.status === "complete") {
       setInterviewEnded(true);
       setCompleteNote(result.note || "");
@@ -246,10 +280,17 @@ export default function Stage6InterviewPage() {
                   </div>
                   <span className="tag tag-blue">AI 辅助</span>
                 </div>
-                {current ? (
+                {askingNext ? (
+                  <div className="empty-state" style={{ minHeight: 120 }} role="status">
+                    <Sparkles size={18} className="animate-spin" />
+                    <strong>AI 正在构思下一个问题…</strong>
+                    <p>回答已记录；新问题基于报告发现与你的回答生成。</p>
+                  </div>
+                ) : current ? (
                   <div style={{ marginTop: 8 }}>
                     <strong style={{ fontSize: 15, lineHeight: 1.6, display: "block" }}>
-                      {current.question_text}
+                      {(liveQuestion && liveQuestion.id === current.id ? liveQuestion.question_text : null) ||
+                        current.question_text}
                     </strong>
                     <div className="card-kicker" style={{ marginTop: 4 }}>
                       {current.source === "manual" ? "手动补充" : `第 ${current.round_number} 问`}
@@ -286,9 +327,11 @@ export default function Stage6InterviewPage() {
                     <MessageSquare size={18} />
                     <strong>采访已结束</strong>
                     <p>{completeNote || "可手动补充要点，或前往第 7 步生成洞察草稿。"}</p>
-                    <button className="btn btn-subtle btn-sm" disabled={busy} onClick={() => void startInterview()}>
-                      继续追问
-                    </button>
+                    {lastFailed && (
+                      <button className="btn btn-subtle btn-sm" disabled={busy} onClick={() => void startInterview()}>
+                        继续追问
+                      </button>
+                    )}
                   </div>
                 ) : (
                   <div className="empty-state" style={{ minHeight: 120 }}>
