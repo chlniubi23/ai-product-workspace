@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { ArrowRight, Check, Eye, EyeOff, LockKeyhole, Sparkles } from "lucide-react";
+import { ArrowRight, Database, Eye, EyeOff, LockKeyhole } from "lucide-react";
 import { apiRequest, saveSession } from "@/lib/api";
 
 export default function LoginPage() {
@@ -39,41 +39,16 @@ export default function LoginPage() {
   };
   return (
     <main className="login-shell">
-      <section className="login-aside">
+      <div className="login-form-wrap">
         <div className="login-brand">
           <div className="brand-mark">
-            <Sparkles size={17} />
+            <Database size={17} />
           </div>
           <div>
             <div className="brand-name">AI Product Workspace</div>
             <div className="brand-caption">让证据连接到决策</div>
           </div>
         </div>
-        <div className="login-hero">
-          <h1>
-            把产品问题，
-            <br />
-            变成下一步行动。
-          </h1>
-          <p>从数据质量、确定性分析到有证据的 AI 洞察，在一个可追溯的工作空间里完成产品决策准备。</p>
-          <div className="login-points">
-            <div className="login-point">
-              <Check size={16} />
-              数据、反馈和文档围绕项目统一沉淀
-            </div>
-            <div className="login-point">
-              <Check size={16} />
-              事实、推断与建议分层呈现
-            </div>
-            <div className="login-point">
-              <Check size={16} />
-              关键决策始终保留人工确认权
-            </div>
-          </div>
-        </div>
-        <div className="login-foot">本地部署模式</div>
-      </section>
-      <section className="login-form-wrap">
         <form className="login-form" onSubmit={submit}>
           <div className="login-mode" role="tablist" aria-label="账号操作">
             <button
@@ -140,7 +115,7 @@ export default function LoginPage() {
                   padding: 0,
                   border: 0,
                   background: "transparent",
-                  color: "#93a0b2",
+                  color: "var(--faint)",
                 }}
               >
                 {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
@@ -149,7 +124,7 @@ export default function LoginPage() {
           </div>
           <div className="form-foot">
             <label style={{ display: "flex", alignItems: "center", gap: 7 }}>
-              <input type="checkbox" defaultChecked style={{ accentColor: "#335ce7" }} />
+              <input type="checkbox" defaultChecked style={{ accentColor: "var(--brand)" }} />
               记住我
             </label>
             <Link href="#">忘记密码？</Link>
@@ -173,18 +148,18 @@ export default function LoginPage() {
             <LockKeyhole size={13} />
             <span>这是本地账号登录。AI 请求只会由服务端安全转发，浏览器不会接触模型密钥。</span>
           </div>
-          <p style={{ textAlign: "center", marginTop: 24, color: "#8793a5", fontSize: 11 }}>
+          <p style={{ textAlign: "center", marginTop: 24, color: "var(--muted)", fontSize: 12 }}>
             {mode === "login" ? "还没有账号？" : "已有账号？"}{" "}
             <button
               type="button"
               onClick={() => setMode(mode === "login" ? "register" : "login")}
-              style={{ border: 0, background: "none", padding: 0, color: "#335ce7", fontWeight: 650 }}
+              style={{ border: 0, background: "none", padding: 0, color: "var(--brand)", fontWeight: 500 }}
             >
               {mode === "login" ? "创建 Owner 账号" : "返回登录"}
             </button>
           </p>
         </form>
-      </section>
+      </div>
     </main>
   );
 }

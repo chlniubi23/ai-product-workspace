@@ -75,7 +75,10 @@ export function WorkflowHeader({
             <span>第 {step} 步</span>
             <span className="workflow-mode">{ai ? "AI 辅助" : "确定性计算"}</span>
           </div>
-          <h1>{title}</h1>
+          <h1>
+            {title}
+            {ai && <Sparkles size={15} className="workflow-ai-mark" aria-hidden="true" />}
+          </h1>
           <p>{description}</p>
         </div>
         <div className="workflow-header-side">

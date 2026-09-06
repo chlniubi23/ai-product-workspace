@@ -30,12 +30,7 @@ import {
   type NavItem,
 } from "@/lib/navigation";
 import { accessToken, apiRequest, clearSession } from "@/lib/api";
-import {
-  emptyCompletion,
-  loadWorkflowSnapshot,
-  stepCompletion,
-  type WorkflowSnapshot,
-} from "@/lib/workflow";
+import { emptyCompletion, loadWorkflowSnapshot, stepCompletion, type WorkflowSnapshot } from "@/lib/workflow";
 
 const iconMap = {
   layout: LayoutDashboard,
@@ -127,9 +122,8 @@ export function AppShell({ children }: Readonly<{ children: React.ReactNode }>) 
     );
   }
 
-  const currentNav = navItems.find(
-    (item) =>
-      item.href === "/" ? pathname === "/" : pathname === item.href || pathname.startsWith(`${item.href}/`),
+  const currentNav = navItems.find((item) =>
+    item.href === "/" ? pathname === "/" : pathname === item.href || pathname.startsWith(`${item.href}/`),
   );
   // /data hosts the dataset detail UI the workbench links into.
   const datasetRoute = pathname === "/data" || pathname.startsWith("/data/");
@@ -138,9 +132,7 @@ export function AppShell({ children }: Readonly<{ children: React.ReactNode }>) 
 
   const renderNavItem = (item: NavItem) => {
     const isActive =
-      item.href === "/"
-        ? pathname === "/"
-        : pathname === item.href || pathname.startsWith(`${item.href}/`);
+      item.href === "/" ? pathname === "/" : pathname === item.href || pathname.startsWith(`${item.href}/`);
     const step = "step" in item ? item.step : undefined;
     const complete = step ? completion[step - 1] : false;
     const showAiTreatment = "ai" in item && item.ai;
@@ -206,7 +198,7 @@ export function AppShell({ children }: Readonly<{ children: React.ReactNode }>) 
               <small>当前工作空间</small>
               <strong>{identity.workspace}</strong>
             </div>
-            <ChevronDown size={14} color="#8e9ab0" />
+            <ChevronDown size={14} />
           </div>
           <div className="user-mini">
             <div className="avatar">{identity.name.slice(0, 2)}</div>
