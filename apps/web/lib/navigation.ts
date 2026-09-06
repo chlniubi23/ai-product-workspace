@@ -18,10 +18,11 @@ export const pipelineNavItems = [
   { href: "/stage11-prd", label: "PRD", step: 11, icon: "file", ai: true, phase: "decision" },
 ] as const;
 
-/** The two bands shown as dividers in the sidebar. */
+/** The two bands shown as on-line badges in the sidebar stepper (batch 24:
+ * short labels ride the connector line; the long band names lived only here). */
 export const pipelinePhases = [
-  { key: "insight", label: "洞察层 · AI 辅助" },
-  { key: "decision", label: "决策层 · 人工主导" },
+  { key: "insight", label: "AI 辅助" },
+  { key: "decision", label: "人工主导" },
 ] as const;
 
 export const utilityNavItems = [

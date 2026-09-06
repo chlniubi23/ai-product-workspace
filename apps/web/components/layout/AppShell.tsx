@@ -25,11 +25,18 @@ import {
   pipelineNavItems,
   pipelinePhases,
   utilityNavItems,
+  workflowSteps,
   workbenchNavItem,
   type NavItem,
 } from "@/lib/navigation";
 import { accessToken, apiRequest, clearSession } from "@/lib/api";
-import { emptyCompletion, loadWorkflowSnapshot, stepCompletion, type WorkflowSnapshot } from "@/lib/workflow";
+import {
+  STAGE_COUNT,
+  emptyCompletion,
+  loadWorkflowSnapshot,
+  stepCompletion,
+  type WorkflowSnapshot,
+} from "@/lib/workflow";
 
 const iconMap = {
   layout: LayoutDashboard,
@@ -154,6 +161,23 @@ export function AppShell({ children }: Readonly<{ children: React.ReactNode }>) 
     ...pipelineNavItems.map((item) => ({ item, status: flowStatus(item.step), phase: item.phase })),
   ];
 
+  // Batch 24: progress card derivation -- all of it display-only over the
+  // same completion array. `next` is the first incomplete stage AFTER the
+  // frontier (out-of-order completion is possible since gates are advisory).
+  const doneCount = completion.filter(Boolean).length;
+  const progressPct = Math.round((doneCount / STAGE_COUNT) * 100);
+  const currentStep = firstIncomplete >= 0 ? workflowSteps[firstIncomplete] : null;
+  let nextIndex = -1;
+  if (firstIncomplete >= 0) {
+    for (let index = firstIncomplete + 1; index < completion.length; index += 1) {
+      if (!completion[index]) {
+        nextIndex = index;
+        break;
+      }
+    }
+  }
+  const noActiveProject = workflow !== undefined && !workflow.activeProject;
+
   // Utility entries keep the plain batch-22 treatment: no subtitle, no icon.
   const renderNavItem = (item: NavItem) => {
     const isActive = isActiveNav(item.href);
@@ -226,55 +250,102 @@ export function AppShell({ children }: Readonly<{ children: React.ReactNode }>) 
               const phase = entry.phase ? pipelinePhases.find((p) => p.key === entry.phase) : undefined;
               const previousPhase = index > 0 ? flowEntries[index - 1].phase : undefined;
               const opensPhase = phase !== undefined && previousPhase !== phase.key;
-              // Connectors run between every consecutive pair of flow entries,
-              // EXCEPT the decision-band boundary where the group label marks
-              // the break (洞察层's own label sits beside the workbench ->
-              // interview connector, which the spec requires to be drawn).
+              // Batch 24: the connector chain is NEVER broken now.  At a band
+              // boundary the vertical line continues through the badge row and
+              // the short-label badge rides beside it (batch 23 broke the line
+              // at the decision band, which read as three separate lists).
               const connector =
-                index > 0 && !(opensPhase && index > 1) ? (
+                index > 0 ? (
                   <li
                     key={`connector-${item.href}`}
                     className={`flow-connector ${flowEntries[index - 1].status === "done" ? "done" : "pending"}`}
                     aria-hidden="true"
                   />
                 ) : null;
-              const label =
+              const badge =
                 opensPhase && phase ? (
-                  <li className="nav-divider" key={`label-${phase.key}`} aria-hidden="true">
-                    <span>{phase.label}</span>
+                  <li
+                    className={`flow-phase ${flowEntries[index - 1].status === "done" ? "done" : "pending"}`}
+                    key={`label-${phase.key}`}
+                    aria-hidden="true"
+                  >
+                    <span className="flow-phase-badge">{phase.label}</span>
                   </li>
                 ) : null;
               return (
                 <Fragment key={item.href}>
                   {connector}
-                  {label}
+                  {badge}
                   {renderFlowEntry(item, entry.status, "step" in item)}
                 </Fragment>
               );
             })}
           </ol>
         </nav>
-        <div className="sidebar-bottom">
-          <div className="nav-divider" aria-hidden="true">
-            <span>其他</span>
-          </div>
-          <nav className="nav-list" aria-label="工具">
-            {utilityNavItems.map(renderNavItem)}
-          </nav>
-          <div className="sidebar-foot">
-            <div className="workspace-select">
-              <div>
-                <small>当前工作空间</small>
-                <strong>{identity.workspace}</strong>
-              </div>
-              <ChevronDown size={14} />
+        {/* Batch 24: the live progress card absorbs the leftover vertical space
+            on tall screens (wrapper flex:1, card top-aligned). */}
+        <div className="flow-progress-wrap">
+          {noActiveProject ? (
+            <div className="flow-progress flow-progress-empty">
+              <Link className="btn btn-primary btn-sm" href="/" onClick={() => setSidebarOpen(false)}>
+                新建项目，开始第一次分析
+              </Link>
             </div>
-            <div className="user-mini">
-              <div className="avatar">{identity.name.slice(0, 2)}</div>
-              <div>
-                <p>{identity.name}</p>
-                <small>{identity.role}</small>
+          ) : (
+            <div className="flow-progress">
+              <div className="flow-progress-head">
+                <span>流水线进度</span>
+                <strong>
+                  {doneCount}/{STAGE_COUNT}
+                </strong>
               </div>
+              <div
+                className="flow-progress-bar"
+                role="progressbar"
+                aria-valuenow={doneCount}
+                aria-valuemin={0}
+                aria-valuemax={STAGE_COUNT}
+              >
+                <span style={{ width: `${progressPct}%` }} />
+              </div>
+              {currentStep ? (
+                <div className="flow-progress-row">当前 · {currentStep.label}</div>
+              ) : (
+                <div className="flow-progress-row">当前 · 已全部完成</div>
+              )}
+              {currentStep && nextIndex >= 0 && (
+                <Link
+                  className="flow-progress-next"
+                  href={workflowSteps[nextIndex].href}
+                  onClick={() => setSidebarOpen(false)}
+                >
+                  下一步 · {workflowSteps[nextIndex].label} →
+                </Link>
+              )}
+              {!currentStep && (
+                <Link className="flow-progress-next" href="/history" onClick={() => setSidebarOpen(false)}>
+                  完成并归档 →
+                </Link>
+              )}
+            </div>
+          )}
+        </div>
+        <nav className="nav-list sidebar-utility" aria-label="工具">
+          {utilityNavItems.map(renderNavItem)}
+        </nav>
+        <div className="sidebar-bottom">
+          <div className="workspace-select">
+            <div>
+              <small>当前工作空间</small>
+              <strong>{identity.workspace}</strong>
+            </div>
+            <ChevronDown size={14} />
+          </div>
+          <div className="user-mini">
+            <div className="avatar">{identity.name.slice(0, 2)}</div>
+            <div>
+              <p>{identity.name}</p>
+              <small>{identity.role}</small>
             </div>
           </div>
         </div>

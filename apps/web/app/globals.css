@@ -316,45 +316,111 @@ button {
     animation: none;
   }
 }
-/* 底部钉住：工具组 + 工作区 + 用户信息推到侧边栏底端，消除大片留空 */
+/* 批 24：进度卡包裹层吸收长屏剩余空间（卡片顶部对齐） */
+.flow-progress-wrap {
+  flex: 1;
+  padding: 16px 0 0;
+  min-height: 0;
+}
+.flow-progress {
+  display: grid;
+  gap: 10px;
+  background: var(--brand-soft);
+  border: 1px solid var(--brand-border);
+  border-radius: var(--radius-lg);
+  padding: 14px;
+}
+.flow-progress-empty {
+  display: flex;
+  justify-content: center;
+  padding: 16px 14px;
+}
+.flow-progress-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  color: var(--brand);
+  font-size: 12px;
+  font-weight: 600;
+}
+.flow-progress-head strong {
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.flow-progress-bar {
+  height: 6px;
+  border-radius: 99px;
+  background: var(--panel);
+  overflow: hidden;
+}
+.flow-progress-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--brand);
+  transition: width 0.3s;
+}
+.flow-progress-row {
+  color: var(--ink);
+  font-size: 12px;
+}
+.flow-progress-next {
+  color: var(--brand);
+  font-size: 12px;
+  font-weight: 600;
+}
+.flow-progress-next:hover {
+  color: var(--brand-hover);
+}
+.sidebar-utility {
+  margin-top: 6px;
+}
+/* 钉底区：与上方工具条目之间只用一条 hairline */
 .sidebar-bottom {
-  margin-top: auto;
+  border-top: 1px solid var(--line);
+  margin-top: 12px;
+  padding-top: 12px;
   display: flex;
   flex-direction: column;
 }
-.sidebar-bottom .sidebar-foot {
-  margin-top: 12px;
-}
-.nav-divider {
+/* 批 24：分组徽标骑在连接线上——竖线在边界行内延续，链路不断 */
+.flow-phase {
+  list-style: none;
+  position: relative;
+  height: 20px;
+  padding-left: 24px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 11px 11px 5px;
-  color: var(--faint);
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  list-style: none;
 }
-.nav-divider::before,
-.nav-divider::after {
+.flow-phase::before {
   content: "";
-  height: 1px;
-  flex: 1;
-  background: var(--line);
+  position: absolute;
+  left: 8px;
+  top: 0;
+  width: 1px;
+  height: 100%;
+  background: var(--line-strong);
 }
-.nav-divider span {
-  white-space: nowrap;
+.flow-phase.done::before {
+  background: var(--brand);
 }
-.nav-divider.ai-divider {
+.flow-phase-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   color: var(--faint);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
 }
-.nav-divider.ai-divider::before,
-.nav-divider.ai-divider::after {
-  background: var(--line);
-}
-.sidebar-foot {
-  border-top: 1px solid var(--line);
-  padding-top: 15px;
+.flow-phase-badge::before {
+  content: "";
+  width: 14px;
+  height: 1px;
+  background: currentColor;
+  opacity: 0.7;
 }
 .workspace-select {
   display: flex;
