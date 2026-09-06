@@ -243,7 +243,7 @@ export default function SettingsPage() {
                   </h2>
                   <div className="card-kicker">文件路径由服务端 `DATA_ROOT` 管理，页面不接收本地路径。</div>
                 </div>
-                <Database size={17} color="#4968d6" />
+                <Database size={17} color="var(--brand)" />
               </div>
               <div className="list">
                 <div className="list-row">
@@ -294,7 +294,7 @@ export default function SettingsPage() {
                   </h2>
                   <div className="card-kicker">按当前工作空间统计已记录的模型调用。</div>
                 </div>
-                <Server size={17} color="#198b80" />
+                <Server size={17} color="var(--success)" />
               </div>
               <div className="grid grid-2">
                 <div>
@@ -318,7 +318,7 @@ export default function SettingsPage() {
                       className="progress-fill"
                       style={{
                         width: `${usagePercent}%`,
-                        background: usagePercent >= 90 ? "#d46767" : undefined,
+                        background: usagePercent >= 90 ? "var(--danger)" : undefined,
                       }}
                     />
                   </div>
@@ -339,7 +339,7 @@ export default function SettingsPage() {
                 </h2>
                 <div className="card-kicker">用于定位高消耗调用；不会展示提示词或密钥。</div>
               </div>
-              <ShieldCheck size={17} color="#4968d6" />
+              <ShieldCheck size={17} color="var(--brand)" />
             </div>
             {featureRows.length ? (
               <div className="list">

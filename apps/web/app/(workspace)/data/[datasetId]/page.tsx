@@ -270,7 +270,7 @@ export default function DatasetDetailPage({ params }: { params: { datasetId: str
           className={`tab ${activeTab === "dictionary" ? "active" : ""}`}
           onClick={() => setActiveTab("dictionary")}
         >
-          字段字典 <span style={{ color: "#9aa6b7" }}>{columns.length}</span>
+          字段字典 <span style={{ color: "var(--faint)" }}>{columns.length}</span>
         </button>
         <button
           className={`tab ${activeTab === "preview" ? "active" : ""}`}
@@ -288,7 +288,7 @@ export default function DatasetDetailPage({ params }: { params: { datasetId: str
           className={`tab ${activeTab === "versions" ? "active" : ""}`}
           onClick={() => setActiveTab("versions")}
         >
-          版本记录 <span style={{ color: "#9aa6b7" }}>{versions.length}</span>
+          版本记录 <span style={{ color: "var(--faint)" }}>{versions.length}</span>
         </button>
       </div>
       {activeTab === "dictionary" && (
@@ -370,11 +370,11 @@ function Dictionary({
               <tr key={column.id || column.name}>
                 <td>
                   <strong>{column.display_name || column.name}</strong>
-                  <small style={{ display: "block", color: "#8793a5", fontSize: 9, marginTop: 3 }}>
+                  <small style={{ display: "block", color: "var(--faint)", fontSize: 10, marginTop: 3 }}>
                     {column.name}
                   </small>
                   {column.semantic_description && (
-                    <small style={{ display: "block", color: "#5b6b84", fontSize: 9, marginTop: 3 }}>
+                    <small style={{ display: "block", color: "var(--muted)", fontSize: 10, marginTop: 3 }}>
                       {column.semantic_description}
                     </small>
                   )}
@@ -389,12 +389,12 @@ function Dictionary({
                     </span>
                   )}
                   {column.source === "extracted" && (
-                    <span className="tag tag-blue" style={{ marginLeft: 4 }}>
-                      抽取
+                    <small style={{ display: "block", color: "var(--faint)", fontSize: 10, marginTop: 3 }}>
+                      抽取列
                       {coverageByColumn[column.name] !== undefined
-                        ? ` ${Math.round(coverageByColumn[column.name] * 100)}%`
+                        ? ` · 覆盖率 ${Math.round(coverageByColumn[column.name] * 100)}%`
                         : ""}
-                    </span>
+                    </small>
                   )}
                 </td>
                 <td>{role?.[1] || "未指定"}</td>
@@ -411,7 +411,7 @@ function Dictionary({
                     : "-"}
                 </td>
                 <td>
-                  <MoreHorizontal size={15} color="#a0aaba" />
+                  <MoreHorizontal size={15} color="var(--faint)" />
                 </td>
               </tr>
             );

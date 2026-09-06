@@ -501,10 +501,7 @@ export default function WorkbenchPage() {
         </section>
       )}
       {/* hero */}
-      <section
-        className="card card-pad"
-        style={{ marginTop: 16, background: "linear-gradient(135deg, #f6f8ff 0%, #ffffff 60%)" }}
-      >
+      <section className="card card-pad" style={{ marginTop: 16 }}>
         <div className="card-head">
           <div>
             <h1 style={{ fontSize: 22, margin: 0 }}>上传数据，直接得到分析报告</h1>
@@ -768,7 +765,7 @@ export default function WorkbenchPage() {
                   gap: 10,
                   flexWrap: "wrap",
                   marginTop: 8,
-                  color: "#b4443c",
+                  color: "var(--danger)",
                 }}
               >
                 <span>{narrationNotice}</span>
@@ -824,7 +821,7 @@ export default function WorkbenchPage() {
             <h2 className="card-title">报告历史</h2>
             <div className="card-kicker">当前项目的分析报告（重新生成会替换旧报告）。</div>
           </div>
-          <History size={16} color="#8e9ab0" />
+          <History size={16} />
         </div>
         {historyLoading ? (
           <p className="card-kicker">加载中…</p>
@@ -845,7 +842,7 @@ export default function WorkbenchPage() {
                   textAlign: "left",
                   padding: "12px 14px",
                   cursor: "pointer",
-                  borderColor: item.id === report?.id ? "#4a6cf7" : undefined,
+                  borderColor: item.id === report?.id ? "var(--brand)" : undefined,
                 }}
                 onClick={() => {
                   setReport(item);
@@ -854,7 +851,7 @@ export default function WorkbenchPage() {
                 }}
               >
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <Sparkles size={13} color={item.status === "confirmed" ? "#1f9d63" : "#8e9ab0"} />
+                  <Sparkles size={13} className="workflow-ai-mark" />
                   <strong
                     style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
                   >

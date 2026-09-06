@@ -73,7 +73,9 @@ export default function Stage10SolutionPage() {
       if (result?.status === "succeeded" && drafts.length > 0) {
         // Batch 19: the model marks exactly one recommended option (the
         // validator enforces it); sort it to the front for the card list.
-        setAiDrafts([...drafts].sort((a, b) => Number(Boolean(b.recommended)) - Number(Boolean(a.recommended))));
+        setAiDrafts(
+          [...drafts].sort((a, b) => Number(Boolean(b.recommended)) - Number(Boolean(a.recommended))),
+        );
         const pick = drafts.find((item) => item.recommended);
         setNotice(
           pick
@@ -247,7 +249,7 @@ export default function Stage10SolutionPage() {
                       key={option.id}
                       style={{
                         marginBottom: 10,
-                        borderColor: option.status === "selected" ? "#2f9e6e" : undefined,
+                        borderColor: option.status === "selected" ? "var(--success)" : undefined,
                       }}
                     >
                       <div className="card-head">
@@ -300,12 +302,10 @@ export default function Stage10SolutionPage() {
                         </button>
                       )}
                       {selectingId === option.id && (
-                        <div
-                          className="card card-pad"
-                          style={{ marginTop: 12, background: "var(--surface-2, #f7f8fb)" }}
-                        >
+                        <div className="card card-pad" style={{ marginTop: 12, background: "var(--fill)" }}>
                           <div className="card-kicker" style={{ marginBottom: 8 }}>
-                            确认选定：其余 {siblingsOf(option.id).length} 个候选方案将标记为未采纳，每个必须写明理由。
+                            确认选定：其余 {siblingsOf(option.id).length}{" "}
+                            个候选方案将标记为未采纳，每个必须写明理由。
                           </div>
                           {siblingsOf(option.id).map((sibling) => (
                             <label className="field" key={sibling.id}>
@@ -326,7 +326,9 @@ export default function Stage10SolutionPage() {
                               这是唯一的候选方案，没有需要填写落选理由的对象。
                             </p>
                           )}
-                          {siblingsOf(option.id).some((sibling) => !(rejectReasons[sibling.id] || "").trim()) && (
+                          {siblingsOf(option.id).some(
+                            (sibling) => !(rejectReasons[sibling.id] || "").trim(),
+                          ) && (
                             <p style={{ color: "var(--muted)", fontSize: 13, margin: "0 0 8px" }}>
                               每个落选方案必须写明理由。
                             </p>
@@ -343,7 +345,9 @@ export default function Stage10SolutionPage() {
                               className="btn btn-primary btn-sm"
                               disabled={
                                 busyId === option.id ||
-                                siblingsOf(option.id).some((sibling) => !(rejectReasons[sibling.id] || "").trim())
+                                siblingsOf(option.id).some(
+                                  (sibling) => !(rejectReasons[sibling.id] || "").trim(),
+                                )
                               }
                               onClick={() => void confirmSelect()}
                             >
@@ -458,10 +462,10 @@ export default function Stage10SolutionPage() {
                       {draft.recommended && draft.recommendation_reason && (
                         <p
                           style={{
-                            color: "#1f7a4d",
+                            color: "var(--success)",
                             fontSize: 13,
                             margin: "4px 0 8px",
-                            background: "#effaf3",
+                            background: "var(--success-soft)",
                             borderRadius: 6,
                             padding: "6px 10px",
                           }}

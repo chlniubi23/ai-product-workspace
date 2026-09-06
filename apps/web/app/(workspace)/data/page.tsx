@@ -79,9 +79,11 @@ function toDatasetRow(
 export default function DataPage() {
   const router = useRouter();
   const [items, setItems] = useState<DatasetRow[]>([]);
-  const [activeProject, setActiveProject] = useState<{ id: string; name: string; goal_statement?: string } | null>(
-    null,
-  );
+  const [activeProject, setActiveProject] = useState<{
+    id: string;
+    name: string;
+    goal_statement?: string;
+  } | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [activeTab, setActiveTab] = useState("datasets");
@@ -104,9 +106,7 @@ export default function DataPage() {
       // 上传绑定当前活跃项目（batch 11：项目切换统一在工作台完成）；
       // 失效的持久化 id 回退到第一个项目，与快照的解析规则一致。
       const storedId = getActiveProjectId();
-      setActiveProject(
-        projects.find((project) => project.id === storedId) || projects[0] || null,
-      );
+      setActiveProject(projects.find((project) => project.id === storedId) || projects[0] || null);
       const names = Object.fromEntries(projects.map((project) => [project.id, project.name]));
       setItems(rows.map((row) => toDatasetRow(row, names)));
     } catch (cause) {
@@ -205,7 +205,7 @@ export default function DataPage() {
           上传数据
         </button>
       </div>
-      <section className="card card-pad" style={{ marginBottom: 17, borderColor: "#d8e2fb" }}>
+      <section className="card card-pad" style={{ marginBottom: 17, borderColor: "var(--brand-border)" }}>
         <div className="card-head">
           <div>
             <h2 className="card-title">项目上下文</h2>
@@ -213,16 +213,14 @@ export default function DataPage() {
               数据、分析和后续解读都会沿用这个目标问题；切换或新建项目请到工作台。
             </div>
           </div>
-          <Target size={17} color="#66758d" />
+          <Target size={17} color="var(--faint)" />
         </div>
         {activeProject ? (
           <div>
             <strong>{activeProject.name}</strong>
             <div className="form-hint" style={{ marginTop: 8 }}>
               <Target size={13} />
-              <span>
-                {activeProject.goal_statement || "该项目尚未填写目标问题，可到工作台补充。"}
-              </span>
+              <span>{activeProject.goal_statement || "该项目尚未填写目标问题，可到工作台补充。"}</span>
             </div>
           </div>
         ) : (
@@ -268,23 +266,23 @@ export default function DataPage() {
           className={`tab ${activeTab === "datasets" ? "active" : ""}`}
           onClick={() => setActiveTab("datasets")}
         >
-          数据集 <span style={{ color: "#9aa6b7" }}>{items.length}</span>
+          数据集 <span style={{ color: "var(--faint)" }}>{items.length}</span>
         </button>
         <button
           className={`tab ${activeTab === "quality" ? "active" : ""}`}
           onClick={() => setActiveTab("quality")}
         >
-          质量报告 <span style={{ color: "#bd7d0c" }}>{riskCount}</span>
+          质量报告 <span style={{ color: "var(--warning)" }}>{riskCount}</span>
         </button>
         <button
           className={`tab ${activeTab === "versions" ? "active" : ""}`}
           onClick={() => setActiveTab("versions")}
         >
-          版本记录 <span style={{ color: "#9aa6b7" }}>{versionCount}</span>
+          版本记录 <span style={{ color: "var(--faint)" }}>{versionCount}</span>
         </button>
       </div>
       {loadError && (
-        <div className="card card-pad" role="status" style={{ marginTop: 16, color: "#a13e52" }}>
+        <div className="card card-pad" role="status" style={{ marginTop: 16, color: "var(--danger)" }}>
           {loadError}
         </div>
       )}
@@ -315,7 +313,7 @@ export default function DataPage() {
                 仅有风险
               </button>
             </div>
-            <span style={{ color: "#8691a2", fontSize: 10 }}>{filtered.length} 个数据集</span>
+            <span style={{ color: "var(--faint)", fontSize: 12 }}>{filtered.length} 个数据集</span>
           </div>
           <section className="card table-wrap">
             <table className="data-table">
@@ -344,7 +342,9 @@ export default function DataPage() {
                         </span>
                         <span>
                           <strong>{dataset.name}</strong>
-                          <small style={{ display: "block", marginTop: 3, color: "#8793a5", fontSize: 9 }}>
+                          <small
+                            style={{ display: "block", marginTop: 3, color: "var(--faint)", fontSize: 10 }}
+                          >
                             {dataset.kind}
                           </small>
                         </span>
@@ -361,13 +361,17 @@ export default function DataPage() {
                       <span
                         style={{
                           color:
-                            dataset.quality > 90 ? "#0f9f91" : dataset.quality > 80 ? "#bd7d0c" : "#c94e65",
+                            dataset.quality > 90
+                              ? "var(--success)"
+                              : dataset.quality > 80
+                                ? "var(--warning)"
+                                : "var(--danger)",
                           fontWeight: 700,
                         }}
                       >
                         {dataset.quality}
                       </span>
-                      <span style={{ color: "#9aa6b5" }}>/100</span>
+                      <span style={{ color: "var(--faint)" }}>/100</span>
                     </td>
                     <td>
                       <span

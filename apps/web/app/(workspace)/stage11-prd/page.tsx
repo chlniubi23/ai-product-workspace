@@ -129,9 +129,7 @@ export default function Stage11PrdPage() {
           // Degradation stays visible across remounts.
           const aiStatus = doc.current_version?.ai_status;
           setFallbackBanner(
-            aiStatus && aiStatus !== "succeeded"
-              ? fallbackNotice(doc.current_version?.ai_error_code)
-              : "",
+            aiStatus && aiStatus !== "succeeded" ? fallbackNotice(doc.current_version?.ai_error_code) : "",
           );
           setHydratedAt(fromGeneration ? null : doc.current_version?.created_at || doc.created_at || null);
         } else {
@@ -282,7 +280,6 @@ export default function Stage11PrdPage() {
                 <h2 className="card-title">生成交付文档</h2>
                 <div className="card-kicker">已选择 {confirmed.length} 条确认洞察作为证据来源</div>
               </div>
-              <Sparkles size={17} color="#765ac6" />
             </div>
             <label className="field">
               <span className="field-label">文档类型</span>
@@ -331,10 +328,10 @@ export default function Stage11PrdPage() {
                 style={{
                   marginTop: 14,
                   padding: "10px 12px",
-                  border: "1px solid #f0d49a",
+                  border: "1px solid var(--warning-border)",
                   borderRadius: 8,
-                  background: "#fff9eb",
-                  color: "#8b5c08",
+                  background: "var(--warning-soft)",
+                  color: "var(--warning)",
                   fontSize: 13,
                   lineHeight: 1.6,
                 }}
@@ -345,29 +342,34 @@ export default function Stage11PrdPage() {
 
             {/* Batch 17: a failed generation leaves a version-less shell --
                 tell the user plainly instead of showing an empty editor. */}
-            {document?.status === "generation_failed" && !document.generation_job_id && !document.current_version && (
-              <div
-                role="alert"
-                style={{
-                  marginTop: 14,
-                  padding: "10px 12px",
-                  border: "1px solid #efc4c0",
-                  borderRadius: 8,
-                  background: "#fdf1f0",
-                  color: "#a13e34",
-                  fontSize: 13,
-                  lineHeight: 1.6,
-                }}
-              >
-                上次生成失败，请重新生成。
-              </div>
-            )}
+            {document?.status === "generation_failed" &&
+              !document.generation_job_id &&
+              !document.current_version && (
+                <div
+                  role="alert"
+                  style={{
+                    marginTop: 14,
+                    padding: "10px 12px",
+                    border: "1px solid var(--danger-border)",
+                    borderRadius: 8,
+                    background: "var(--danger-soft)",
+                    color: "var(--danger)",
+                    fontSize: 13,
+                    lineHeight: 1.6,
+                  }}
+                >
+                  上次生成失败，请重新生成。
+                </div>
+              )}
 
-            {document && !document.current_version && !document.generation_job_id && document.status !== "generation_failed" && (
-              <p style={{ color: "var(--muted)", fontSize: 13, margin: "14px 0 0" }}>
-                尚未生成文档；点击「生成文档」开始，生成期间可离开本页。
-              </p>
-            )}
+            {document &&
+              !document.current_version &&
+              !document.generation_job_id &&
+              document.status !== "generation_failed" && (
+                <p style={{ color: "var(--muted)", fontSize: 13, margin: "14px 0 0" }}>
+                  尚未生成文档；点击「生成文档」开始，生成期间可离开本页。
+                </p>
+              )}
 
             {document && (
               <>
@@ -390,7 +392,7 @@ export default function Stage11PrdPage() {
                     fontSize: 12.5,
                     lineHeight: 1.7,
                     resize: "vertical",
-                    background: "#fbfcfe",
+                    background: "var(--panel)",
                   }}
                   placeholder="文档内容"
                 />

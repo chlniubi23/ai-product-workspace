@@ -11,11 +11,7 @@ import {
   EvidenceStatus,
   useWorkflowSnapshot,
 } from "@/components/workflow/WorkflowFrame";
-import {
-  formatWorkflowDate,
-  type WorkflowApproval,
-  type WorkflowDecision,
-} from "@/lib/workflow";
+import { formatWorkflowDate, type WorkflowApproval, type WorkflowDecision } from "@/lib/workflow";
 
 const PRIORITIES = ["P0", "P1", "P2", "P3"];
 
@@ -258,7 +254,10 @@ export default function Stage11DecisionPage() {
           </section>
         ) : (
           <>
-            <section className="card card-pad" style={{ marginTop: 16, borderColor: "#cfe3d4" }}>
+            <section
+              className="card card-pad"
+              style={{ marginTop: 16, borderColor: "var(--success-border)" }}
+            >
               <div className="card-head">
                 <div>
                   <h2 className="card-title">选定方案</h2>
@@ -406,7 +405,7 @@ export default function Stage11DecisionPage() {
                       {decisions.filter((item) => item.status === "approved").length} 条
                     </div>
                   </div>
-                  <ShieldCheck size={17} color="#4a6cf7" />
+                  <ShieldCheck size={17} color="var(--brand)" />
                 </div>
                 <div className="list">
                   {decisions.map((decision) => (
@@ -463,7 +462,7 @@ export default function Stage11DecisionPage() {
                     批准或驳回；驳回必须写明理由，提案在审批中被编辑会导致审批失效。
                   </div>
                 </div>
-                <ShieldCheck size={17} color="#4a6cf7" />
+                <ShieldCheck size={17} color="var(--brand)" />
               </div>
               {pendingApprovals.length === 0 ? (
                 <p style={{ color: "var(--muted)" }}>没有等待审批的决策提案。</p>
@@ -486,7 +485,9 @@ export default function Stage11DecisionPage() {
                       </div>
                       <p style={{ lineHeight: 1.6 }}>{decision.proposed_action || "没有动作描述。"}</p>
                       {decision.validation_plan && (
-                        <p style={{ color: "var(--muted)", fontSize: 13 }}>验证：{decision.validation_plan}</p>
+                        <p style={{ color: "var(--muted)", fontSize: 13 }}>
+                          验证：{decision.validation_plan}
+                        </p>
                       )}
                       {rejectingId === approval.id ? (
                         <div style={{ marginTop: 12 }}>

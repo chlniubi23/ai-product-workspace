@@ -9,9 +9,12 @@
 
 type ChartPayload = Record<string, unknown>;
 
-const AXIS_LABEL = { color: "#6b7789", fontSize: 11 };
-const SPLIT_LINE = { lineStyle: { color: "rgba(120,134,153,0.16)" } };
-const PALETTE = ["#4a6cf7", "#12b886", "#f08c00", "#e8590c", "#7048e8", "#0ca678"];
+// Batch 22 palette: single brand blue leads, then restrained categorical
+// supports; axes/split lines follow the neutral tokens (#e4e4e7 / #71717a).
+const AXIS_LABEL = { color: "#71717a", fontSize: 11 };
+const SPLIT_LINE = { lineStyle: { color: "#e4e4e7" } };
+const PALETTE = ["#2563eb", "#0891b2", "#d97706", "#dc2626", "#64748b"];
+const LEGEND_LABEL = { color: "#71717a", fontSize: 12 };
 
 function rowsOf(chart: ChartPayload, key: string): Record<string, unknown>[] {
   const value = chart[key];
@@ -82,7 +85,7 @@ function retentionOption(chart: ChartPayload) {
       trigger: "axis",
       valueFormatter: (value: unknown) => (num(value) === null ? "—" : `${num(value)}%`),
     },
-    legend: { type: "scroll", top: 0, textStyle: AXIS_LABEL },
+    legend: { type: "scroll", top: 0, textStyle: LEGEND_LABEL },
     grid: baseGrid({ top: 40 }),
     xAxis: {
       type: "category",
@@ -119,7 +122,7 @@ function anomalyOption(chart: ChartPayload) {
   return {
     color: PALETTE,
     tooltip: { trigger: "axis" },
-    legend: { top: 0, textStyle: AXIS_LABEL, data: ["指标", "异常点"] },
+    legend: { top: 0, textStyle: LEGEND_LABEL, data: ["指标", "异常点"] },
     grid: baseGrid({ top: 40 }),
     xAxis: { type: "category", data: points.map((point) => point[0]), axisLabel: AXIS_LABEL },
     yAxis: { type: "value", nameTextStyle: AXIS_LABEL, axisLabel: AXIS_LABEL, splitLine: SPLIT_LINE },
@@ -132,7 +135,7 @@ function anomalyOption(chart: ChartPayload) {
         itemStyle: { color: PALETTE[0] },
         data: points.map((point) => point[1]),
       },
-      { name: "异常点", type: "scatter", symbolSize: 11, itemStyle: { color: "#e03131" }, data: flagged },
+      { name: "异常点", type: "scatter", symbolSize: 11, itemStyle: { color: "#dc2626" }, data: flagged },
     ],
   };
 }
@@ -143,7 +146,7 @@ function lineOption(chart: ChartPayload) {
   return {
     color: PALETTE,
     tooltip: { trigger: "axis" },
-    legend: { type: "scroll", top: 0, textStyle: AXIS_LABEL },
+    legend: { type: "scroll", top: 0, textStyle: LEGEND_LABEL },
     grid: baseGrid({ top: 40 }),
     xAxis: { ...(chart.xAxis as object), axisLabel: AXIS_LABEL },
     yAxis: { ...(chart.yAxis as object), axisLabel: AXIS_LABEL, splitLine: SPLIT_LINE },
@@ -187,8 +190,8 @@ function barOption(chart: ChartPayload, title: string) {
         name: title || "占比",
         type: "bar",
         barMaxWidth: 42,
-        itemStyle: { color: PALETTE[0] },
-        label: { show: true, position: "top", formatter: "{c}%", color: "#6b7789", fontSize: 11 },
+        itemStyle: { color: PALETTE[0], borderRadius: [4, 4, 0, 0] },
+        label: { show: true, position: "top", formatter: "{c}%", color: "#71717a", fontSize: 11 },
         data: data.map((row) => row.value),
       },
     ],

@@ -4,13 +4,15 @@ import { Fragment, type ReactNode } from "react";
 
 /** Render the inline subset the report model actually emits: **bold** text. */
 function renderInline(text: string, keyPrefix: string): ReactNode[] {
-  return text.split(/\*\*([^*]+)\*\*/g).map((part, index) =>
-    index % 2 === 1 ? (
-      <strong key={`${keyPrefix}-${index}`}>{part}</strong>
-    ) : (
-      <Fragment key={`${keyPrefix}-${index}`}>{part}</Fragment>
-    ),
-  );
+  return text
+    .split(/\*\*([^*]+)\*\*/g)
+    .map((part, index) =>
+      index % 2 === 1 ? (
+        <strong key={`${keyPrefix}-${index}`}>{part}</strong>
+      ) : (
+        <Fragment key={`${keyPrefix}-${index}`}>{part}</Fragment>
+      ),
+    );
 }
 
 /**
@@ -62,7 +64,7 @@ export function ReportMarkdown({ markdown }: { markdown: string }) {
             fontWeight: 600,
             fontSize: level === 1 ? 17 : level === 2 ? 14.5 : 13,
             marginTop: index ? 14 : 0,
-            color: "#22314a",
+            color: "var(--ink)",
           }}
         >
           {renderInline(heading[2], `h-${index}`)}
@@ -97,7 +99,5 @@ export function ReportMarkdown({ markdown }: { markdown: string }) {
   });
   flushList();
 
-  return (
-    <div style={{ fontSize: 13, color: "#2b3a55", overflowWrap: "anywhere" }}>{blocks}</div>
-  );
+  return <div style={{ fontSize: 13, color: "var(--ink)", overflowWrap: "anywhere" }}>{blocks}</div>;
 }

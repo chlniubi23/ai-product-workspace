@@ -156,7 +156,10 @@ export default function Stage7CopilotPage() {
     const failures: string[] = [];
     for (const insight of draftInsights) {
       try {
-        await apiRequest(`/insights/${insight.id}`, { method: "PATCH", body: JSON.stringify({ status: "confirmed" }) });
+        await apiRequest(`/insights/${insight.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ status: "confirmed" }),
+        });
       } catch {
         failures.push(insight.title || insight.id.slice(0, 8));
       }
@@ -183,9 +186,12 @@ export default function Stage7CopilotPage() {
     void (async () => {
       for (const run of pending) {
         try {
-          const artifacts = await apiRequest<Array<{ id?: string; title?: string }>>(`/analysis-runs/${run.id}/artifacts`);
+          const artifacts = await apiRequest<Array<{ id?: string; title?: string }>>(
+            `/analysis-runs/${run.id}/artifacts`,
+          );
           for (const artifact of artifacts || []) {
-            if (artifact.id && !next.has(artifact.id)) next.set(artifact.id, `分析产物 · ${artifact.title || artifact.id.slice(0, 8)}`);
+            if (artifact.id && !next.has(artifact.id))
+              next.set(artifact.id, `分析产物 · ${artifact.title || artifact.id.slice(0, 8)}`);
           }
         } catch {
           // labeling only; a failed fetch falls back to the short-uuid label
@@ -262,13 +268,18 @@ export default function Stage7CopilotPage() {
             <div>
               <h2 className="card-title">待裁决洞察</h2>
               <div className="card-kicker">
-                共 {insights.length} 条 · 已确认 {insights.filter((item) => item.status === "confirmed").length} · 已弃用{" "}
+                共 {insights.length} 条 · 已确认{" "}
+                {insights.filter((item) => item.status === "confirmed").length} · 已弃用{" "}
                 {insights.filter((item) => item.status === "rejected").length} · 待裁决 {draftInsights.length}
               </div>
             </div>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               {draftInsights.length > 1 && (
-                <button className="btn btn-primary btn-sm" disabled={confirmingRest} onClick={() => void confirmRest()}>
+                <button
+                  className="btn btn-primary btn-sm"
+                  disabled={confirmingRest}
+                  onClick={() => void confirmRest()}
+                >
                   <Check size={13} />
                   {confirmingRest ? "确认中…" : `确认其余 ${draftInsights.length} 条`}
                 </button>
@@ -322,7 +333,11 @@ export default function Stage7CopilotPage() {
                           />
                         </label>
                         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 8 }}>
-                          <button className="btn btn-subtle btn-sm" disabled={busyId === insight.id} onClick={() => setEditingId("")}>
+                          <button
+                            className="btn btn-subtle btn-sm"
+                            disabled={busyId === insight.id}
+                            onClick={() => setEditingId("")}
+                          >
                             取消
                           </button>
                           <button
@@ -340,7 +355,10 @@ export default function Stage7CopilotPage() {
                           {insight.content || "这条洞察没有正文。"}
                         </p>
                         <p style={{ color: "var(--muted)", fontSize: 13, margin: "4px 0 0" }}>
-                          证据：{(insight.evidence_json || []).map((item) => evidenceLabel(item as { type?: string; id?: string })).join("、") || "无数据支撑"}
+                          证据：
+                          {(insight.evidence_json || [])
+                            .map((item) => evidenceLabel(item as { type?: string; id?: string }))
+                            .join("、") || "无数据支撑"}
                         </p>
                         {!settled && (
                           <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
@@ -360,7 +378,11 @@ export default function Stage7CopilotPage() {
                               <X size={13} />
                               弃用
                             </button>
-                            <button className="btn btn-subtle btn-sm" disabled={busyId === insight.id} onClick={() => startEdit(insight)}>
+                            <button
+                              className="btn btn-subtle btn-sm"
+                              disabled={busyId === insight.id}
+                              onClick={() => startEdit(insight)}
+                            >
                               <Pencil size={13} />
                               编辑
                             </button>
@@ -391,7 +413,7 @@ export default function Stage7CopilotPage() {
               <h2 className="card-title">手工结论</h2>
               <div className="card-kicker">自动引用最近一次分析产物，保存后同为草稿。</div>
             </div>
-            <Lightbulb size={16} color="#8e9ab0" />
+            <Lightbulb size={16} color="var(--faint)" />
           </div>
           <label className="field">
             <span className="field-label">手工结论</span>

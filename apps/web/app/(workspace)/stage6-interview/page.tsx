@@ -223,7 +223,10 @@ export default function Stage6InterviewPage() {
         ) : (
           <>
             {summary ? (
-              <section className="card card-pad" style={{ marginTop: 16, borderColor: "#cfe3d4" }}>
+              <section
+                className="card card-pad"
+                style={{ marginTop: 16, borderColor: "var(--success-border)" }}
+              >
                 <div className="card-head">
                   <div>
                     <h2 className="card-title">采访小结</h2>
@@ -276,7 +279,7 @@ export default function Stage6InterviewPage() {
                 </div>
                 {askingNext ? (
                   <div className="empty-state" style={{ minHeight: 120 }} role="status">
-                    <Sparkles size={18} className="animate-spin" />
+                    <Sparkles size={14} className="animate-spin" />
                     <strong>AI 正在构思下一个问题…</strong>
                     <p>回答已记录；新问题基于报告发现与你的回答生成。</p>
                   </div>
