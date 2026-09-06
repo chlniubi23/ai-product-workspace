@@ -13,6 +13,7 @@ from ..ai_context import (
     empty_report_output,
     validate_report_output,
 )
+from ..analytics.digest import column_display, dataset_display
 from ..analytics.engine import AnalysisEngine, choose_trend_frequency
 from ..analytics.text_metrics import extract_text_metrics
 from ..common import _require_pandas, model_dict
@@ -71,6 +72,14 @@ def _compute_report_aggregates(snapshot: dict[str, Any]) -> dict[str, Any]:
     eda_payload = dict(eda.get("payload_json") or {})
 
     schema_types = {str(item["name"]): str(item["type"]) for item in snapshot.get("columns") or []}
+    # Batch 21: business labels written by the field-semantics pass; carried
+    # onto every metric entry so narration/digest/documents speak in business
+    # terms ("参会人数" alongside "attendee_count").
+    schema_labels = {
+        str(item["name"]): str(item.get("label") or "").strip()
+        for item in snapshot.get("columns") or []
+        if isinstance(item, Mapping)
+    }
     datetime_column = next((name for name, kind in schema_types.items() if kind == "datetime"), None)
     numeric_column = next((name for name, kind in schema_types.items() if kind in {"integer", "float"}), None)
 
@@ -86,6 +95,11 @@ def _compute_report_aggregates(snapshot: dict[str, Any]) -> dict[str, Any]:
             "source": "extracted" if entry_name not in original_columns else "original",
             "constant": int(item.get("unique_count") or 0) == 1,
         }
+        # Batch 21: label passes through only when the dictionary has one --
+        # absent keys keep every downstream statement byte-identical to before.
+        schema_label = schema_labels.get(entry_name)
+        if schema_label:
+            entry["label"] = schema_label
         stats = item.get("statistics")
         if isinstance(stats, dict) and stats:
             entry["statistics"] = {
@@ -132,6 +146,10 @@ def _compute_report_aggregates(snapshot: dict[str, Any]) -> dict[str, Any]:
         "duplicate_rows": int(eda_payload.get("duplicate_rows") or 0),
         "metrics": columns,
     }
+    # Batch 21: dataset-level business label from the field-semantics pass.
+    dataset_label = str(snapshot.get("dataset_label") or "").strip()
+    if dataset_label:
+        aggregates["dataset_label"] = dataset_label
     if snapshot.get("quality_score") is not None:
         aggregates["quality_score"] = snapshot["quality_score"]
         aggregates["quality_status"] = snapshot.get("quality_status")
@@ -279,7 +297,9 @@ def _deterministic_report_parts(
 
     overview_lines: list[str] = []
     for item in aggregates:
-        line = f"- **{item.get('name')}**：{item.get('row_count')} 行 × {item.get('column_count')} 列"
+        # Batch 21: "name（dataset_label）" when the semantics dictionary
+        # named the dataset; unchanged otherwise.
+        line = f"- **{dataset_display(item)}**：{item.get('row_count')} 行 × {item.get('column_count')} 列"
         if item.get("quality_score") is not None:
             line += f"，质量分 {item.get('quality_score')}（{item.get('quality_status')}）"
         overview_lines.append(line)
@@ -290,7 +310,7 @@ def _deterministic_report_parts(
     statistic_lines: list[str] = []
     for item in aggregates:
         for column in item.get("metrics") or []:
-            label = f"{item.get('name')} · {column.get('name')}"
+            label = f"{dataset_display(item)} · {column_display(item, column.get('name'))}"
             if column.get("source") == "extracted":
                 label += "（抽取）"
             categories = column.get("categories") or []
@@ -325,7 +345,7 @@ def _deterministic_report_parts(
         change = trend.get("last_period_change")
         change_text = f"，最近一期环比 {round(float(change) * 100, 1)}%" if isinstance(change, (int, float)) else ""
         trend_lines.append(
-            f"- {item.get('name')}：{trend.get('metric_column')} 按 {'周' if trend.get('frequency') == 'W' else '日'} 汇总共 {len(trend.get('periods') or [])} 期，"
+            f"- {dataset_display(item)}：{column_display(item, trend.get('metric_column'))} 按 {'周' if trend.get('frequency') == 'W' else '日'} 汇总共 {len(trend.get('periods') or [])} 期，"
             f"从 {trend.get('first_value')} 变化到 {trend.get('last_value')}{change_text}"
         )
     if trend_lines:

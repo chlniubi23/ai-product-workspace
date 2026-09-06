@@ -67,6 +67,7 @@ from .documents import (
     _render_document_markdown,
     _section_system_prompt,
 )
+from .field_semantics import interpret_fields
 
 job_executor = JobExecutor(SessionLocal)
 
@@ -124,6 +125,40 @@ def _handle_dataset_parse(context: JobContext) -> JobResult:
     context.progress(85, "自动分析")
     auto = _run_auto_analyses(db, version, schema, frame_ext, str(payload.get("_actor_id") or ""))
 
+    # Batch 21: the parse result is durable before the optional AI pass starts,
+    # so a rollback in the isolation branch below can never discard it.
+    db.commit()
+
+    # Batch 21: optional field-semantics dictionary.  One AI call names every
+    # column's business meaning; isolated exactly like _run_auto_analyses --
+    # any failure here degrades to an audit row, never a failed parse.
+    semantics: dict[str, Any] = {"status": "skipped", "labeled": 0, "skipped": 0}
+    workspace_id = version.dataset.project.workspace_id
+    actor_id = payload.get("_actor_id")
+    actor = db.get(User, actor_id) if actor_id else None
+    if actor is not None:
+        context.progress(92, "AI 字段解读")
+        try:
+            semantics = asyncio.run(
+                interpret_fields(
+                    db,
+                    workspace=db.get(Workspace, workspace_id),
+                    user=actor,
+                    dataset=version.dataset,
+                    version=version,
+                    frame=frame_ext,
+                    schema=schema,
+                )
+            )
+        except Exception:  # noqa: BLE001 - an optional enhancement must never fail the parse
+            db.rollback()
+            semantics = {"status": "failed", "error_code": "FIELD_SEMANTICS_ERROR", "labeled": 0, "skipped": 0}
+            audit(db, workspace_id, actor_id, "dataset.field_semantics_failed", "dataset_version", version.id, {"error_code": "FIELD_SEMANTICS_ERROR"})
+    if semantics.get("status") == "succeeded":
+        audit(db, workspace_id, actor_id, "dataset.fields_interpreted", "dataset_version", version.id, {"labeled": semantics.get("labeled"), "skipped": semantics.get("skipped")})
+    elif semantics.get("status") == "failed":
+        audit(db, workspace_id, actor_id, "dataset.field_semantics_failed", "dataset_version", version.id, {"error_code": semantics.get("error_code")})
+
     db.commit()
     return JobResult(
         result_type="dataset_version",
@@ -133,6 +168,7 @@ def _handle_dataset_parse(context: JobContext) -> JobResult:
             "columns": len(frame.columns),
             "auto_analysis_run_ids": auto["run_ids"],
             "auto_analysis_plan": auto["plan"],
+            "field_semantics": {"labeled": semantics.get("labeled"), "skipped": semantics.get("skipped")},
         },
     )
 

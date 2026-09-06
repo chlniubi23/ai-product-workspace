@@ -272,6 +272,12 @@ class DataColumn(Base):
     # numeric columns pulled out of free-text metric columns (name carries the
     # "{source}__{metric}" convention).  The original file is never touched.
     source = Column(String(20), default="original", nullable=False)
+    # Batch 21: LLM-written business meaning (short tag + one-line reading)
+    # from the optional field-semantics pass in the parse pipeline.
+    # NULL = not interpreted / provider unavailable; the parse never fails on
+    # these and downstream AI contexts simply omit empty labels.
+    semantic_label = Column(String(120), nullable=True)
+    semantic_description = Column(String(600), nullable=True)
     dataset_version = relationship("DatasetVersion", back_populates="columns")
 
 

@@ -1157,6 +1157,78 @@ def validate_interview_summary(value: Any) -> dict[str, Any]:
     }
 
 
+# Batch 21: field-semantics dictionary.  The parse pipeline sends one column
+# profile per dataset and the model names every column's business meaning.
+# The allowlist itself is untouched -- the outbound profile is a direct
+# structured dict (same convention as the problem draft) and PII in the
+# sample values is masked by the adapter layer.
+FIELD_SEMANTICS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["dataset_label", "columns"],
+    "properties": {
+        "dataset_label": {"type": "string"},
+        "columns": {
+            "type": "array",
+            "maxItems": 60,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["name", "label", "description"],
+                "properties": {
+                    "name": {"type": "string"},
+                    "label": {"type": "string"},
+                    "description": {"type": "string"},
+                },
+            },
+        },
+    },
+}
+
+
+def validate_field_semantics(value: Any, *, known_columns: frozenset[str] | set[str] | None = None) -> dict[str, Any]:
+    """Validate the field-semantics contract (batch 21).
+
+    ``known_columns`` is the exact set of column names sent to the provider:
+    an entry naming anything else is a hallucination and is dropped.  A
+    duplicate column name keeps its first occurrence; text is truncated to the
+    schema limits (label ≤40, description ≤200; storage columns give extra
+    headroom).  Entries without a usable name/label are ignored rather than
+    failing the whole response -- a partially useful dictionary beats none.
+    """
+
+    if not isinstance(value, Mapping):
+        raise AIOutputValidationError("field semantics output must be a JSON object")
+    raw_columns = value.get("columns")
+    if not isinstance(raw_columns, list):
+        raise AIOutputValidationError("field semantics 'columns' must be an array")
+    columns: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in raw_columns[:60]:
+        if not isinstance(item, Mapping):
+            continue
+        name = str(item.get("name") or "").strip()
+        label = str(item.get("label") or "").strip()
+        if not name or not label:
+            continue
+        if known_columns is not None and name not in known_columns:
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        columns.append(
+            {
+                "name": name[:255],
+                "label": label[:40],
+                "description": str(item.get("description") or "").strip()[:200],
+            }
+        )
+    return {
+        "dataset_label": str(value.get("dataset_label") or "").strip()[:60],
+        "columns": columns,
+    }
+
+
 def empty_interview_round(*, limitation: str | None = None) -> dict[str, Any]:
     """Return a valid empty round for unavailable providers."""
 
@@ -1182,6 +1254,7 @@ __all__ = [
     "REPORT_OUTPUT_SCHEMA",
     "DECISION_DRAFT_SCHEMA",
     "SOLUTION_DRAFTS_SCHEMA",
+    "FIELD_SEMANTICS_SCHEMA",
     "assert_safe_ai_context",
     "build_ai_context",
     "build_safe_ai_context",
@@ -1191,6 +1264,7 @@ __all__ = [
     "extract_ai_insights",
     "validate_ai_output",
     "validate_decision_draft",
+    "validate_field_semantics",
     "validate_interview_questions",
     "validate_interview_summary",
     "validate_next_question",

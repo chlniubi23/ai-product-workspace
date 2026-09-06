@@ -410,6 +410,7 @@ async def _compute_auto_report(project: Project, user: User, db: Session) -> Aut
     for version in versions:
         quality = version.quality_report
         quality_summary = quality.summary_json if quality is not None and isinstance(quality.summary_json, dict) else {}
+        schema_json = version.schema_json if isinstance(version.schema_json, dict) else {}
         snapshots.append(
             {
                 "version_id": version.id,
@@ -419,7 +420,18 @@ async def _compute_auto_report(project: Project, user: User, db: Session) -> Aut
                 "file_name": version.file_name,
                 "row_count": version.row_count,
                 "column_count": version.column_count,
-                "columns": [{"name": column.name, "type": column.confirmed_type or column.inferred_type} for column in version.columns],
+                # Batch 21: the field-semantics dictionary rides along so the
+                # report AI reasons about named business fields, not raw names.
+                "dataset_label": str(schema_json.get("dataset_label") or ""),
+                "columns": [
+                    {
+                        "name": column.name,
+                        "type": column.confirmed_type or column.inferred_type,
+                        "label": column.semantic_label,
+                        "description": column.semantic_description,
+                    }
+                    for column in version.columns
+                ],
                 "quality_score": quality.overall_score if quality is not None else None,
                 "quality_status": quality.status if quality is not None else None,
                 "missing_values": quality_summary.get("missing_values"),

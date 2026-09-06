@@ -43,6 +43,35 @@ def _pct(rate: float) -> str:
     return f"{round(float(rate) * 100, 1)}%"
 
 
+# ---------------------------------------------------------------------------
+# Batch 21: business-label display helpers.  The field-semantics dictionary
+# puts an optional "label" on every metric entry (and "dataset_label" on the
+# dataset); statements then read "attendee_count（参会人数）".  Without a
+# label the output is byte-identical to the pre-21 statements.
+# ---------------------------------------------------------------------------
+
+
+def display_name(name: Any, label: Any) -> str:
+    name = str(name or "")
+    label = str(label or "").strip()
+    return f"{name}（{label}）" if label else name
+
+
+def dataset_display(dataset: dict[str, Any]) -> str:
+    return display_name(dataset.get("name"), dataset.get("dataset_label"))
+
+
+def column_display(dataset: dict[str, Any], column_name: Any) -> str:
+    """Display one column name with its label, looked up in the dataset's
+    metrics entries (used where only the raw name is at hand, e.g. trends)."""
+
+    name = str(column_name or "")
+    for column in dataset.get("metrics") or []:
+        if isinstance(column, dict) and str(column.get("name") or "") == name:
+            return display_name(name, column.get("label"))
+    return name
+
+
 def _missing_findings(dataset: dict[str, Any], findings: list[dict[str, Any]]) -> None:
     for column in dataset.get("metrics") or []:
         if not isinstance(column, dict):
@@ -60,7 +89,7 @@ def _missing_findings(dataset: dict[str, Any], findings: list[dict[str, Any]]) -
             {
                 "kind": "missing",
                 "dataset": str(dataset.get("name") or ""),
-                "statement": f"「{dataset.get('name')}」字段 {column.get('name')} 缺失率高达 {_pct(rate)}，分析结论受其完整性影响。",
+                "statement": f"「{dataset_display(dataset)}」字段 {display_name(column.get('name'), column.get('label'))} 缺失率高达 {_pct(rate)}，分析结论受其完整性影响。",
                 "severity": severity,
                 "columns": [str(column.get("name"))],
                 "value": round(float(rate), 4),
@@ -81,11 +110,13 @@ def _correlation_findings(dataset: dict[str, Any], findings: list[dict[str, Any]
     for label, value in candidates[:CORRELATION_TOP_PAIRS]:
         direction = "正" if value > 0 else "负"
         severity = 3 if abs(value) >= 0.80 else 2
+        # Batch 21: render both sides of the pair with their business labels.
+        pair_display = " ~ ".join(column_display(dataset, part.strip()) for part in label.split("~"))
         findings.append(
             {
                 "kind": "correlation",
                 "dataset": str(dataset.get("name") or ""),
-                "statement": f"「{dataset.get('name')}」中 {label} 呈{direction}相关（r={round(value, 2)}）；相关不代表因果。",
+                "statement": f"「{dataset_display(dataset)}」中 {pair_display} 呈{direction}相关（r={round(value, 2)}）；相关不代表因果。",
                 "severity": severity,
                 "columns": [part.strip() for part in label.split("~")],
                 "value": round(value, 4),
@@ -115,6 +146,8 @@ def _trend_findings(dataset: dict[str, Any], findings: list[dict[str, Any]]) -> 
     # Batch 14: a derived metric column (source__label) makes this an
     # extracted-metric trend finding -- same rule, marked provenance.
     derived_mark = "（抽取指标）" if "__" in metric_column else ""
+    # Batch 21: the metric column reads with its business label when present.
+    metric_display = column_display(dataset, metric_column)
     period_label = str(trend.get("last_period") or "最近一期")
     previous_count = trend.get("previous_count")
     last_count = trend.get("last_count")
@@ -131,7 +164,7 @@ def _trend_findings(dataset: dict[str, Any], findings: list[dict[str, Any]]) -> 
             "kind": "trend_shift",
             "dataset": str(dataset.get("name") or ""),
             "statement": (
-                f"「{dataset.get('name')}」{metric_column}{derived_mark} "
+                f"「{dataset_display(dataset)}」{metric_display}{derived_mark} "
                 f"最近一期（{period_label}）环比{direction} {_pct(abs(float(change)))}"
                 f"（上期 {previous_value} → 本期 {last_value}）{sample_note}。"
             ),
@@ -159,7 +192,7 @@ def _concentration_findings(dataset: dict[str, Any], findings: list[dict[str, An
                 "kind": "concentration",
                 "dataset": str(dataset.get("name") or ""),
                 "statement": (
-                    f"「{dataset.get('name')}」{column.get('name')} 高度集中于「{top.get('value')}」"
+                    f"「{dataset_display(dataset)}」{display_name(column.get('name'), column.get('label'))} 高度集中于「{top.get('value')}」"
                     f"（{top.get('count')} 条，占 {_pct(rate)}）。"
                 ),
                 "severity": severity,
@@ -201,11 +234,14 @@ def _constant_findings(dataset: dict[str, Any], findings: list[dict[str, Any]]) 
     ]
     if not names:
         return
+    # Batch 21: the statement reads the business labels; the columns field
+    # keeps the raw names so downstream evidence scope checks still match.
+    names_display = "、".join(column_display(dataset, name) for name in names)
     findings.append(
         {
             "kind": "constant",
             "dataset": str(dataset.get("name") or ""),
-            "statement": f"「{dataset.get('name')}」{len(names)} 个字段内容完全固化（{'、'.join(names)}），不构成区分维度。",
+            "statement": f"「{dataset_display(dataset)}」{len(names)} 个字段内容完全固化（{names_display}），不构成区分维度。",
             "severity": 1,
             "columns": names,
             "value": float(len(names)),
@@ -232,7 +268,7 @@ def _outlier_findings(dataset: dict[str, Any], findings: list[dict[str, Any]]) -
             {
                 "kind": "outlier",
                 "dataset": str(dataset.get("name") or ""),
-                "statement": f"「{dataset.get('name')}」{column.get('name')} 有 {outliers} 个 IQR 离群值（占 {_pct(rate)}），均值类结论可能被拉偏。",
+                "statement": f"「{dataset_display(dataset)}」{display_name(column.get('name'), column.get('label'))} 有 {outliers} 个 IQR 离群值（占 {_pct(rate)}），均值类结论可能被拉偏。",
                 "severity": severity,
                 "columns": [str(column.get("name"))],
                 "value": round(rate, 4),
