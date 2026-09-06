@@ -1025,6 +1025,73 @@ def validate_interview_questions(value: Any) -> dict[str, Any]:
     return {"questions": questions}
 
 
+# Batch 18: adaptive one-question interview.  One call proposes the next
+# single question OR declares the interview complete; the summary contract
+# powers the end-of-interview digest.
+NEXT_QUESTION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["question_text", "topic", "rationale", "interview_complete", "completion_note"],
+    "properties": {
+        "question_text": {"type": "string"},
+        "topic": {"type": "string"},
+        "rationale": {"type": "string"},
+        "interview_complete": {"type": "boolean"},
+        "completion_note": {"type": "string"},
+    },
+}
+
+
+def validate_next_question(value: Any) -> dict[str, Any]:
+    """Validate the next-question contract.  A non-complete answer with an
+    empty question is malformed and counts as a failed call."""
+
+    if not isinstance(value, Mapping):
+        raise AIOutputValidationError("next question must be a JSON object")
+    complete = bool(value.get("interview_complete"))
+    question_text = str(value.get("question_text") or "").strip()
+    if not complete and not question_text:
+        raise AIOutputValidationError("next question requires question_text unless interview_complete")
+    return {
+        "question_text": question_text[:2000],
+        "topic": str(value.get("topic") or "").strip()[:120],
+        "rationale": str(value.get("rationale") or "").strip()[:2000],
+        "interview_complete": complete,
+        "completion_note": str(value.get("completion_note") or "").strip()[:2000],
+    }
+
+
+SUMMARY_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["collected", "gaps", "ready_for"],
+    "properties": {
+        "collected": {"type": "array", "maxItems": 10, "items": {"type": "string"}},
+        "gaps": {"type": "array", "maxItems": 10, "items": {"type": "string"}},
+        "ready_for": {"type": "string"},
+    },
+}
+
+
+def validate_interview_summary(value: Any) -> dict[str, Any]:
+    """Validate the end-of-interview digest (batch 18)."""
+
+    if not isinstance(value, Mapping):
+        raise AIOutputValidationError("interview summary must be a JSON object")
+
+    def strings(key: str) -> list[str]:
+        raw = value.get(key)
+        if not isinstance(raw, list):
+            raise AIOutputValidationError(f"interview summary '{key}' must be an array")
+        return [str(item).strip()[:500] for item in raw[:10] if str(item).strip()]
+
+    return {
+        "collected": strings("collected"),
+        "gaps": strings("gaps"),
+        "ready_for": str(value.get("ready_for") or "").strip()[:2000],
+    }
+
+
 def empty_interview_round(*, limitation: str | None = None) -> dict[str, Any]:
     """Return a valid empty round for unavailable providers."""
 
@@ -1044,7 +1111,9 @@ __all__ = [
     "ALLOWED_CONTEXT_KEYS",
     "ALLOWED_CONTEXT_KEY_ORDER",
     "INTERVIEW_QUESTIONS_SCHEMA",
+    "NEXT_QUESTION_SCHEMA",
     "PROBLEM_DRAFT_SCHEMA",
+    "SUMMARY_SCHEMA",
     "REPORT_OUTPUT_SCHEMA",
     "SOLUTION_DRAFTS_SCHEMA",
     "assert_safe_ai_context",
@@ -1056,6 +1125,8 @@ __all__ = [
     "extract_ai_insights",
     "validate_ai_output",
     "validate_interview_questions",
+    "validate_interview_summary",
+    "validate_next_question",
     "validate_problem_draft",
     "validate_report_output",
     "validate_solution_drafts",

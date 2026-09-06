@@ -1,5 +1,5 @@
-"""Stage-6 AI interview routes: rounds, answers/skips, manual supplements, and
-the stage-7 distillation entry."""
+"""Stage-6 AI interview routes: adaptive next-question, completion summary,
+answers/skips, manual supplements, and the stage-7 distillation entry."""
 
 from __future__ import annotations
 
@@ -16,28 +16,45 @@ from ..models import InterviewQuestion, User, Workspace
 from ..schemas import AIDistillInterviewRequest, InterviewQuestionCreate, InterviewQuestionPatch
 from ..services.access import project_for
 from ..services.interview import (
+    complete_interview,
     create_manual_question,
     distill_interview,
-    generate_interview_round,
+    generate_next_question,
     update_interview_question,
 )
 
 router = APIRouter()
 
 
-@router.post("/api/v1/projects/{project_id}/interview/rounds")
-async def generate_round(project_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
-    """One AI interview round: 3-5 grounded questions, deduped server-side.
-
-    Degrades to ``status="not_configured"`` with an empty question list when no
-    provider key is configured -- the interview continues with manual rows.
-    """
+@router.post("/api/v1/projects/{project_id}/interview/next-question")
+async def interview_next_question(project_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Adaptive interview: one question per call, or an AI-judged completion
+    (batch 18).  Degrades to ``status="not_configured"`` without a provider --
+    the interview continues with manual rows."""
 
     project = project_for(db, user, project_id, "editor")
     workspace = db.get(Workspace, project.workspace_id)
     if workspace is None:
         raise error("NOT_FOUND", "Workspace not found", 404)
-    result = await generate_interview_round(db=db, user=user, workspace=workspace, project=project)
+    result = await generate_next_question(db=db, user=user, workspace=workspace, project=project)
+    return ok(result)
+
+
+@router.post("/api/v1/projects/{project_id}/interview/complete")
+async def interview_complete(project_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Generate (or regenerate, idempotently) the end-of-interview digest.
+
+    Used both when the AI declares the interview complete and when the user
+    ends it manually.  Requires at least one answered question."""
+
+    project = project_for(db, user, project_id, "editor")
+    workspace = db.get(Workspace, project.workspace_id)
+    if workspace is None:
+        raise error("NOT_FOUND", "Workspace not found", 404)
+    try:
+        result = await complete_interview(db=db, user=user, workspace=workspace, project=project)
+    except ValueError as exc:
+        raise error("VALIDATION_ERROR", "还没有已回答的采访问题，先回答或跳过至少一问再生成小结", 400) from exc
     return ok(result)
 
 
@@ -80,8 +97,8 @@ def patch_interview_question(question_id: str, body: InterviewQuestionPatch, use
 @router.post("/api/v1/ai/distill-interview")
 async def ai_distill_interview(body: AIDistillInterviewRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     """Stage 7: distill answered interview questions + analysis artifacts into
-    a four-section insight draft.  Nothing is persisted to ``insights`` until
-    the user saves a claim back through POST /api/v1/insights."""
+    draft insights, persisted server-side (batch 18).  The user adjudicates
+    the drafts -- reject/edit/confirm -- through the regular insight routes."""
 
     project = project_for(db, user, body.project_id, "editor")
     workspace = db.get(Workspace, project.workspace_id)

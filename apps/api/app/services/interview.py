@@ -18,16 +18,21 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..ai_context import (
-    INTERVIEW_QUESTIONS_SCHEMA,
+    NEXT_QUESTION_SCHEMA,
+    SUMMARY_SCHEMA,
     build_ai_context,
-    validate_interview_questions,
+    validate_interview_summary,
+    validate_next_question,
 )
 from ..common import model_dict
 from ..models import (
+    AIRun,
     AnalysisArtifact,
     AnalysisRun,
     AutoAnalysisReport,
+    Insight,
     InterviewQuestion,
+    InterviewSummary,
     Project,
     User,
     Workspace,
@@ -37,10 +42,11 @@ from .ai_stages import _run_ai_stage
 from .audit import audit
 
 _ANSWER_CONTEXT_LIMIT = 50
-# Batch 13: widened from 12 so the report's finding artifacts fit the window
-# alongside the raw analysis artifacts.
 _ARTIFACT_CONTEXT_LIMIT = 20
 _REPORT_DATASET_LIMIT = 5
+# Batch 18: an adaptive interview asks at most this many AI questions; the
+# cap check is pre-provider so hitting it costs nothing.
+_INTERVIEW_QUESTION_CAP = 10
 
 
 def _normalise_question_text(text: str) -> str:
@@ -128,52 +134,100 @@ def _project_context(db: Session, project: Project, question: str) -> dict[str, 
     )
 
 
-async def generate_interview_round(
+async def generate_next_question(
     *, db: Session, user: User, workspace: Workspace, project: Project
 ) -> dict[str, Any]:
-    """Ask the model for the next round of questions, dedup, persist as ai rows."""
+    """Adaptive interview: propose the next single question (batch 18).
+
+    One provider call per question.  Termination is triadic: the model may
+    declare the interview complete (``interview_complete``), the hard cap of
+    ``_INTERVIEW_QUESTION_CAP`` AI questions is checked pre-provider, or the
+    user ends manually via the completion summary.  Duplicate questions
+    (server-normalized) get exactly one provider retry; a second duplicate
+    ends the interview with ``no_new_question``.
+    """
 
     existing = db.scalars(
         select(InterviewQuestion).where(InterviewQuestion.project_id == project.id)
     ).all()
     seen = {_normalise_question_text(q.question_text) for q in existing if q.question_text}
-    next_round = max((q.round_number for q in existing if q.source == "ai"), default=0) + 1
+    ai_asked = sum(1 for q in existing if q.source == "ai")
+    if ai_asked >= _INTERVIEW_QUESTION_CAP:
+        return {"status": "complete", "reason": "cap_reached", "note": f"已达到 {_INTERVIEW_QUESTION_CAP} 个 AI 问题的上限，请生成小结或手动补充要点。"}
 
-    result = await _run_ai_stage(
-        db=db,
-        user=user,
-        workspace=workspace,
-        feature_name="interview_round",
-        system_prompt=(
-            "你是产品分析师（采访者）。基于给定的项目目标与分析结论，提出本轮采访问题（3-5 个），"
-            "帮助澄清数据结论背后的用户动机、场景与业务背景。每个问题输出 topic（主题，尽量短）、"
-            "question_text（问题正文）、rationale（为什么问这个，引用哪条结论）。"
-            "给定的报告聚合（dataset_summary）与 findings 是本项目数据侧已确认的重点，提问应优先围绕这些重点展开。"
-            "问题之间不得重复，也不要重复给定的历史问题。输出默认是 draft。"
-        ),
-        context=_project_context(db, project, "请提出下一轮采访问题"),
-        flag_name="insight_suggestions_enabled",
-        response_schema=INTERVIEW_QUESTIONS_SCHEMA,
-        output_validator=validate_interview_questions,
-        empty_output={"questions": []},
+    answered = [q for q in existing if q.status == "answered"][:_ANSWER_CONTEXT_LIMIT]
+    answered_items = [
+        {
+            "id": q.id,
+            "artifact_type": "interview_answer",
+            "title": q.topic or q.question_text[:120],
+            "payload_json": {"question": q.question_text, "answer": q.answer_text},
+        }
+        for q in answered
+    ]
+    asked_items = [
+        {
+            "id": q.id,
+            "artifact_type": "asked_question",
+            "title": (q.topic or q.question_text[:60]),
+            "payload_json": {"question": q.question_text, "status": q.status},
+        }
+        for q in existing
+    ]
+    context = build_ai_context(
+        goal=project.goal_statement or "",
+        artifacts=[*_grounding_artifacts(db, project), *answered_items, *asked_items],
+        question="请提出下一个采访问题，或判定信息已收集充分",
     )
 
-    created: list[InterviewQuestion] = []
-    duplicates_dropped = 0
-    if result["status"] == "succeeded":
-        for item in result["output"].get("questions", []):
-            key = _normalise_question_text(item["question_text"])
-            if not key or key in seen:
-                duplicates_dropped += 1
-                continue
-            seen.add(key)
+    next_round = ai_asked + 1
+    last_error = "AI_UNAVAILABLE"
+    for _attempt in (1, 2):  # one retry for duplicate questions
+        result = await _run_ai_stage(
+            db=db,
+            user=user,
+            workspace=workspace,
+            feature_name="interview_next_question",
+            system_prompt=(
+                "你是产品分析师（采访者），正在进行一次一问的自适应采访。"
+                "基于给定的项目目标、报告聚合与数据发现，以及已回答的问答对，判断："
+                "若数据发现中最重要的未澄清点都已覆盖，返回 interview_complete=true 并在 completion_note 说明已收集到什么、还差什么、建议直接进入洞察蒸馏；"
+                "否则只提出一个问题（优先围绕数据发现中最重要的未澄清点，并根据已有回答追问），输出 topic、question_text、rationale（引用哪条结论）。"
+                "新问题不得与已有问题重复（含语义重复）。输出默认是 draft。"
+            ),
+            context=context,
+            flag_name="insight_suggestions_enabled",
+            response_schema=NEXT_QUESTION_SCHEMA,
+            output_validator=validate_next_question,
+            empty_output={
+                "question_text": "",
+                "topic": "",
+                "rationale": "",
+                "interview_complete": True,
+                "completion_note": "AI provider is not configured.",
+            },
+        )
+        if result["status"] != "succeeded":
+            return {
+                "status": result.get("status") or "failed",
+                "error_code": result.get("error_code") or last_error,
+                "message": "AI 采访暂不可用，可手动补充要点后重试。",
+            }
+        last_error = result.get("error_code") or last_error
+        output = result["output"]
+        if output.get("interview_complete"):
+            audit(db, workspace.id, user.id, "interview.next_question", "project", project.id, {"outcome": "ai_judged_complete"})
+            db.commit()
+            return {"status": "complete", "reason": "ai_judged", "note": str(output.get("completion_note") or "")}
+        key = _normalise_question_text(output["question_text"])
+        if key and key not in seen:
             question = InterviewQuestion(
                 workspace_id=project.workspace_id,
                 project_id=project.id,
                 round_number=next_round,
-                topic=item["topic"],
-                question_text=item["question_text"],
-                rationale=item["rationale"],
+                topic=output["topic"],
+                question_text=output["question_text"],
+                rationale=output["rationale"],
                 status="pending",
                 answer_text="",
                 source="ai",
@@ -181,28 +235,88 @@ async def generate_interview_round(
                 created_by=user.id,
             )
             db.add(question)
-            created.append(question)
-        if created:
             db.flush()
-
-    audit(
-        db,
-        project.workspace_id,
-        user.id,
-        "interview.round_generated",
-        "project",
-        project.id,
-        {"status": result["status"], "created": len(created), "duplicates_dropped": duplicates_dropped},
-    )
+            audit(db, workspace.id, user.id, "interview.next_question", "project", project.id, {"outcome": "asked", "round": next_round})
+            db.commit()
+            return {"status": "ok", "question": model_dict(question)}
+        # duplicate: retry once, then end the interview honestly
+    audit(db, workspace.id, user.id, "interview.next_question", "project", project.id, {"outcome": "no_new_question"})
     db.commit()
-    return {
-        "run_id": result["run_id"],
-        "status": result["status"],
-        "error_code": result.get("error_code"),
-        "round_number": next_round,
-        "questions": [model_dict(q) for q in created],
-        "duplicates_dropped": duplicates_dropped,
+    return {"status": "complete", "reason": "no_new_question", "note": "AI 未能提出新的不重复问题，采访到此结束。"}
+
+
+async def complete_interview(
+    *, db: Session, user: User, workspace: Workspace, project: Project
+) -> dict[str, Any]:
+    """Generate and persist the end-of-interview digest (batch 18).
+
+    Idempotent: each call overwrites the project's single summary row.  The
+    digest is only meaningful with at least one answered question -- skipped
+    or pending-only interviews have nothing to distill.
+    """
+
+    answered = db.scalars(
+        select(InterviewQuestion)
+        .where(InterviewQuestion.project_id == project.id, InterviewQuestion.status == "answered")
+        .order_by(InterviewQuestion.created_at)
+        .limit(_ANSWER_CONTEXT_LIMIT)
+    ).all()
+    if not answered:
+        raise ValueError("no answered questions")
+
+    answered_items = [
+        {
+            "id": q.id,
+            "artifact_type": "interview_answer",
+            "title": q.topic or q.question_text[:120],
+            "payload_json": {"question": q.question_text, "answer": q.answer_text},
+        }
+        for q in answered
+    ]
+    context = build_ai_context(
+        goal=project.goal_statement or "",
+        artifacts=[*_grounding_artifacts(db, project), *answered_items],
+        question="总结这次采访收集到的信息，并指出对下一步洞察蒸馏的建议",
+    )
+    result = await _run_ai_stage(
+        db=db,
+        user=user,
+        workspace=workspace,
+        feature_name="interview_summary",
+        system_prompt=(
+            "你是产品分析师。基于给定的报告聚合、数据发现与采访问答对，生成本次采访的收尾小结，"
+            "全部使用简体中文：collected 列出围绕哪些数据发现收集到了哪些判断（每条一句话，可引用数字）；"
+            "gaps 列出未覆盖、只能依赖数据本身回答的部分；ready_for 用 2-3 句话给出对下一步洞察蒸馏的建议"
+            "（哪些结论可以直接蒸馏、哪些还需要数据验证）。输出默认是 draft。"
+        ),
+        context=context,
+        flag_name="insight_suggestions_enabled",
+        response_schema=SUMMARY_SCHEMA,
+        output_validator=validate_interview_summary,
+        empty_output={"collected": [], "gaps": [], "ready_for": ""},
+    )
+    if result["status"] != "succeeded":
+        return {
+            "status": result.get("status") or "failed",
+            "error_code": result.get("error_code") or "AI_UNAVAILABLE",
+            "message": "小结生成暂不可用，可稍后重试或直接进入洞察蒸馏。",
+        }
+    import json as _json
+
+    summary_payload = {
+        "collected": result["output"].get("collected") or [],
+        "gaps": result["output"].get("gaps") or [],
+        "ready_for": str(result["output"].get("ready_for") or ""),
     }
+    summary_row = db.scalar(select(InterviewSummary).where(InterviewSummary.project_id == project.id))
+    if summary_row is None:
+        summary_row = InterviewSummary(workspace_id=project.workspace_id, project_id=project.id, created_by=user.id)
+        db.add(summary_row)
+    summary_row.summary = _json.dumps(summary_payload, ensure_ascii=False)
+    summary_row.ai_run_id = result["run_id"]
+    audit(db, workspace.id, user.id, "interview.completed", "project", project.id, {"answered": len(answered)})
+    db.commit()
+    return {"status": "ok", "summary": summary_payload, "answered": len(answered)}
 
 
 def create_manual_question(db: Session, user: User, project: Project, *, topic: str, question_text: str, answer_text: str) -> dict[str, Any]:
@@ -248,11 +362,14 @@ def update_interview_question(db: Session, user: User, question: InterviewQuesti
 async def distill_interview(
     *, db: Session, user: User, workspace: Workspace, project: Project
 ) -> dict[str, Any]:
-    """Distill answered questions + analysis artifacts into an insight draft.
+    """Distill answered questions + analysis artifacts into insight drafts.
 
-    The four-section contract applies; evidence is post-normalized so every
-    claim cites a real interview question or analysis artifact of this project,
-    with a deterministic fallback when the model cites nothing usable.
+    Batch 18: the distillation auto-persists -- every claim with evidence
+    becomes a draft ``Insight`` server-side (subtractive adjudication happens
+    in stage 7: reject/edit/confirm).  Idempotent on re-distill: drafts that
+    this project's earlier ``interview_distill`` runs produced and that are
+    still ``draft`` are replaced; confirmed/rejected insights are untouched.
+    The evidence contract is enforced per claim -- no evidence, no insight.
     """
 
     questions = db.scalars(
@@ -284,18 +401,84 @@ async def distill_interview(
         workspace=workspace,
         feature_name="interview_distill",
         system_prompt=(
-            "你是产品分析助手。把给定的采访问答（interview_answer 产物）与数据结论（分析产物）蒸馏成洞察草稿："
+            "你是产品分析助手。把给定的采访问答（interview_answer 产物）与数据结论（分析产物、报告聚合）蒸馏成洞察草稿："
             "facts（有依据的事实）、hypotheses（待验证的假设）、recommendations（下一步建议）。"
-            "每节最多 4 条；每条 text 不超过 80 字；每条的 evidence 只引 1 个最相关的 id；limitations 最多 3 条。"
+            "洞察条数由证据决定，通常 5-10 条，证据不足时宁少勿凑；每条 text 不超过 80 字；"
+            "每条的 evidence 只引 1 个最相关的 id；limitations 最多 3 条。"
             "每条必须带 evidence 数组，每项必须是 {\"type\": \"...\", \"id\": \"...\"} 对象，type 取 interview_question（采访问答）或 analysis_artifact（分析产物）。"
             "不要臆测未提供的信息。输出默认是 draft。"
         ),
         context=context,
         flag_name="insight_suggestions_enabled",
     )
-    result["output"] = _normalize_distill_evidence(result.get("output") or {}, questions, analysis_items)
+    output = _normalize_distill_evidence(result.get("output") or {}, questions, analysis_items)
+    result["output"] = output
+
+    # ---- auto-persist drafts (batch 18) ----
+    created: list[Insight] = []
+    discarded = 0
+    if result["status"] == "succeeded":
+        # Idempotent refresh: drop this project's still-draft insights that
+        # earlier distillation runs produced (ai_run_id -> interview_distill
+        # run).  Confirmed/rejected insights -- the user's adjudication --
+        # are never touched.
+        distill_run_ids = set(
+            db.scalars(
+                select(AIRun.id).where(
+                    AIRun.workspace_id == project.workspace_id,
+                    AIRun.feature_name == "interview_distill",
+                )
+            ).all()
+        )
+        stale = db.scalars(
+            select(Insight).where(
+                Insight.project_id == project.id,
+                Insight.status == "draft",
+                Insight.ai_run_id.in_(distill_run_ids),
+            )
+        ).all()
+        for insight in stale:
+            db.delete(insight)
+        db.flush()
+
+        type_by_section = {"facts": "fact", "hypotheses": "hypothesis", "recommendations": "recommendation"}
+        for section, insight_type in type_by_section.items():
+            for claim in output.get(section) or []:
+                evidence = claim.get("evidence") or []
+                text = str(claim.get("text") or "").strip()
+                if not text or not evidence:
+                    discarded += 1
+                    continue
+                insight = Insight(
+                    workspace_id=project.workspace_id,
+                    project_id=project.id,
+                    title=text[:120],
+                    insight_type=insight_type,
+                    content=text,
+                    confidence="medium",
+                    evidence_json=evidence,
+                    status="draft",
+                    ai_run_id=result["run_id"],
+                    created_by=user.id,
+                )
+                db.add(insight)
+                created.append(insight)
+        if created:
+            db.flush()
+    audit(
+        db,
+        project.workspace_id,
+        user.id,
+        "interview.distilled",
+        "project",
+        project.id,
+        {"status": result["status"], "created": len(created), "discarded": discarded},
+    )
+    db.commit()
     return {
         **result,
+        "created": [model_dict(insight) for insight in created],
+        "discarded_claims": discarded,
         "interview_answer_count": len(questions),
         "analysis_artifact_count": len(analysis_items),
     }

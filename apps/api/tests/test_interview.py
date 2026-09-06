@@ -1,9 +1,11 @@
-"""Stage-6 AI interview: rounds, answers, manual supplements, distillation.
+"""Stage-6 AI interview: adaptive next-question, completion digest, manual
+supplements, and the auto-persisting distillation.
 
-No provider key in this suite, so generation and distillation must degrade to
-a 200 with an honest ``not_configured`` status -- the interview continues with
-manual rows, and nothing blocks the pipeline.  The CRUD paths (manual rows,
-answers, skips) and the evidence bridge into ``insights`` run for real here.
+No provider key in this suite, so the AI paths must degrade to a 200 with an
+honest ``not_configured`` status -- the interview continues with manual rows
+and nothing blocks the pipeline.  The CRUD paths (manual rows, answers,
+skips), the dedup/cap logic, the completion digest and the distill
+auto-persistence run for real here (AI paths via scripted adapters).
 """
 
 from __future__ import annotations
@@ -36,8 +38,12 @@ def add_manual(client, user, project_id: str, question_text: str = "为什么华
     )
 
 
-def start_round(client, user, project_id: str):
-    return client.post(f"/api/v1/projects/{project_id}/interview/rounds", headers=auth(user))
+def next_question(client, user, project_id: str):
+    return client.post(f"/api/v1/projects/{project_id}/interview/next-question", headers=auth(user))
+
+
+def complete_interview(client, user, project_id: str):
+    return client.post(f"/api/v1/projects/{project_id}/interview/complete", headers=auth(user))
 
 
 # --------------------------------------------------------------------------
@@ -45,17 +51,18 @@ def start_round(client, user, project_id: str):
 # --------------------------------------------------------------------------
 
 
-def test_round_generation_degrades_without_a_provider_key(client, owner, project):
-    response = start_round(client, owner, project["id"])
+def test_next_question_degrades_without_a_provider_key(client, owner, project):
+    response = next_question(client, owner, project["id"])
     assert response.status_code == 200, response.text
     payload = data_of(response)
     assert payload["status"] == "not_configured"
-    assert payload["questions"] == []
-    assert payload["run_id"]
+    # nothing was persisted
+    listed = data_of(client.get("/api/v1/interview-questions", headers=auth(owner)))
+    assert listed == []
 
 
-def test_round_generation_requires_editor(client, owner, viewer, project):
-    assert start_round(client, viewer, project["id"]).status_code == 403
+def test_next_question_requires_editor(client, owner, viewer, project):
+    assert next_question(client, viewer, project["id"]).status_code == 403
 
 
 # --------------------------------------------------------------------------
@@ -262,6 +269,7 @@ class _FakeAdapter:
         self.calls.append(
             {
                 "system": messages[0].content,
+                "user": messages[1].content,
                 "max_tokens": request_metadata.max_tokens,
             }
         )
@@ -373,9 +381,9 @@ def test_distill_system_prompt_carries_size_limits(client, owner, project, monke
         _run(distill_interview(db=db, user=_user(db, owner), workspace=ws, project=db.get(Project, project["id"])))
 
     system = fake.calls[0]["system"]
-    assert "每节最多 4 条" in system
+    assert "洞察条数由证据决定" in system
     assert "不超过 80 字" in system
-    assert "limitations 最多 3 条" in system
+    assert "evidence 只引 1 个" in system
 
 
 # --------------------------------------------------------------------------
@@ -461,3 +469,254 @@ def test_normalize_without_fallback_leaves_evidence_empty():
     output = {"facts": [{"text": "f", "evidence": [{"id": "unknown"}]}], "hypotheses": [], "recommendations": []}
     normalized = _normalize_distill_evidence(output, [], [])
     assert normalized["facts"][0]["evidence"] == []
+
+
+
+
+# --------------------------------------------------------------------------
+# Batch 18: adaptive next-question -- scripted provider paths
+# --------------------------------------------------------------------------
+
+
+def _question_result(text: str, topic: str = "转化缺口", complete: bool = False, note: str = ""):
+    from app.infrastructure.llm.deepseek import LlmResult
+
+    return LlmResult(
+        structured={
+            "question_text": text,
+            "topic": topic,
+            "rationale": "报告发现中最重要的未澄清点。",
+            "interview_complete": complete,
+            "completion_note": note,
+        },
+        finish_reason="stop",
+        prompt_tokens=100,
+        completion_tokens=80,
+    )
+
+
+def _summary_result():
+    from app.infrastructure.llm.deepseek import LlmResult
+
+    return LlmResult(
+        structured={
+            "collected": ["围绕注册转化缺口收集到验证码可达性是首要疑问"],
+            "gaps": ["样本周期外的季节性影响未覆盖"],
+            "ready_for": "可直接蒸馏注册转化的结论；留存结论建议先用数据验证。",
+        },
+        finish_reason="stop",
+        prompt_tokens=100,
+        completion_tokens=120,
+    )
+
+
+def test_next_question_persists_one_pending_question(client, owner, project, monkeypatch):
+    fake = _FakeAdapter([_question_result("移动端验证码的到达率是多少？")])
+    _patch_adapter(monkeypatch, fake)
+
+    payload = data_of(next_question(client, owner, project["id"]))
+    assert payload["status"] == "ok"
+    question = payload["question"]
+    assert question["status"] == "pending"
+    assert question["source"] == "ai"
+    assert question["round_number"] == 1
+    assert len(fake.calls) == 1
+
+
+def test_next_question_ai_judged_complete_persists_nothing(client, owner, project, monkeypatch):
+    fake = _FakeAdapter([_question_result("", complete=True, note="关键信息已收集足够，建议直接进入洞察蒸馏。")])
+    _patch_adapter(monkeypatch, fake)
+
+    payload = data_of(next_question(client, owner, project["id"]))
+    assert payload == {
+        "status": "complete",
+        "reason": "ai_judged",
+        "note": "关键信息已收集足够，建议直接进入洞察蒸馏。",
+    }
+    listed = data_of(client.get("/api/v1/interview-questions", headers=auth(owner)))
+    assert listed == []
+
+
+def test_next_question_caps_at_ten_without_provider_calls(client, owner, project):
+    with _db_session() as db:
+        from app.models import InterviewQuestion
+
+        for i in range(10):
+            db.add(
+                InterviewQuestion(
+                    workspace_id=project["workspace_id"],
+                    project_id=project["id"],
+                    round_number=i + 1,
+                    topic="t",
+                    question_text=f"问题 {i}",
+                    status="answered",
+                    answer_text="a",
+                    source="ai",
+                    created_by=owner["user"]["id"],
+                )
+            )
+        db.commit()
+
+    payload = data_of(next_question(client, owner, project["id"]))
+    assert payload["status"] == "complete"
+    assert payload["reason"] == "cap_reached"
+    assert "10" in payload["note"]
+
+
+def test_next_question_duplicate_retries_once_then_completes(client, owner, project, monkeypatch):
+    # 3 provider calls total: ask -> duplicate (retry) -> duplicate (give up)
+    fake = _FakeAdapter([_question_result("验证码到达率如何？")] * 3)
+    _patch_adapter(monkeypatch, fake)
+
+    first = data_of(next_question(client, owner, project["id"]))
+    assert first["status"] == "ok"
+
+    second = data_of(next_question(client, owner, project["id"]))
+    assert second["status"] == "complete"
+    assert second["reason"] == "no_new_question"
+    assert len(fake.calls) == 3
+    # the retry attempt saw the first question as asked_question context
+    assert "asked_question" in fake.calls[1]["user"]
+
+
+def test_interview_complete_generates_and_persists_digest(client, owner, project, monkeypatch):
+    add_manual(client, owner, project["id"], answer_text="验证码收不到是主要原因。")
+    fake = _FakeAdapter([_summary_result()])
+    _patch_adapter(monkeypatch, fake)
+
+    payload = data_of(complete_interview(client, owner, project["id"]))
+    assert payload["status"] == "ok"
+    assert payload["summary"]["collected"]
+    assert payload["summary"]["ready_for"]
+
+    from app.models import InterviewSummary
+
+    with _db_session() as db:
+        row = db.scalar(select(InterviewSummary).where(InterviewSummary.project_id == project["id"]))
+        assert row is not None
+        assert "collected" in row.summary
+
+    # idempotent: a second call overwrites, never stacks
+    fake2 = _FakeAdapter([_summary_result()])
+    _patch_adapter(monkeypatch, fake2)
+    data_of(complete_interview(client, owner, project["id"]))
+    with _db_session() as db:
+        from sqlalchemy import func
+
+        count = db.scalar(
+            select(func.count()).select_from(InterviewSummary).where(InterviewSummary.project_id == project["id"])
+        )
+        assert count == 1
+
+
+def test_interview_complete_requires_an_answered_question(client, owner, project):
+    add_manual(client, owner, project["id"])  # pending, no answer
+    assert complete_interview(client, owner, project["id"]).status_code == 400
+
+
+# --------------------------------------------------------------------------
+# Batch 18: distillation auto-persists draft insights
+# --------------------------------------------------------------------------
+
+
+def _distill_claims(qid: str, texts: tuple[str, ...]):
+    def claim(text: str):
+        return {"text": text, "evidence": [{"type": "interview_question", "id": qid}]}
+
+    sections = {"facts": [], "hypotheses": [], "recommendations": []}
+    order = ["facts", "hypotheses", "recommendations"]
+    for index, text in enumerate(texts):
+        sections[order[index % 3]].append(claim(text))
+    sections["limitations"] = ["样本周期较短"]
+    return _llm_result(structured=sections, finish_reason="stop")
+
+
+def test_distill_persists_draft_insights_with_evidence(client, owner, project, monkeypatch):
+    question = add_manual(client, owner, project["id"], answer_text="验证码收不到是主要原因。")
+    fake = _FakeAdapter([_distill_claims(question["id"], ("验证码不可达是注册流失主因", "两步注册可降低流失", "增加短信重发"))])
+    _patch_adapter(monkeypatch, fake)
+
+    payload = data_of(
+        client.post("/api/v1/ai/distill-interview", headers=auth(owner), json={"project_id": project["id"]})
+    )
+    assert payload["status"] == "succeeded"
+    assert len(payload["created"]) == 3
+    assert payload["discarded_claims"] == 0
+    created = data_of(client.get(f"/api/v1/insights?project_id={project['id']}&page_size=100", headers=auth(owner)))
+    drafts = [row for row in created if row["status"] == "draft"]
+    assert len(drafts) == 3
+    assert all(row["evidence_json"] for row in drafts)
+    run_id = payload["run_id"]
+    assert all(row["ai_run_id"] == run_id for row in drafts)
+
+
+def test_distill_without_resolvable_evidence_discards_the_claim(client, owner, project, monkeypatch):
+    """No interview questions exist, so the normalization fallback cannot
+    rescue fabricated references -- the claim is discarded, not persisted."""
+
+    fake = _FakeAdapter(
+        [
+            _llm_result(
+                structured={
+                    "facts": [{"text": "伪造引用的结论", "evidence": [{"type": "interview_question", "id": "no-such"}]}],
+                    "hypotheses": [],
+                    "recommendations": [],
+                    "limitations": [],
+                },
+                finish_reason="stop",
+            )
+        ]
+    )
+    _patch_adapter(monkeypatch, fake)
+
+    payload = data_of(
+        client.post("/api/v1/ai/distill-interview", headers=auth(owner), json={"project_id": project["id"]})
+    )
+    assert payload["status"] == "succeeded"
+    assert payload["created"] == []
+    assert payload["discarded_claims"] == 1
+    created = data_of(client.get(f"/api/v1/insights?project_id={project['id']}&page_size=100", headers=auth(owner)))
+    assert created == []
+
+
+def test_redisill_refreshes_drafts_and_keeps_adjudicated(client, owner, project, monkeypatch):
+    question = add_manual(client, owner, project["id"], answer_text="验证码收不到。")
+    fake = _FakeAdapter([_distill_claims(question["id"], ("结论一", "结论二", "结论三"))])
+    _patch_adapter(monkeypatch, fake)
+    data_of(client.post("/api/v1/ai/distill-interview", headers=auth(owner), json={"project_id": project["id"]}))
+
+    drafts = data_of(client.get(f"/api/v1/insights?project_id={project['id']}&page_size=100", headers=auth(owner)))
+    keep_id = drafts[0]["id"]
+    drop_id = drafts[1]["id"]
+    # user adjudicates: confirm one (with its evidence), reject another
+    confirmed = data_of(
+        client.patch(
+            f"/api/v1/insights/{keep_id}",
+            headers=auth(owner),
+            json={"status": "confirmed", "evidence": drafts[0]["evidence_json"]},
+        )
+    )
+    assert confirmed["status"] == "confirmed"
+    rejected = data_of(
+        client.patch(
+            f"/api/v1/insights/{drop_id}",
+            headers=auth(owner),
+            json={"status": "rejected"},
+        )
+    )
+    assert rejected["status"] == "rejected"
+
+    # re-distill with new claims: drafts refresh, adjudicated survive
+    fake2 = _FakeAdapter([_distill_claims(question["id"], ("新结论一", "新结论二"))])
+    _patch_adapter(monkeypatch, fake2)
+    payload = data_of(
+        client.post("/api/v1/ai/distill-interview", headers=auth(owner), json={"project_id": project["id"]})
+    )
+    assert len(payload["created"]) == 2
+
+    rows = data_of(client.get(f"/api/v1/insights?project_id={project['id']}&page_size=100", headers=auth(owner)))
+    statuses = {row["id"]: row["status"] for row in rows}
+    assert statuses[keep_id] == "confirmed"
+    assert statuses[drop_id] == "rejected"
+    survivors = [row for row in rows if row["status"] == "draft"]
+    assert {row["title"] for row in survivors} == {"新结论一", "新结论二"}

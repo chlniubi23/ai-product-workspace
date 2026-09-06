@@ -670,6 +670,25 @@ class InterviewQuestion(Base):
     answered_at = Column(DateTime, nullable=True)
 
 
+class InterviewSummary(Base):
+    """End-of-interview digest, one per project (batch 18).
+
+    Written when the interview completes -- AI judged the information
+    sufficient, the question cap was hit, or the user ended it manually.
+    Re-running completion overwrites the row (project_id is unique).  The
+    structured digest (collected/gaps/ready_for) is stored JSON-serialized.
+    """
+
+    __tablename__ = "interview_summaries"
+    id = Column(String(36), primary_key=True, default=new_id)
+    workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True, unique=True)
+    summary = Column(Text, default="", nullable=False)  # JSON: {collected, gaps, ready_for}
+    ai_run_id = Column(String(36), nullable=True)
+    created_by = Column(String(36), ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, default=now, nullable=False)
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
     id = Column(String(36), primary_key=True, default=new_id)
