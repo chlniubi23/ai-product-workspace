@@ -28,7 +28,6 @@ export const pipelinePhases = [
 export const utilityNavItems = [
   { href: "/history", label: "历史", icon: "file" },
   { href: "/data", label: "数据", icon: "database" },
-  { href: "/settings", label: "设置", icon: "settings" },
 ] as const;
 
 export const workbenchNavItem = { href: "/", label: "工作台", icon: "layout" } as const;
@@ -63,6 +62,8 @@ export const legacyRouteAliases: Record<string, string> = {
   "/documents": "/stage11-prd",
   "/step5-deliver": "/stage11-prd",
   "/projects": "/",
+  // Batch 26: the settings page was removed; budgets are managed via env/db.
+  "/settings": "/",
   // Batch 4: the discussion stage merged into the interview; 9-12 renumbered 8-11.
   "/stage6-insight": "/stage6-interview",
   "/stage8-discussion": "/stage6-interview",

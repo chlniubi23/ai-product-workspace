@@ -86,12 +86,10 @@ export default function DataPage() {
   } | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
-  const [activeTab, setActiveTab] = useState("datasets");
   const [showUpload, setShowUpload] = useState(false);
   const [file, setFile] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [query, setQuery] = useState("");
-  const [riskOnly, setRiskOnly] = useState(false);
   const [notice, setNotice] = useState("");
   const loadDatasets = async () => {
     if (!accessToken()) return;
@@ -154,11 +152,7 @@ export default function DataPage() {
       setNotice(cause instanceof Error ? cause.message : "上传失败");
     }
   };
-  const filtered = items.filter(
-    (dataset) =>
-      (dataset.name.includes(query) || dataset.project.includes(query)) &&
-      (!riskOnly || dataset.status !== "可分析"),
-  );
+  const filtered = items.filter((dataset) => dataset.name.includes(query) || dataset.project.includes(query));
   const versionCount = useMemo(
     () => items.reduce((total, item) => total + (item.versionCount || 0), 0),
     [items],
@@ -181,7 +175,6 @@ export default function DataPage() {
       ),
     [items],
   );
-  const riskCount = useMemo(() => items.filter((item) => item.status !== "可分析").length, [items]);
   const monthImports = useMemo(() => {
     const start = new Date();
     start.setDate(1);
@@ -231,7 +224,7 @@ export default function DataPage() {
           </div>
         )}
       </section>
-      <div className="grid grid-4">
+      <div className="grid grid-3">
         <div className="card metric-card">
           <div className="metric-label">数据集</div>
           <div className="metric-value">{loading ? "-" : items.length}</div>
@@ -248,162 +241,119 @@ export default function DataPage() {
           </div>
         </div>
         <div className="card metric-card">
-          <div className="metric-label">高风险数据集</div>
-          <div className="metric-value">{loading ? "-" : riskCount}</div>
-          <div className="metric-change change-down">
-            <X size={12} />
-            需要人工确认
-          </div>
-        </div>
-        <div className="card metric-card">
           <div className="metric-label">本月导入版本</div>
           <div className="metric-value">{loading ? "-" : monthImports}</div>
           <div className="metric-change change-neutral">基于服务端创建时间</div>
         </div>
-      </div>
-      <div className="tabs" style={{ width: "fit-content", marginTop: 23 }}>
-        <button
-          className={`tab ${activeTab === "datasets" ? "active" : ""}`}
-          onClick={() => setActiveTab("datasets")}
-        >
-          数据集 <span style={{ color: "var(--faint)" }}>{items.length}</span>
-        </button>
-        <button
-          className={`tab ${activeTab === "quality" ? "active" : ""}`}
-          onClick={() => setActiveTab("quality")}
-        >
-          质量报告 <span style={{ color: "var(--warning)" }}>{riskCount}</span>
-        </button>
-        <button
-          className={`tab ${activeTab === "versions" ? "active" : ""}`}
-          onClick={() => setActiveTab("versions")}
-        >
-          版本记录 <span style={{ color: "var(--faint)" }}>{versionCount}</span>
-        </button>
       </div>
       {loadError && (
         <div className="card card-pad" role="status" style={{ marginTop: 16, color: "var(--danger)" }}>
           {loadError}
         </div>
       )}
-      {activeTab === "quality" ? (
-        <QualityOverview rows={items.filter((item) => item.status !== "可分析")} />
-      ) : activeTab === "versions" ? (
-        <VersionsOverview rows={items} />
-      ) : (
-        <>
-          <div className="toolbar" style={{ marginTop: 18 }}>
-            <div className="toolbar-left">
-              <div className="search">
-                <Search size={15} />
-                <input
-                  aria-label="搜索数据集"
-                  placeholder="搜索数据集或项目"
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                />
-              </div>
-              <button
-                className={`filter-chip ${!riskOnly ? "active" : ""}`}
-                onClick={() => setRiskOnly(false)}
-              >
-                全部类型
-              </button>
-              <button className={`filter-chip ${riskOnly ? "active" : ""}`} onClick={() => setRiskOnly(true)}>
-                仅有风险
-              </button>
+      <>
+        <div className="toolbar" style={{ marginTop: 18 }}>
+          <div className="toolbar-left">
+            <div className="search">
+              <Search size={15} />
+              <input
+                aria-label="搜索数据集"
+                placeholder="搜索数据集或项目"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+              />
             </div>
-            <span style={{ color: "var(--faint)", fontSize: 12 }}>{filtered.length} 个数据集</span>
           </div>
-          <section className="card table-wrap">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>数据集</th>
-                  <th>项目</th>
-                  <th>规模</th>
-                  <th>版本</th>
-                  <th>质量</th>
-                  <th>状态</th>
-                  <th>最近更新</th>
-                  <th />
+          <span style={{ color: "var(--faint)", fontSize: 12 }}>{filtered.length} 个数据集</span>
+        </div>
+        <section className="card table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>数据集</th>
+                <th>项目</th>
+                <th>规模</th>
+                <th>版本</th>
+                <th>质量</th>
+                <th>状态</th>
+                <th>最近更新</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((dataset) => (
+                <tr key={dataset.id}>
+                  <td>
+                    <Link
+                      href={`/data/${dataset.id}`}
+                      style={{ display: "flex", alignItems: "center", gap: 9 }}
+                    >
+                      <span className="bullet-icon" style={{ width: 28, height: 28 }}>
+                        <Database size={14} />
+                      </span>
+                      <span>
+                        <strong>{dataset.name}</strong>
+                        <small
+                          style={{ display: "block", marginTop: 3, color: "var(--faint)", fontSize: 10 }}
+                        >
+                          {dataset.kind}
+                        </small>
+                      </span>
+                    </Link>
+                  </td>
+                  <td>{dataset.project}</td>
+                  <td>
+                    {dataset.rows} 行 · {dataset.columns} 列
+                  </td>
+                  <td>
+                    <span className="tag tag-slate">{dataset.version}</span>
+                  </td>
+                  <td>
+                    <span
+                      style={{
+                        color:
+                          dataset.quality > 90
+                            ? "var(--success)"
+                            : dataset.quality > 80
+                              ? "var(--warning)"
+                              : "var(--danger)",
+                        fontWeight: 700,
+                      }}
+                    >
+                      {dataset.quality}
+                    </span>
+                    <span style={{ color: "var(--faint)" }}>/100</span>
+                  </td>
+                  <td>
+                    <span
+                      className={`tag ${dataset.status === "可分析" ? "tag-green" : dataset.status === "有风险" ? "tag-rose" : "tag-amber"}`}
+                    >
+                      {dataset.status}
+                    </span>
+                  </td>
+                  <td>{dataset.updated}</td>
+                  <td>
+                    <button className="icon-btn" onClick={() => undefined} aria-label="更多操作">
+                      <MoreHorizontal size={15} />
+                    </button>
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {filtered.map((dataset) => (
-                  <tr key={dataset.id}>
-                    <td>
-                      <Link
-                        href={`/data/${dataset.id}`}
-                        style={{ display: "flex", alignItems: "center", gap: 9 }}
-                      >
-                        <span className="bullet-icon" style={{ width: 28, height: 28 }}>
-                          <Database size={14} />
-                        </span>
-                        <span>
-                          <strong>{dataset.name}</strong>
-                          <small
-                            style={{ display: "block", marginTop: 3, color: "var(--faint)", fontSize: 10 }}
-                          >
-                            {dataset.kind}
-                          </small>
-                        </span>
-                      </Link>
-                    </td>
-                    <td>{dataset.project}</td>
-                    <td>
-                      {dataset.rows} 行 · {dataset.columns} 列
-                    </td>
-                    <td>
-                      <span className="tag tag-slate">{dataset.version}</span>
-                    </td>
-                    <td>
-                      <span
-                        style={{
-                          color:
-                            dataset.quality > 90
-                              ? "var(--success)"
-                              : dataset.quality > 80
-                                ? "var(--warning)"
-                                : "var(--danger)",
-                          fontWeight: 700,
-                        }}
-                      >
-                        {dataset.quality}
-                      </span>
-                      <span style={{ color: "var(--faint)" }}>/100</span>
-                    </td>
-                    <td>
-                      <span
-                        className={`tag ${dataset.status === "可分析" ? "tag-green" : dataset.status === "有风险" ? "tag-rose" : "tag-amber"}`}
-                      >
-                        {dataset.status}
-                      </span>
-                    </td>
-                    <td>{dataset.updated}</td>
-                    <td>
-                      <button className="icon-btn" onClick={() => undefined} aria-label="更多操作">
-                        <MoreHorizontal size={15} />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {filtered.length === 0 && (
-              <div className="empty-state">
-                <Database size={19} />
-                <strong>{loading ? "正在加载数据集" : "没有匹配的数据集"}</strong>
-                <p>
-                  {loading
-                    ? "正在从服务端读取当前工作空间的数据。"
-                    : "尝试调整搜索关键词，或上传一个新的 CSV/XLSX 文件。"}
-                </p>
-              </div>
-            )}
-          </section>
-        </>
-      )}
+              ))}
+            </tbody>
+          </table>
+          {filtered.length === 0 && (
+            <div className="empty-state">
+              <Database size={19} />
+              <strong>{loading ? "正在加载数据集" : "没有匹配的数据集"}</strong>
+              <p>
+                {loading
+                  ? "正在从服务端读取当前工作空间的数据。"
+                  : "尝试调整搜索关键词，或上传一个新的 CSV/XLSX 文件。"}
+              </p>
+            </div>
+          )}
+        </section>
+      </>
       {showUpload && (
         <UploadModal
           activeProjectName={activeProject?.name}
@@ -501,133 +451,6 @@ function UploadModal({
         </div>
       </div>
     </div>
-  );
-}
-
-function QualityOverview({ rows }: { rows: DatasetRow[] }) {
-  return (
-    <div className="grid grid-2" style={{ marginTop: 18 }}>
-      <section className="card card-pad">
-        <div className="card-head">
-          <div>
-            <h2 className="card-title">待确认质量报告</h2>
-            <div className="card-kicker">高风险项目需要人工确认后才能进入分析</div>
-          </div>
-          <span className="tag tag-rose">{rows.length} 项</span>
-        </div>
-        {rows.length ? (
-          <div className="list">
-            {rows.map((row) => (
-              <Link href={`/data/${row.id}`} className="alert-row" key={row.id}>
-                <div className={`alert-icon ${row.status === "有风险" ? "tag-rose" : "tag-amber"}`}>
-                  <X size={15} />
-                </div>
-                <div className="alert-copy">
-                  <strong>
-                    {row.name} · {row.version}
-                  </strong>
-                  <p>
-                    {row.project} · 质量 {row.quality}/100，状态：{row.status}
-                  </p>
-                </div>
-                <span className="alert-link">处理</span>
-              </Link>
-            ))}
-          </div>
-        ) : (
-          <div className="empty-state" style={{ minHeight: 140 }}>
-            <Check size={18} />
-            <strong>暂无待确认质量报告</strong>
-            <p>新导入的数据集会在服务端完成质量检查后显示在这里。</p>
-          </div>
-        )}
-      </section>
-      <section className="card card-pad">
-        <div className="card-head">
-          <div>
-            <h2 className="card-title">质量规则</h2>
-            <div className="card-kicker">以下规则对每个数据集固定启用，结果可复现</div>
-          </div>
-        </div>
-        <ul className="list">
-          <li className="toggle-row">
-            <div className="toggle-copy">
-              <strong>字段缺失率统计</strong>
-              <p>逐字段计算缺失比例，计入质量评分</p>
-            </div>
-          </li>
-          <li className="toggle-row">
-            <div className="toggle-copy">
-              <strong>重复记录检测</strong>
-              <p>只提示，不修改原始版本</p>
-            </div>
-          </li>
-          <li className="toggle-row">
-            <div className="toggle-copy">
-              <strong>异常值 IQR 检测</strong>
-              <p>对数值列做四分位距检测，只提示不修改数据</p>
-            </div>
-          </li>
-        </ul>
-      </section>
-    </div>
-  );
-}
-
-function VersionsOverview({ rows }: { rows: DatasetRow[] }) {
-  return (
-    <section className="card table-wrap" style={{ marginTop: 18 }}>
-      <div className="card-head" style={{ padding: "15px 17px 0" }}>
-        <div>
-          <h2 className="card-title">版本记录</h2>
-          <div className="card-kicker">每个数据集的最新服务端版本和版本数量。</div>
-        </div>
-        <span className="tag tag-blue">{rows.reduce((sum, row) => sum + row.versionCount, 0)} 个版本</span>
-      </div>
-      <table className="data-table">
-        <thead>
-          <tr>
-            <th>数据集</th>
-            <th>项目</th>
-            <th>最新版本</th>
-            <th>规模</th>
-            <th>更新时间</th>
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr key={row.id}>
-              <td>
-                <Link href={`/data/${row.id}`}>
-                  <strong>{row.name}</strong>
-                </Link>
-              </td>
-              <td>{row.project}</td>
-              <td>
-                <span className="tag tag-slate">{row.version}</span> · 共 {row.versionCount} 个
-              </td>
-              <td>
-                {row.rows} 行 · {row.columns} 列
-              </td>
-              <td>{row.updated}</td>
-              <td>
-                <Link className="btn btn-subtle btn-sm" href={`/data/${row.id}`}>
-                  查看
-                </Link>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {!rows.length && (
-        <div className="empty-state" style={{ minHeight: 160 }}>
-          <HistoryIcon />
-          <strong>暂无服务端版本</strong>
-          <p>上传数据后，版本记录会显示在这里。</p>
-        </div>
-      )}
-    </section>
   );
 }
 

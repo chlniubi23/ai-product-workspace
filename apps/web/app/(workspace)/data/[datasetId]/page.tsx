@@ -137,10 +137,6 @@ export default function DatasetDetailPage({ params }: { params: { datasetId: str
   useEffect(() => {
     if (!selected?.id || !accessToken()) return;
     setQuality(selectedReport || null);
-    if (activeTab === "quality")
-      void apiRequest<QualityReport>(`/dataset-versions/${selected.id}/quality-report`)
-        .then(setQuality)
-        .catch(() => undefined);
     if (activeTab === "preview")
       void apiRequest<PreviewData>(`/dataset-versions/${selected.id}/preview?page_size=12`)
         .then(setPreview)
@@ -278,18 +274,6 @@ export default function DatasetDetailPage({ params }: { params: { datasetId: str
         >
           数据预览
         </button>
-        <button
-          className={`tab ${activeTab === "quality" ? "active" : ""}`}
-          onClick={() => setActiveTab("quality")}
-        >
-          质量报告
-        </button>
-        <button
-          className={`tab ${activeTab === "versions" ? "active" : ""}`}
-          onClick={() => setActiveTab("versions")}
-        >
-          版本记录 <span style={{ color: "var(--faint)" }}>{versions.length}</span>
-        </button>
       </div>
       {activeTab === "dictionary" && (
         <Dictionary
@@ -300,10 +284,6 @@ export default function DatasetDetailPage({ params }: { params: { datasetId: str
         />
       )}
       {activeTab === "preview" && <Preview data={preview} fallback={summary?.sample} />}
-      {activeTab === "quality" && <Quality summary={summary} score={score} />}
-      {activeTab === "versions" && (
-        <Versions rows={versions} selected={selected?.id} onSelect={selectVersion} />
-      )}
       {notice && (
         <div className="toast show" role="status">
           {notice}
@@ -464,128 +444,6 @@ function Preview({ data, fallback }: { data: PreviewData | null; fallback?: Reco
           <Table2 size={19} />
           <strong>暂无预览样本</strong>
           <p>当前版本没有可展示样本，或预览请求尚未完成。</p>
-        </div>
-      )}
-    </section>
-  );
-}
-function Quality({ summary, score }: { summary?: QualitySummary; score: number }) {
-  const report = summary || {};
-  const missing: Record<string, number> = report.missing_values || report.summary_json?.missing_values || {};
-  const duplicate = report.duplicate_rows ?? report.summary_json?.duplicate_rows ?? 0;
-  const typeErrors: Record<string, number> = report.type_errors || report.summary_json?.type_errors || {};
-  const anomalies: Record<string, number> = report.anomalies || report.summary_json?.anomalies || {};
-  const items = [
-    { label: "缺失值", value: Object.values(missing).reduce((sum, value) => sum + value, 0) },
-    { label: "重复行", value: duplicate },
-    { label: "类型错误", value: Object.values(typeErrors).reduce((sum, value) => sum + value, 0) },
-    { label: "异常值", value: Object.values(anomalies).reduce((sum, value) => sum + value, 0) },
-  ];
-  return (
-    <section className="grid grid-2" style={{ marginTop: 15 }}>
-      <div className="card card-pad">
-        <div className="card-head">
-          <div>
-            <h2 className="card-title">质量报告</h2>
-            <div className="card-kicker">由服务端 Pandas 规则计算，数字可复现。</div>
-          </div>
-          <span className={`tag ${score >= 95 ? "tag-green" : "tag-amber"}`}>{score}/100</span>
-        </div>
-        <div className="list">
-          {items.map((item) => (
-            <div className="list-row" key={item.label}>
-              <div className="list-main">
-                <strong>{item.label}</strong>
-                <small>当前版本检测结果</small>
-              </div>
-              <span className={`tag ${item.value ? "tag-amber" : "tag-green"}`}>{item.value}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-      <div className="card card-pad">
-        <div className="empty-state" style={{ minHeight: 170 }}>
-          <ShieldAlert size={19} />
-          <strong>{score >= 95 ? "质量达标，可进入分析" : "存在风险，建议关注缺失与异常"}</strong>
-          <p>数据版本不可变；统计全部由确定性计算生成。</p>
-        </div>
-      </div>
-    </section>
-  );
-}
-function Versions({
-  rows,
-  selected,
-  onSelect,
-}: {
-  rows: Version[];
-  selected?: string;
-  onSelect: (id: string) => void;
-}) {
-  return (
-    <section className="card table-wrap" style={{ marginTop: 15 }}>
-      <div className="card-head" style={{ padding: "15px 17px 0" }}>
-        <div>
-          <h2 className="card-title">版本记录</h2>
-          <div className="card-kicker">每次上传都会生成不可变版本，可回溯父版本。</div>
-        </div>
-        <span className="tag tag-blue">{rows.length || 1} 个版本</span>
-      </div>
-      {rows.length ? (
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>版本</th>
-              <th>文件</th>
-              <th>规模</th>
-              <th>状态</th>
-              <th>来源</th>
-              <th>创建时间</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((version) => (
-              <tr key={version.id}>
-                <td>
-                  <strong>v{version.version_number}</strong>
-                </td>
-                <td>{version.file_name || "-"}</td>
-                <td>
-                  {version.row_count?.toLocaleString() || 0} 行 · {version.column_count || 0} 列
-                </td>
-                <td>
-                  <span
-                    className={`tag ${version.status === "ready" || version.status === "confirmed" ? "tag-green" : "tag-amber"}`}
-                  >
-                    {version.status || "unknown"}
-                  </span>
-                </td>
-                <td>
-                  {version.parent_version_id ? `基于 ${version.parent_version_id.slice(0, 8)}` : "原始上传"}
-                </td>
-                <td>{version.created_at ? new Date(version.created_at).toLocaleString("zh-CN") : "-"}</td>
-                <td>
-                  <button className="btn btn-subtle btn-sm" onClick={() => onSelect(version.id)}>
-                    {selected === version.id ? (
-                      <>
-                        <Check size={12} />
-                        当前
-                      </>
-                    ) : (
-                      "查看"
-                    )}
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      ) : (
-        <div className="empty-state" style={{ minHeight: 160 }}>
-          <History size={19} />
-          <strong>暂无服务端版本</strong>
-          <p>登录并上传数据后，版本记录会显示在这里。</p>
         </div>
       )}
     </section>

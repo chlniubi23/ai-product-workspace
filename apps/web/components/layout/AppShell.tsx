@@ -2,24 +2,29 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import {
   Check,
   ChevronDown,
   ChevronRight,
   Database,
+  KeyRound,
   FileText,
   Gavel,
   LayoutDashboard,
   Lightbulb,
   Menu,
   MessageSquare,
+  Pencil,
   Route,
   Settings,
   ShieldCheck,
   Sparkles,
   Target,
+  LogOut,
+  UserRound,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import {
   navItems,
   pipelineNavItems,
@@ -76,6 +81,87 @@ export function AppShell({ children }: Readonly<{ children: React.ReactNode }>) 
     workspaceId: "",
   });
   const [workflow, setWorkflow] = useState<WorkflowSnapshot>();
+
+  // Batch 26 user center: a small popover over the sidebar user block.
+  const [userMenu, setUserMenu] = useState<"closed" | "menu" | "name" | "password">("closed");
+  const [nameDraft, setNameDraft] = useState("");
+  const [pwdCurrent, setPwdCurrent] = useState("");
+  const [pwdNew, setPwdNew] = useState("");
+  const [pwdConfirm, setPwdConfirm] = useState("");
+  const [profileBusy, setProfileBusy] = useState(false);
+  const [profileError, setProfileError] = useState("");
+  const [profileNotice, setProfileNotice] = useState("");
+  const userMenuRef = useRef<HTMLDivElement>(null);
+
+  // Outside click / Esc closes the popover.
+  useEffect(() => {
+    if (userMenu === "closed") return;
+    const onPointer = (event: MouseEvent) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) {
+        setUserMenu("closed");
+      }
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setUserMenu("closed");
+    };
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [userMenu]);
+
+  const applyProfile = (name: string) => setIdentity((current) => ({ ...current, name }));
+
+  async function saveName() {
+    const name = nameDraft.trim();
+    if (!name || profileBusy) return;
+    setProfileBusy(true);
+    setProfileError("");
+    setProfileNotice("");
+    try {
+      const result = await apiRequest<{ user?: { name?: string } }>("/me", {
+        method: "PATCH",
+        body: JSON.stringify({ name }),
+      });
+      applyProfile(result.user?.name || name);
+      setProfileNotice("昵称已更新");
+      setUserMenu("menu");
+    } catch (cause) {
+      setProfileError(cause instanceof Error ? cause.message : "修改失败");
+    } finally {
+      setProfileBusy(false);
+    }
+  }
+
+  async function savePassword() {
+    if (profileBusy) return;
+    if (pwdNew.length < 8 || pwdNew !== pwdConfirm) {
+      setProfileError(pwdNew !== pwdConfirm ? "两次输入的新密码不一致" : "新密码至少 8 位");
+      return;
+    }
+    setProfileBusy(true);
+    setProfileError("");
+    setProfileNotice("");
+    try {
+      await apiRequest("/me", {
+        method: "PATCH",
+        body: JSON.stringify({ current_password: pwdCurrent, new_password: pwdNew }),
+      });
+      setProfileNotice("密码已更新");
+      setUserMenu("menu");
+    } catch (cause) {
+      setProfileError(cause instanceof Error ? cause.message : "修改失败");
+    } finally {
+      setProfileBusy(false);
+    }
+  }
+
+  function logout() {
+    clearSession();
+    window.location.href = "/login";
+  }
 
   useEffect(() => {
     // The session marker cookie and the bearer token are separate stores, so a
@@ -341,12 +427,141 @@ export function AppShell({ children }: Readonly<{ children: React.ReactNode }>) 
             </div>
             <ChevronDown size={14} />
           </div>
-          <div className="user-mini">
-            <div className="avatar">{identity.name.slice(0, 2)}</div>
-            <div>
-              <p>{identity.name}</p>
-              <small>{identity.role}</small>
-            </div>
+          <div ref={userMenuRef} style={{ position: "relative" }}>
+            <button
+              type="button"
+              className="user-mini"
+              style={{
+                width: "100%",
+                border: 0,
+                background: "transparent",
+                textAlign: "left",
+                cursor: "pointer",
+                padding: "12px 7px 0",
+              }}
+              aria-haspopup="menu"
+              aria-expanded={userMenu !== "closed"}
+              onClick={() => {
+                setProfileError("");
+                setProfileNotice("");
+                setNameDraft(identity.name);
+                setUserMenu(userMenu === "closed" ? "menu" : "closed");
+              }}
+            >
+              <div className="avatar">{identity.name.slice(0, 2)}</div>
+              <div>
+                <p>{identity.name}</p>
+                <small>{identity.role}</small>
+              </div>
+              <ChevronDown size={14} style={{ marginLeft: "auto", color: "var(--faint)" }} />
+            </button>
+            {userMenu !== "closed" && (
+              <div
+                role="menu"
+                style={{
+                  position: "absolute",
+                  bottom: "100%",
+                  left: 0,
+                  right: 0,
+                  marginBottom: 6,
+                  background: "var(--panel)",
+                  border: "1px solid var(--line)",
+                  borderRadius: "var(--radius-lg)",
+                  boxShadow: "var(--shadow-overlay)",
+                  padding: 12,
+                  display: "grid",
+                  gap: 6,
+                  zIndex: 50,
+                }}
+              >
+                {profileError && (
+                  <p className="form-error" style={{ margin: 0 }} role="alert">
+                    {profileError}
+                  </p>
+                )}
+                {profileNotice && (
+                  <p style={{ margin: 0, fontSize: 12, color: "var(--success)" }} role="status">
+                    {profileNotice}
+                  </p>
+                )}
+                {userMenu === "menu" && (
+                  <>
+                    <UserMenuItem icon={UserRound} label="修改昵称" onClick={() => setUserMenu("name")} />
+                    <UserMenuItem icon={KeyRound} label="修改密码" onClick={() => setUserMenu("password")} />
+                    <UserMenuItem icon={LogOut} label="退出登录" onClick={logout} danger />
+                  </>
+                )}
+                {userMenu === "name" && (
+                  <>
+                    <label style={{ display: "grid", gap: 4 }}>
+                      <span style={{ fontSize: 12, color: "var(--muted)" }}>新昵称</span>
+                      <input
+                        value={nameDraft}
+                        maxLength={120}
+                        onChange={(event) => setNameDraft(event.target.value)}
+                        style={{
+                          height: 34,
+                          border: "1px solid var(--line)",
+                          borderRadius: "var(--radius)",
+                          padding: "0 9px",
+                        }}
+                      />
+                    </label>
+                    <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                      <button className="btn btn-subtle btn-sm" onClick={() => setUserMenu("menu")}>
+                        返回
+                      </button>
+                      <button
+                        className="btn btn-primary btn-sm"
+                        disabled={profileBusy || !nameDraft.trim()}
+                        onClick={() => void saveName()}
+                      >
+                        保存
+                      </button>
+                    </div>
+                  </>
+                )}
+                {userMenu === "password" && (
+                  <>
+                    {(
+                      [
+                        ["当前密码", pwdCurrent, setPwdCurrent],
+                        ["新密码（至少 8 位）", pwdNew, setPwdNew],
+                        ["确认新密码", pwdConfirm, setPwdConfirm],
+                      ] as Array<[string, string, (value: string) => void]>
+                    ).map(([label, value, setter]) => (
+                      <label key={label} style={{ display: "grid", gap: 4 }}>
+                        <span style={{ fontSize: 12, color: "var(--muted)" }}>{label}</span>
+                        <input
+                          type="password"
+                          value={value}
+                          autoComplete="new-password"
+                          onChange={(event) => setter(event.target.value)}
+                          style={{
+                            height: 34,
+                            border: "1px solid var(--line)",
+                            borderRadius: "var(--radius)",
+                            padding: "0 9px",
+                          }}
+                        />
+                      </label>
+                    ))}
+                    <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                      <button className="btn btn-subtle btn-sm" onClick={() => setUserMenu("menu")}>
+                        返回
+                      </button>
+                      <button
+                        className="btn btn-primary btn-sm"
+                        disabled={profileBusy || !pwdCurrent || !pwdNew || !pwdConfirm}
+                        onClick={() => void savePassword()}
+                      >
+                        更新密码
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </aside>
@@ -370,5 +585,48 @@ export function AppShell({ children }: Readonly<{ children: React.ReactNode }>) 
         {children}
       </main>
     </div>
+  );
+}
+
+function UserMenuItem({
+  icon,
+  label,
+  onClick,
+  danger = false,
+}: {
+  icon: LucideIcon;
+  label: string;
+  onClick: () => void;
+  danger?: boolean;
+}) {
+  const IconComponent = icon;
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      onClick={onClick}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        height: 34,
+        padding: "0 10px",
+        borderRadius: "var(--radius-sm)",
+        border: 0,
+        background: "transparent",
+        color: danger ? "var(--danger)" : "var(--ink)",
+        fontSize: 13,
+        cursor: "pointer",
+      }}
+      onMouseEnter={(event) => {
+        event.currentTarget.style.background = "var(--fill)";
+      }}
+      onMouseLeave={(event) => {
+        event.currentTarget.style.background = "transparent";
+      }}
+    >
+      <IconComponent size={14} />
+      {label}
+    </button>
   );
 }
