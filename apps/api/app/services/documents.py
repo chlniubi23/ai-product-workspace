@@ -79,6 +79,66 @@ def _outline_system_prompt(document_type: str, audience: str) -> str:
     )
 
 
+_DOC_OUTLINE_FIELD_LABEL_LIMIT = 40
+_DOC_OUTLINE_FINDING_LIMIT = 12
+
+
+def _outline_context(doc_context: dict[str, Any]) -> dict[str, Any]:
+    """Batch 25: the summary layer the outline call sees instead of the full
+    aggregate context (9k tokens -> a fraction of that, ~70s -> ~20-30s).
+
+    Goal, the findings digest, the decision-chain axis and the field-semantics
+    labels are what an outline actually needs; the per-dataset aggregates stay
+    available to the section writers, which is where the numbers get used.
+    Direct structured dict (same convention as the section context add-ons --
+    never re-passed through the firewall).
+    """
+
+    safe = doc_context.get("safe_context") or {}
+    labels: list[str] = []
+    for item in doc_context.get("field_labels") or []:
+        text = str(item).strip()
+        if text and text not in labels:
+            labels.append(text)
+    return {
+        "goal": safe.get("goal") or "",
+        "question": safe.get("question") or "",
+        "findings": [str(item) for item in (doc_context.get("findings_summary") or [])[:_DOC_OUTLINE_FINDING_LIMIT]],
+        "solution": doc_context.get("solution"),
+        "decision": doc_context.get("decision"),
+        "field_labels": labels[:_DOC_OUTLINE_FIELD_LABEL_LIMIT],
+    }
+
+
+# Batch 25: the harmonize output must rewrite sections verbatim (tables and
+# numbers included), so a batch has to stay well under HARD_OUTPUT_CAP --
+# a full 10-section PRD (~20k chars) physically cannot fit one 16384-token
+# reply (found in the live run: LLM_PROVIDER_ERROR at a pinned 16384).  Six
+# sections per call keeps the worst case around ~12k tokens.
+_HARMONIZE_BATCH_SIZE = 6
+
+
+def _harmonize_system_prompt() -> str:
+    """Batch 25 pass 3: whole-document coherence pass over the assembled sections.
+
+    Runs per batch of sections; ``document_headings`` in the context carries
+    the full chapter order so cross-batch duplication also collapses to a
+    short back-reference instead of a repeat.
+    """
+
+    return (
+        "你是文档主编，对一份已经写完的多节文档做连贯校对。给定的 sections 是全文的一个批次，"
+        "document_headings 是全文档的章节顺序。任务只有两件："
+        "1) 消除重复——同一论点、同一表格或同一段论证在本批次多个章节（或已在其他批次章节出现，"
+        "以 document_headings 为准）重复时，只保留最合适的一节，其余位置改写为一句简短承接"
+        "（如「详见「X」一节」）；2) 平滑章节衔接——过渡自然、指代一致、语气统一。"
+        "铁律：表格、数字、证据引用（证据标题或 id）必须逐字保留，不得改写数值或改述表格内容；"
+        "不得新增任何论断、数据、建议或结论；不得合并、拆分、增加或删除章节，"
+        "heading 与章节顺序必须与输入完全一致；每节只输出该节改写后的正文。"
+        '只输出 JSON：{"sections": [{"heading", "content"}, ...]}，节数与顺序与输入相同。'
+    )
+
+
 def _section_system_prompt(
     document_type: str,
     title: str,
@@ -90,12 +150,17 @@ def _section_system_prompt(
     audience: str,
     solution: dict[str, Any] | None,
     decision: dict[str, Any] | None,
+    outline_plan: str = "",
 ) -> str:
     """Pass-2 prompt for one section (batch 17).
 
     The decision chain is the main narrative axis for a PRD: the approved
     decision and the selected solution are quoted directly so the section
     writes the product design around them instead of generic analysis.
+    Batch 25: parallel sections get ``outline_plan`` (the full section plan)
+    instead of ``written_summary`` -- their anti-duplication contract is "stay
+    inside your outline slot", because the previously-written summary does not
+    exist while siblings are still being written.
     """
 
     axis = ""
@@ -138,6 +203,15 @@ def _section_system_prompt(
             if written_summary
             else ""
         )
+        + (
+            # Batch 25 wave-2 contract: no written summary exists while sibling
+            # sections are being written in parallel; scope discipline comes
+            # from the outline plan instead.
+            f"各节范围以大纲为准，不得与其他章节重复（其他章节由并行撰写，重复内容会在终稿校对中被删除）。"
+            f"大纲全文（你的节是第 {index} 项）：{outline_plan}"
+            if outline_plan
+            else ""
+        )
         + ' 只输出 JSON：{"heading": 节标题, "content": Markdown 正文}。'
     )
 
@@ -167,6 +241,11 @@ def _document_payload(document: Document, db: Session) -> dict[str, Any]:
     # delivery page can resume its poll after a page switch.
     active = _active_document_generation_job(db, document.id)
     payload["generation_job_id"] = active.id if active is not None else None
+    # Batch 25: live progress for the same in-flight job, so a page returning
+    # mid-generation can render the bar immediately (no 2s poll wait).
+    payload["generation_progress"] = (
+        {"progress": active.progress, "current_step": active.current_step} if active is not None else None
+    )
     return payload
 
 
@@ -372,6 +451,11 @@ def _build_document_context(body: DocumentGenerate, db: Session, user: User) -> 
         .order_by(AutoAnalysisReport.created_at.desc())
         .limit(1)
     )
+    # Batch 25: the slim outline layer needs the findings digest and the
+    # field-semantics labels; collected while the artifacts are assembled so
+    # no second query is required.
+    findings_summary: list[str] = []
+    field_labels: list[str] = []
     if report is not None:
         deterministic = report.deterministic_json if isinstance(report.deterministic_json, dict) else {}
         datasets = deterministic.get("datasets")
@@ -379,6 +463,11 @@ def _build_document_context(body: DocumentGenerate, db: Session, user: User) -> 
             for dataset in datasets[:_DOC_DATASET_SUMMARY_LIMIT]:
                 if not isinstance(dataset, dict):
                     continue
+                if dataset.get("dataset_label"):
+                    field_labels.append(f"{dataset.get('name')}（{dataset.get('dataset_label')}）")
+                for column in dataset.get("metrics") or []:
+                    if isinstance(column, dict) and column.get("label"):
+                        field_labels.append(f"{column.get('name')}（{column.get('label')}）")
                 artifacts.append(
                     {
                         "id": str(dataset.get("dataset_version_id") or report.id),
@@ -422,17 +511,22 @@ def _build_document_context(body: DocumentGenerate, db: Session, user: User) -> 
                         "payload_json": item.payload_json,
                     }
                 )
+                if item.title:
+                    findings_summary.append(item.title)
         else:
             findings = deterministic.get("findings")
             if isinstance(findings, list):
                 for index, item in enumerate(findings[:_DOC_FINDING_LIMIT], start=1):
                     if not isinstance(item, dict):
                         continue
+                    statement = str(item.get("statement") or "")[:200]
+                    if statement:
+                        findings_summary.append(statement)
                     artifacts.append(
                         {
                             "id": f"finding-{index}",
                             "artifact_type": "finding",
-                            "title": str(item.get("statement") or "")[:200],
+                            "title": statement,
                             "payload_json": {
                                 "kind": str(item.get("kind") or ""),
                                 "dataset": str(item.get("dataset") or ""),
@@ -457,6 +551,8 @@ def _build_document_context(body: DocumentGenerate, db: Session, user: User) -> 
         "title": body.title,
         "solution": solution_payload,
         "decision": decision_payload,
+        "findings_summary": findings_summary,
+        "field_labels": field_labels,
         **collected,
     }
 

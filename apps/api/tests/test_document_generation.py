@@ -641,10 +641,13 @@ def test_section_calls_carry_decision_axis_and_written_summary(client, owner, pr
     _patch_adapter(monkeypatch, fake)
     generate_doc(client, owner, ready, document_type="prd", title="决策主轴")
 
-    # section 2+ must see the written summary of the previous section
+    # Batch 25 two-wave scheduling: prd sections 1-2 are the sequential
+    # narrative wave (section 2 carries section 1's written summary); section
+    # 3+ run in parallel with the outline plan instead of a summary.
     section_users = [call["user"] for call in fake.calls[1:]]
-    assert "written_summary" in section_users[0]
-    assert "第1节" in section_users[1], "second section sees the first section's summary"
+    assert "第1节" in section_users[1], "second (narrative-wave) section sees the first section's summary"
+    assert "outline_plan" in section_users[2], "parallel sections see the outline plan"
+    assert "written_summary" not in section_users[2]
     # the section prompt quotes the approved decision as the narrative axis
     assert "旧版本滞留" in fake.calls[1]["system"]
     with database.SessionLocal() as db:

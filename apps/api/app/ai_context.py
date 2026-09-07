@@ -849,6 +849,55 @@ def validate_document_section(value: Any) -> dict[str, Any]:
     return {"heading": heading[:200], "content": content[:60000]}
 
 
+# Batch 25: the coherence harmonize pass returns the SAME sections it was
+# given (de-duplicated and smoothed).  The heading set is verified by the
+# caller against its input -- the validator only enforces per-section shape.
+DOCUMENT_SECTIONS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["sections"],
+    "properties": {
+        "sections": {
+            "type": "array",
+            "maxItems": 12,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["heading", "content"],
+                "properties": {"heading": {"type": "string"}, "content": {"type": "string"}},
+            },
+        }
+    },
+}
+
+
+def validate_document_sections(value: Any) -> dict[str, Any]:
+    """Validate the harmonized sections payload (batch 25).
+
+    Every section must carry a non-empty heading and body; the caller layers
+    the strict input-heading-match check on top so a model that renames,
+    reorders or drops chapters can never silently replace the draft.
+    """
+
+    if not isinstance(value, Mapping):
+        raise AIOutputValidationError("document sections output must be a JSON object")
+    raw_sections = value.get("sections")
+    if not isinstance(raw_sections, list):
+        raise AIOutputValidationError("document sections output requires a sections array")
+    sections: list[dict[str, str]] = []
+    for item in raw_sections[:12]:
+        if not isinstance(item, Mapping):
+            raise AIOutputValidationError("document sections entries must be objects")
+        heading = str(item.get("heading") or "").strip()
+        content = str(item.get("content") or "").strip()
+        if not heading or not content:
+            raise AIOutputValidationError("document sections entries require non-empty heading and content")
+        sections.append({"heading": heading[:120], "content": content[:20000]})
+    if not sections:
+        raise AIOutputValidationError("document sections output cannot be empty")
+    return {"sections": sections}
+
+
 # Stage 9 contract: a single problem statement draft.  ``priority`` is optional
 # because a model that cannot judge urgency should omit it rather than guess;
 # the effort/priority enums match the persistence models exactly so a draft can
@@ -1255,6 +1304,7 @@ __all__ = [
     "DECISION_DRAFT_SCHEMA",
     "SOLUTION_DRAFTS_SCHEMA",
     "FIELD_SEMANTICS_SCHEMA",
+    "DOCUMENT_SECTIONS_SCHEMA",
     "assert_safe_ai_context",
     "build_ai_context",
     "build_safe_ai_context",
@@ -1264,6 +1314,7 @@ __all__ = [
     "extract_ai_insights",
     "validate_ai_output",
     "validate_decision_draft",
+    "validate_document_sections",
     "validate_field_semantics",
     "validate_interview_questions",
     "validate_interview_summary",

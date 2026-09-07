@@ -13,10 +13,12 @@ from sqlalchemy.orm import Session
 from ..ai_context import (
     DOCUMENT_OUTLINE_SCHEMA,
     DOCUMENT_SECTION_SCHEMA,
+    DOCUMENT_SECTIONS_SCHEMA,
     REPORT_OUTPUT_SCHEMA,
     empty_report_output,
     validate_document_outline,
     validate_document_section,
+    validate_document_sections,
     validate_report_output,
 )
 from ..analytics.text_metrics import extract_text_metrics
@@ -43,7 +45,7 @@ from ..models import (
 )
 from ..schemas import DocumentGenerate
 from ..services.audit import audit
-from .ai_stages import _run_ai_stage
+from .ai_stages import HARD_OUTPUT_CAP, _run_ai_stage
 from .analysis_pipeline import (
     _analysis_artifacts,
     _analysis_result_summary,
@@ -59,9 +61,12 @@ from .datasets import (
     _read_dataframe,
 )
 from .documents import (
+    _HARMONIZE_BATCH_SIZE,
     _build_document_context,
     _document_system_prompt,
     _fallback_section_content,
+    _harmonize_system_prompt,
+    _outline_context,
     _outline_system_prompt,
     _render_ai_document_markdown,
     _render_document_markdown,
@@ -351,14 +356,14 @@ def _handle_document_generation(context: JobContext) -> JobResult:
     if workspace is None:
         raise JobExecutionError("NOT_FOUND", "Workspace not found", retryable=False)
 
-    context.progress(15, "装配证据上下文")
+    context.progress(5, "装配证据上下文")
     doc_context = _build_document_context(body, context.db, user)
     audience = str((doc_context["options"] or {}).get("audience") or "产品团队")[:120]
 
     final_output: dict[str, Any] | None = None
     ai_error_code = "AI_UNAVAILABLE"
 
-    # ---- Pass 1: outline & findings (batch 17) ----
+    # ---- Pass 1: outline & findings (batch 17; batch 25 slim context) ----
     # Sync handler on a worker thread: no ambient event loop exists here, so
     # asyncio.run() is safe (TestClient's inline background execution runs on
     # a threadpool thread as well).  Every pass goes through _run_ai_stage and
@@ -372,7 +377,11 @@ def _handle_document_generation(context: JobContext) -> JobResult:
                 workspace=workspace,
                 feature_name="document_outline",
                 system_prompt=_outline_system_prompt(body.document_type, audience),
-                context=doc_context["safe_context"],
+                # Batch 25: the outline sees the summary layer (goal / findings
+                # / decision chain / field labels) instead of the full
+                # aggregates -- the production profile showed a 71s outline
+                # fed 9k tokens where a fraction of that picks the same plan.
+                context=_outline_context(doc_context),
                 flag_name="document_generation_enabled",
                 response_schema=DOCUMENT_OUTLINE_SCHEMA,
                 output_validator=validate_document_outline,
@@ -388,70 +397,123 @@ def _handle_document_generation(context: JobContext) -> JobResult:
         # bookkeeping already happened inside; degrade to the single pass.
         ai_error_code = str(exc.detail.get("code")) if isinstance(exc.detail, dict) else "AI_REJECTED"
 
-    # ---- Pass 2: one call per section ----
+    # ---- Pass 2: sections in two waves (batch 25) ----
+    # Progress weights: outline 10 + sections 70 + harmonize 15 + finish 5.
     if outline is not None:
         sections = [s for s in outline.get("sections") or [] if str(s.get("heading") or "").strip()][:10]
         total = len(sections)
         written: list[dict[str, str]] = []
         summary_parts: list[str] = []
         ok_count = 0
-        for index, section in enumerate(sections):
+        # prd keeps its first two chapters (需求背景/根因判断) sequential with
+        # the rolling written-summary so the narrative opening stays coherent;
+        # everything else runs in parallel under a 3-slot semaphore.
+        narrative_count = 2 if body.document_type == "prd" else 0
+        narrative = sections[:narrative_count]
+        parallel = list(enumerate(sections[narrative_count:], start=narrative_count))
+        outline_plan = "；".join(
+            f"{position}. {str(item.get('heading') or '').strip()}"
+            for position, item in enumerate(sections, start=1)
+        )
+
+        def _section_progress(done: int, heading: str) -> None:
+            context.progress(10 + int(70 * done / max(1, total)), f"正在撰写 第 {done + 1}/{total} 节：{heading[:40]}")
+
+        async def _run_section(position: int, section: dict[str, Any], written_summary: str) -> tuple[str, bool]:
+            """One section call -> (content, ok). Shared by both waves; every
+            call is its own _run_ai_stage (own schema check, AIRun row and
+            pre-call valve) exactly as before -- only the scheduling changed."""
+            nonlocal ai_error_code
             heading = str(section.get("heading")).strip()
-            context.progress(20 + int(65 * index / max(1, total)), f"正在撰写 第 {index + 1}/{total} 节：{heading[:40]}")
-            written_summary = chr(10).join(summary_parts)[:1200]
+            # Wave-2 sections have no written summary (siblings are still in
+            # flight); their anti-duplication contract is the outline plan.
             section_context = {
                 **doc_context["safe_context"],
                 "outline_findings": outline.get("findings") or [],
                 "root_cause": str(outline.get("root_cause") or ""),
-                "written_summary": written_summary,
                 "solution": doc_context.get("solution"),
                 "decision": doc_context.get("decision"),
             }
-            sec_ok = False
-            content = ""
+            if written_summary:
+                section_context["written_summary"] = written_summary
+            else:
+                section_context["outline_plan"] = outline_plan
             try:
-                sec_result = asyncio.run(
-                    _run_ai_stage(
-                        db=context.db,
-                        user=user,
-                        workspace=workspace,
-                        feature_name="document_section",
-                        system_prompt=_section_system_prompt(
-                            body.document_type,
-                            body.title,
-                            index + 1,
-                            total,
-                            heading,
-                            str(section.get("purpose") or ""),
-                            written_summary,
-                            audience,
-                            doc_context.get("solution"),
-                            doc_context.get("decision"),
-                        ),
-                        context=section_context,
-                        flag_name="document_generation_enabled",
-                        response_schema=DOCUMENT_SECTION_SCHEMA,
-                        output_validator=validate_document_section,
-                        empty_output={"heading": heading, "content": ""},
-                        min_output_tokens=8192,
-                    )
+                sec_result = await _run_ai_stage(
+                    db=context.db,
+                    user=user,
+                    workspace=workspace,
+                    feature_name="document_section",
+                    system_prompt=_section_system_prompt(
+                        body.document_type,
+                        body.title,
+                        position + 1,
+                        total,
+                        heading,
+                        str(section.get("purpose") or ""),
+                        written_summary,
+                        audience,
+                        doc_context.get("solution"),
+                        doc_context.get("decision"),
+                        outline_plan="" if written_summary else outline_plan,
+                    ),
+                    context=section_context,
+                    flag_name="document_generation_enabled",
+                    response_schema=DOCUMENT_SECTION_SCHEMA,
+                    output_validator=validate_document_section,
+                    empty_output={"heading": heading, "content": ""},
+                    min_output_tokens=8192,
                 )
-                if sec_result.get("status") == "succeeded":
-                    content = str(sec_result["output"].get("content") or "").strip()
-                    sec_ok = bool(content)
-                else:
-                    ai_error_code = str(sec_result.get("error_code") or ai_error_code)
             except HTTPException as exc:
                 ai_error_code = str(exc.detail.get("code")) if isinstance(exc.detail, dict) else "AI_REJECTED"
-            if not sec_ok:
-                # One failed section degrades to outline bullets; the rest of
-                # the document carries on.
-                content = _fallback_section_content(section, outline)
-            else:
-                ok_count += 1
-            written.append({"heading": heading, "content": content})
-            plain = re.sub(r"\|[^\n]*\|", "", content)
-            summary_parts.append(f"{heading}：{plain.strip()[:100]}")
+                sec_result = {"status": "failed"}
+            if sec_result.get("status") == "succeeded":
+                content = str(sec_result["output"].get("content") or "").strip()
+                if content:
+                    return content, True
+            return "", False
+
+        async def _write_all_sections() -> None:
+            nonlocal ok_count
+            # Wave 1 -- sequential narrative continuity (rolling summary).
+            for position, section in enumerate(narrative):
+                heading = str(section.get("heading")).strip()
+                _section_progress(position, heading)
+                written_summary = chr(10).join(summary_parts)[:1200]
+                content, sec_ok = await _run_section(position, section, written_summary)
+                if not sec_ok:
+                    # One failed section degrades to outline bullets; the rest
+                    # of the document carries on.
+                    content = _fallback_section_content(section, outline)
+                else:
+                    ok_count += 1
+                written.append({"heading": heading, "content": content})
+                plain = re.sub(r"\|[^\n]*\|", "", content)
+                summary_parts.append(f"{heading}：{plain.strip()[:100]}")
+            # Wave 2 -- everything else in parallel, at most three in flight.
+            semaphore = asyncio.Semaphore(3)
+
+            async def _run_parallel(order: int, position: int, section: dict[str, Any]) -> None:
+                nonlocal ok_count
+                async with semaphore:
+                    heading = str(section.get("heading")).strip()
+                    _section_progress(narrative_count + order, heading)
+                    content, sec_ok = await _run_section(position, section, "")
+                if not sec_ok:
+                    content = _fallback_section_content(section, outline)
+                else:
+                    ok_count += 1
+                written.append({"heading": heading, "content": content})
+
+            await asyncio.gather(
+                *(_run_parallel(order, position, section) for order, (position, section) in enumerate(parallel))
+            )
+            # Restore outline order: parallel completion order is arbitrary.
+            outline_order = {str(item.get("heading") or "").strip(): index for index, item in enumerate(sections)}
+            written.sort(key=lambda item: outline_order.get(item["heading"], 10**9))
+
+        if total:
+            asyncio.run(_write_all_sections())
         if ok_count > 0:
             final_output = {
                 "title": body.title,
@@ -492,7 +554,51 @@ def _handle_document_generation(context: JobContext) -> JobResult:
         else:
             ai_error_code = str(ai_result.get("error_code") or ai_error_code)
 
-    context.progress(92, "渲染文档")
+    # ---- Pass 3: whole-document coherence harmonize (batch 25) ----
+    # Kill cross-section duplication (the known cost of parallel writing) and
+    # smooth the seams.  Enhancement, not dependency: any batch failure keeps
+    # that batch's pre-harmonize text and the version still lands as
+    # succeeded.  Short documents skip it -- with 6k characters or less there
+    # is little duplication to remove and the extra 60-90s would dominate the
+    # run.  The pass runs in section batches: a verbatim rewrite must fit
+    # HARD_OUTPUT_CAP, which a full 10-section PRD cannot (live-run finding).
+    if final_output is not None and sum(len(str(item.get("content") or "")) for item in final_output.get("sections") or []) > 6000:
+        assembled = list(final_output.get("sections") or [])
+        document_headings = [str(item.get("heading") or "") for item in assembled]
+        batches = [assembled[offset : offset + _HARMONIZE_BATCH_SIZE] for offset in range(0, len(assembled), _HARMONIZE_BATCH_SIZE)]
+        for batch_index, batch in enumerate(batches):
+            context.progress(80 + int(15 * batch_index / max(1, len(batches))), "连贯校对中…")
+            try:
+                harmonize_result = asyncio.run(
+                    _run_ai_stage(
+                        db=context.db,
+                        user=user,
+                        workspace=workspace,
+                        feature_name="document_harmonize",
+                        system_prompt=_harmonize_system_prompt(),
+                        context={"title": body.title, "sections": batch, "document_headings": document_headings},
+                        flag_name="document_generation_enabled",
+                        response_schema=DOCUMENT_SECTIONS_SCHEMA,
+                        output_validator=validate_document_sections,
+                        empty_output={"sections": []},
+                        min_output_tokens=HARD_OUTPUT_CAP,
+                    )
+                )
+            except HTTPException:
+                # Budget valve / flag flip: keep this batch's pre-harmonize text.
+                harmonize_result = {"status": "failed"}
+            if harmonize_result.get("status") == "succeeded":
+                harmonized = list((harmonize_result.get("output") or {}).get("sections") or [])
+                batch_headings = [str(item.get("heading") or "") for item in batch]
+                if [str(item.get("heading")) for item in harmonized] == batch_headings:
+                    for local_index, replacement in enumerate(harmonized):
+                        assembled[batch_index * _HARMONIZE_BATCH_SIZE + local_index] = replacement
+                    final_output["sections"] = assembled
+                # A renamed/reordered/dropped chapter set is rejected for this
+                # batch only -- the draft keeps its pre-harmonize text rather
+                # than trusting a response that broke the heading contract.
+
+    context.progress(95, "写入文档版本")
     if final_output is not None:
         markdown = _render_ai_document_markdown(body, final_output, doc_context)
         version_ai_status = "succeeded"
