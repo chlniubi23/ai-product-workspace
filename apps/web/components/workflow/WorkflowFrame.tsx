@@ -111,11 +111,18 @@ export function WorkflowGate({
 }) {
   const missing = completion.slice(0, Math.max(0, step - 1)).findIndex((value) => !value);
   if (loading)
+    // Batch 27: shimmer skeleton replaces the text loading card.
     return (
-      <section className="card workflow-loading-card">
-        <div className="workflow-loading-dot" />
-        <strong>正在读取工作流状态</strong>
-        <p>从服务端同步数据版本、质量报告和已保存产物。</p>
+      <section
+        className="card workflow-loading-card"
+        style={{ alignItems: "stretch", textAlign: "left" }}
+        aria-busy="true"
+      >
+        <div style={{ display: "grid", gap: 10, width: "100%", maxWidth: 420, margin: "0 auto" }}>
+          <div className="skeleton" style={{ width: "40%", height: 16 }} />
+          <div className="skeleton" style={{ height: 12 }} />
+          <div className="skeleton" style={{ width: "80%", height: 12 }} />
+        </div>
       </section>
     );
   if (missing < 0) return <>{children}</>;
@@ -151,7 +158,13 @@ export function EvidenceStatus({ count, required = true }: { count: number; requ
   return (
     <span className={`tag ${count > 0 ? "tag-green" : "tag-rose"}`}>
       <CircleAlert size={11} />
-      {count > 0 ? `${count} 条证据` : "缺少证据引用"}
+      {count > 0 ? (
+        <>
+          <span className="num">{count}</span> 条证据
+        </>
+      ) : (
+        "缺少证据引用"
+      )}
     </span>
   );
 }

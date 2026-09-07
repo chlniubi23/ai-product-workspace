@@ -8,12 +8,35 @@ import { apiRequest, pagedItems } from "@/lib/api";
 import { ReportMarkdown } from "@/components/analysis/ReportMarkdown";
 import { formatWorkflowDate } from "@/lib/workflow";
 
-type DatasetRow = { id: string; name?: string; versions?: Array<{ row_count?: number; version_number?: number }> };
+type DatasetRow = {
+  id: string;
+  name?: string;
+  versions?: Array<{ row_count?: number; version_number?: number }>;
+};
 type AnalysisRunRow = { id: string; status?: string; analysis_type?: string };
-type InsightRow = { id: string; title?: string; content?: string; status?: string; evidence_json?: unknown[] };
-type InterviewRow = { id: string; topic?: string; question_text?: string; answer_text?: string; status?: string };
+type InsightRow = {
+  id: string;
+  title?: string;
+  content?: string;
+  status?: string;
+  evidence_json?: unknown[];
+};
+type InterviewRow = {
+  id: string;
+  topic?: string;
+  question_text?: string;
+  answer_text?: string;
+  status?: string;
+};
 type ProblemRow = { id: string; title?: string; statement?: string; status?: string };
-type SolutionRow = { id: string; problem_id?: string; title?: string; approach?: string; status?: string; reject_reason?: string };
+type SolutionRow = {
+  id: string;
+  problem_id?: string;
+  title?: string;
+  approach?: string;
+  status?: string;
+  reject_reason?: string;
+};
 type DecisionRow = { id: string; title?: string; proposed_action?: string; status?: string };
 type DocumentRow = {
   id: string;
@@ -21,12 +44,20 @@ type DocumentRow = {
   document_type?: string;
   current_version?: { content_markdown?: string } | null;
 };
-type AutoReportRow = { id: string; title?: string; status?: string; markdown?: string; content_markdown?: string };
+type AutoReportRow = {
+  id: string;
+  title?: string;
+  status?: string;
+  markdown?: string;
+  content_markdown?: string;
+};
 
 export default function HistoryDetailPage() {
   const params = useParams<{ projectId: string }>();
   const projectId = params?.projectId;
-  const [project, setProject] = useState<{ name?: string; status?: string; archived_at?: string } | null>(null);
+  const [project, setProject] = useState<{ name?: string; status?: string; archived_at?: string } | null>(
+    null,
+  );
   const [datasets, setDatasets] = useState<DatasetRow[]>([]);
   const [runs, setRuns] = useState<AnalysisRunRow[]>([]);
   const [insights, setInsights] = useState<InsightRow[]>([]);
@@ -48,18 +79,27 @@ export default function HistoryDetailPage() {
     setError("");
     try {
       const scope = `?project_id=${projectId}&page_size=100`;
-      const get = async <T,>(path: string): Promise<T[]> => pagedItems<T>(await apiRequest<unknown>(path + scope));
-      const [datasetsRows, runsRows, insightsRows, interviewRows, problemRows, solutionRows, decisionRows, documentRows] =
-        await Promise.all([
-          get<DatasetRow>("/datasets"),
-          get<AnalysisRunRow>("/analysis-runs"),
-          get<InsightRow>("/insights"),
-          get<InterviewRow>("/interview-questions"),
-          get<ProblemRow>("/problems"),
-          get<SolutionRow>("/solutions"),
-          get<DecisionRow>("/decision-proposals"),
-          get<DocumentRow>("/documents"),
-        ]);
+      const get = async <T,>(path: string): Promise<T[]> =>
+        pagedItems<T>(await apiRequest<unknown>(path + scope));
+      const [
+        datasetsRows,
+        runsRows,
+        insightsRows,
+        interviewRows,
+        problemRows,
+        solutionRows,
+        decisionRows,
+        documentRows,
+      ] = await Promise.all([
+        get<DatasetRow>("/datasets"),
+        get<AnalysisRunRow>("/analysis-runs"),
+        get<InsightRow>("/insights"),
+        get<InterviewRow>("/interview-questions"),
+        get<ProblemRow>("/problems"),
+        get<SolutionRow>("/solutions"),
+        get<DecisionRow>("/decision-proposals"),
+        get<DocumentRow>("/documents"),
+      ]);
       setDatasets(datasetsRows);
       setRuns(runsRows);
       setInsights(insightsRows);
@@ -146,15 +186,24 @@ export default function HistoryDetailPage() {
         </div>
       )}
       {loading ? (
-        <section className="card" style={{ marginTop: 16, padding: 24 }}>正在加载工作流产出…</section>
+        <section
+          className="card"
+          style={{ marginTop: 16, padding: 24, display: "grid", gap: 12 }}
+          aria-busy="true"
+        >
+          <div className="skeleton" style={{ width: "40%", height: 16 }} />
+          <div className="skeleton" style={{ height: 12 }} />
+          <div className="skeleton" style={{ width: "80%", height: 12 }} />
+        </section>
       ) : (
         <>
           <section className="card card-pad" style={{ marginTop: 16 }}>
             <h2 style={sectionTitle}>数据与报告</h2>
             <p style={{ color: "var(--muted)" }}>
               数据集 {datasets.length} 个（
-              {datasets.map((d) => `${d.name || "未命名"} ${d.versions?.length ?? 0} 版本`).join("、") || "无"}）
-              · 分析运行 {runs.filter((r) => r.status === "succeeded").length} 次成功
+              {datasets.map((d) => `${d.name || "未命名"} ${d.versions?.length ?? 0} 版本`).join("、") ||
+                "无"}
+              ） · 分析运行 {runs.filter((r) => r.status === "succeeded").length} 次成功
             </p>
             {autoReport && (
               <>
@@ -169,8 +218,8 @@ export default function HistoryDetailPage() {
           <section className="card card-pad" style={{ marginTop: 16 }}>
             <h2 style={sectionTitle}>洞察与裁决</h2>
             <p style={{ color: "var(--muted)" }}>
-              共 {insights.length} 条 · 已采纳 {insights.filter((i) => i.status === "confirmed").length} · 已否决{" "}
-              {insights.filter((i) => i.status === "rejected").length}
+              共 {insights.length} 条 · 已采纳 {insights.filter((i) => i.status === "confirmed").length} ·
+              已否决 {insights.filter((i) => i.status === "rejected").length}
             </p>
             <div className="list" style={{ marginTop: 8 }}>
               {insights.map((insight) => (
@@ -213,7 +262,10 @@ export default function HistoryDetailPage() {
                     {solutions
                       .filter((s) => s.problem_id === problem.id)
                       .map((solution) => (
-                        <div key={solution.id} style={{ borderTop: "1px solid var(--line)", padding: "6px 0" }}>
+                        <div
+                          key={solution.id}
+                          style={{ borderTop: "1px solid var(--line)", padding: "6px 0" }}
+                        >
                           <strong>方案：{solution.title}</strong>
                           <span
                             className={`tag ${solution.status === "selected" ? "tag-green" : "tag-rose"}`}
@@ -229,12 +281,15 @@ export default function HistoryDetailPage() {
                           )}
                         </div>
                       ))}
-              </div>
+                  </div>
                 ))}
                 {decisions.map((decision) => (
                   <div className="card card-pad" key={decision.id} style={{ marginBottom: 8 }}>
                     <strong>决策：{decision.title}</strong>
-                    <span className={`tag ${decision.status === "approved" ? "tag-green" : "tag-amber"}`} style={{ marginLeft: 8 }}>
+                    <span
+                      className={`tag ${decision.status === "approved" ? "tag-green" : "tag-amber"}`}
+                      style={{ marginLeft: 8 }}
+                    >
                       {decision.status}
                     </span>
                     <p style={{ color: "var(--muted)", margin: "4px 0 0" }}>{decision.proposed_action}</p>
@@ -270,7 +325,11 @@ export default function HistoryDetailPage() {
                     {openDocId === doc.id ? (
                       <>
                         <ReportMarkdown markdown={content} />
-                        <button className="btn btn-subtle btn-sm" style={{ marginTop: 8 }} onClick={() => setOpenDocId("")}>
+                        <button
+                          className="btn btn-subtle btn-sm"
+                          style={{ marginTop: 8 }}
+                          onClick={() => setOpenDocId("")}
+                        >
                           收起
                         </button>
                       </>

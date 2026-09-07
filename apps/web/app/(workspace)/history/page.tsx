@@ -75,8 +75,14 @@ export default function HistoryPage() {
         </div>
       )}
       {loading ? (
-        <section className="card" style={{ marginTop: 16, padding: 24 }}>
-          正在加载历史…
+        <section
+          className="card"
+          style={{ marginTop: 16, padding: 24, display: "grid", gap: 12 }}
+          aria-busy="true"
+        >
+          <div className="skeleton" style={{ width: "40%", height: 16 }} />
+          <div className="skeleton" style={{ height: 12 }} />
+          <div className="skeleton" style={{ width: "80%", height: 12 }} />
         </section>
       ) : archived.length === 0 ? (
         <section className="card empty-state" style={{ marginTop: 16 }}>
