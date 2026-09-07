@@ -387,6 +387,11 @@ def _auto_report_payload(report: AutoAnalysisReport, db: Session) -> dict[str, A
     # stale "补生成" button.
     active = _active_narration_job(db, report.id)
     payload["narration_job_id"] = active.id if active is not None else None
+    # Batch 25: live progress of the same in-flight job, so a page returning
+    # mid-narration can render the progress bar immediately.
+    payload["narration_progress"] = (
+        {"progress": active.progress, "current_step": active.current_step} if active is not None else None
+    )
     return payload
 
 
