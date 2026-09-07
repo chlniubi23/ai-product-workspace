@@ -63,7 +63,7 @@ class WorkspaceSettings(BaseModel):
     ai_model_id: str = Field(default="deepseek-chat", min_length=1, max_length=100)
     ai_max_output_tokens: int = Field(default=4096, ge=1, le=131072)
     ai_per_request_token_budget: int = Field(default=16000, ge=1, le=1_000_000)
-    ai_daily_token_budget: int = Field(default=200000, ge=1, le=100_000_000)
+    ai_daily_token_budget: int = Field(default=500000, ge=1, le=100_000_000)
     feature_flags: WorkspaceFeatureFlags = Field(default_factory=WorkspaceFeatureFlags)
 
 
