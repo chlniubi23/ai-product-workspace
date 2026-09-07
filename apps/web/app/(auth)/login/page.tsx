@@ -46,7 +46,7 @@ export default function LoginPage() {
           </div>
           <div>
             <div className="brand-name">AI Product Workspace</div>
-            <div className="brand-caption">让证据连接到决策</div>
+            <div className="brand-caption">让证据连接到决策 · 数据驱动的产品决策工作台</div>
           </div>
         </div>
         <form className="login-form" onSubmit={submit}>

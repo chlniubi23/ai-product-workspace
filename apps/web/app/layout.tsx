@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "AI Product Workspace",
-  description: "面向 AI 产品团队的可追溯工作流空间",
+  title: "AI Product Workspace — 数据驱动的产品决策工作台",
+  description: "确定性计算 + 人工裁决 + 证据链：从数据上传到 PRD 交付的可追溯产品决策工作流。",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
