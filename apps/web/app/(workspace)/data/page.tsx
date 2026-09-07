@@ -16,6 +16,7 @@ import {
   X,
 } from "lucide-react";
 import { accessToken, apiRequest } from "@/lib/api";
+import { useCountUp } from "@/components/hooks/useCountUp";
 import { getActiveProjectId } from "@/lib/workflow";
 import { UPLOAD_ACCEPT_ATTR, UPLOAD_FORMAT_HINT } from "@/lib/upload";
 
@@ -320,9 +321,11 @@ export default function DataPage() {
                         fontWeight: 700,
                       }}
                     >
-                      {dataset.quality}
+                      <QualityScore value={dataset.quality} />
                     </span>
-                    <span style={{ color: "var(--faint)" }}>/100</span>
+                    <span className="num" style={{ color: "var(--faint)" }}>
+                      /100
+                    </span>
                   </td>
                   <td>
                     <span
@@ -460,4 +463,17 @@ function HistoryIcon() {
       <Database size={19} />
     </span>
   );
+}
+
+/** Batch 27: count-up metric figure ("-" while loading). */
+function MetricNumber({ value }: { value: number | null }) {
+  const animated = useCountUp(value ?? 0);
+  if (value === null) return <>-</>;
+  return <>{Math.round(animated)}</>;
+}
+
+/** Batch 27: the inline quality score rolls to its value (mono via .num). */
+function QualityScore({ value }: { value: number }) {
+  const animated = useCountUp(value);
+  return <span className="num">{Math.round(animated)}</span>;
 }

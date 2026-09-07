@@ -25,6 +25,7 @@ import {
   UserRound,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { useCountUp } from "@/components/hooks/useCountUp";
 import {
   navItems,
   pipelineNavItems,
@@ -81,6 +82,11 @@ export function AppShell({ children }: Readonly<{ children: React.ReactNode }>) 
     workspaceId: "",
   });
   const [workflow, setWorkflow] = useState<WorkflowSnapshot>();
+
+  // Batch 27: the sidebar progress figure rolls to its new value.  Computed
+  // BEFORE the authReady early return -- hooks must run on every render.
+  const doneCountEarly = workflow ? stepCompletion(workflow).filter(Boolean).length : 0;
+  const doneCountDisplay = useCountUp(doneCountEarly);
 
   // Batch 26 user center: a small popover over the sidebar user block.
   const [userMenu, setUserMenu] = useState<"closed" | "menu" | "name" | "password">("closed");
@@ -381,8 +387,8 @@ export function AppShell({ children }: Readonly<{ children: React.ReactNode }>) 
             <div className="flow-progress">
               <div className="flow-progress-head">
                 <span>流水线进度</span>
-                <strong>
-                  {doneCount}/{STAGE_COUNT}
+                <strong className="num">
+                  {Math.round(doneCountDisplay)}/{STAGE_COUNT}
                 </strong>
               </div>
               <div

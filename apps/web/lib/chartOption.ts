@@ -11,9 +11,43 @@ type ChartPayload = Record<string, unknown>;
 
 // Batch 22 palette: single brand blue leads, then restrained categorical
 // supports; axes/split lines follow the neutral tokens (#e4e4e7 / #71717a).
+// Batch 27 polish: unified tooltip card, dashed hairline split lines, one
+// motion contract (400ms cubicOut) and a brand area gradient for solo lines.
 const AXIS_LABEL = { color: "#71717a", fontSize: 11 };
-const SPLIT_LINE = { lineStyle: { color: "#e4e4e7" } };
+const AXIS_LINE = { lineStyle: { color: "#e4e4e7" } };
+const SPLIT_LINE = { lineStyle: { color: "#f0f0f1", type: "dashed" } };
 const PALETTE = ["#2563eb", "#0891b2", "#d97706", "#dc2626", "#64748b"];
+const BRAND_AREA = {
+  color: {
+    type: "linear",
+    x: 0,
+    y: 0,
+    x2: 0,
+    y2: 1,
+    colorStops: [
+      { offset: 0, color: "rgba(37, 99, 235, 0.08)" },
+      { offset: 1, color: "rgba(37, 99, 235, 0)" },
+    ],
+  },
+};
+
+/** Shared tooltip card: white, hairline border, soft overlay shadow. */
+function tooltip(trigger: "item" | "axis", extra: Record<string, unknown> = {}) {
+  return {
+    trigger,
+    backgroundColor: "#ffffff",
+    borderColor: "#e4e4e7",
+    borderWidth: 1,
+    borderRadius: 6,
+    padding: [8, 10],
+    textStyle: { color: "#18181b", fontSize: 12 },
+    extraCssText: "box-shadow: 0 8px 24px rgba(24,24,27,0.12);",
+    ...extra,
+  };
+}
+
+/** One global motion contract for every chart. */
+const ANIMATION = { animationDuration: 400, animationEasing: "cubicOut" } as const;
 const LEGEND_LABEL = { color: "#71717a", fontSize: 12 };
 
 function rowsOf(chart: ChartPayload, key: string): Record<string, unknown>[] {
@@ -39,7 +73,8 @@ function funnelOption(chart: ChartPayload, title: string) {
   if (!data.length) return null;
   return {
     color: PALETTE,
-    tooltip: { trigger: "item", formatter: "{b}: {c} 人" },
+    ...ANIMATION,
+    tooltip: tooltip("item", { formatter: "{b}: {c} 人" }),
     series: [
       {
         type: "funnel",
@@ -68,7 +103,7 @@ function retentionOption(chart: ChartPayload) {
   const series = cohorts.map((cohort, index) => ({
     name: cohort,
     type: "line",
-    smooth: true,
+    smooth: 0.3,
     showSymbol: rows.length <= 60,
     symbolSize: 5,
     itemStyle: { color: PALETTE[index % PALETTE.length] },
@@ -81,10 +116,10 @@ function retentionOption(chart: ChartPayload) {
 
   return {
     color: PALETTE,
-    tooltip: {
-      trigger: "axis",
+    ...ANIMATION,
+    tooltip: tooltip("axis", {
       valueFormatter: (value: unknown) => (num(value) === null ? "—" : `${num(value)}%`),
-    },
+    }),
     legend: { type: "scroll", top: 0, textStyle: LEGEND_LABEL },
     grid: baseGrid({ top: 40 }),
     xAxis: {
@@ -93,6 +128,7 @@ function retentionOption(chart: ChartPayload) {
       name: "周期",
       nameTextStyle: AXIS_LABEL,
       axisLabel: AXIS_LABEL,
+      axisLine: AXIS_LINE,
     },
     yAxis: {
       type: "value",
@@ -121,18 +157,27 @@ function anomalyOption(chart: ChartPayload) {
 
   return {
     color: PALETTE,
-    tooltip: { trigger: "axis" },
+    ...ANIMATION,
+    tooltip: tooltip("axis"),
     legend: { top: 0, textStyle: LEGEND_LABEL, data: ["指标", "异常点"] },
     grid: baseGrid({ top: 40 }),
-    xAxis: { type: "category", data: points.map((point) => point[0]), axisLabel: AXIS_LABEL },
+    xAxis: {
+      type: "category",
+      data: points.map((point) => point[0]),
+      axisLabel: AXIS_LABEL,
+      axisLine: AXIS_LINE,
+    },
     yAxis: { type: "value", nameTextStyle: AXIS_LABEL, axisLabel: AXIS_LABEL, splitLine: SPLIT_LINE },
     series: [
       {
         name: "指标",
         type: "line",
-        smooth: true,
+        smooth: 0.3,
+        symbol: "circle",
+        symbolSize: 4,
         showSymbol: false,
         itemStyle: { color: PALETTE[0] },
+        areaStyle: BRAND_AREA,
         data: points.map((point) => point[1]),
       },
       { name: "异常点", type: "scatter", symbolSize: 11, itemStyle: { color: "#dc2626" }, data: flagged },
@@ -145,14 +190,20 @@ function lineOption(chart: ChartPayload) {
   if (!series.length) return null;
   return {
     color: PALETTE,
-    tooltip: { trigger: "axis" },
+    ...ANIMATION,
+    tooltip: tooltip("axis"),
     legend: { type: "scroll", top: 0, textStyle: LEGEND_LABEL },
     grid: baseGrid({ top: 40 }),
-    xAxis: { ...(chart.xAxis as object), axisLabel: AXIS_LABEL },
+    xAxis: { ...(chart.xAxis as object), axisLabel: AXIS_LABEL, axisLine: AXIS_LINE },
     yAxis: { ...(chart.yAxis as object), axisLabel: AXIS_LABEL, splitLine: SPLIT_LINE },
     series: series.map((entry, index) => ({
-      smooth: true,
-      showSymbol: false,
+      // A solo series gets visible dots + the brand area gradient; multi
+      // series stays dotless so crossing lines do not turn into noise.
+      smooth: 0.3,
+      symbol: "circle",
+      symbolSize: 4,
+      showSymbol: series.length === 1,
+      areaStyle: series.length === 1 ? BRAND_AREA : undefined,
       itemStyle: { color: PALETTE[index % PALETTE.length] },
       ...entry,
     })),
@@ -169,7 +220,8 @@ function barOption(chart: ChartPayload, title: string) {
   if (!data.length) return null;
   return {
     color: PALETTE,
-    tooltip: { trigger: "axis", valueFormatter: (value: unknown) => `${num(value) ?? 0}%` },
+    ...ANIMATION,
+    tooltip: tooltip("axis", { valueFormatter: (value: unknown) => `${num(value) ?? 0}%` }),
     grid: baseGrid({ top: 34, bottom: 72 }),
     xAxis: {
       type: "category",
@@ -177,6 +229,7 @@ function barOption(chart: ChartPayload, title: string) {
       name: title,
       nameTextStyle: AXIS_LABEL,
       axisLabel: { ...AXIS_LABEL, rotate: 28 },
+      axisLine: AXIS_LINE,
     },
     yAxis: {
       type: "value",
@@ -191,7 +244,14 @@ function barOption(chart: ChartPayload, title: string) {
         type: "bar",
         barMaxWidth: 42,
         itemStyle: { color: PALETTE[0], borderRadius: [4, 4, 0, 0] },
-        label: { show: true, position: "top", formatter: "{c}%", color: "#71717a", fontSize: 11 },
+        label: {
+          show: true,
+          position: "top",
+          formatter: "{c}%",
+          color: "#71717a",
+          fontSize: 11,
+          fontFamily: "var(--font-mono), Menlo, monospace",
+        },
         data: data.map((row) => row.value),
       },
     ],

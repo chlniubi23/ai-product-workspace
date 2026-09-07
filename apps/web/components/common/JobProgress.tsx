@@ -53,7 +53,14 @@ export function JobProgress({
         </span>
         <span style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
           {startedAt ? (
-            <span style={{ fontSize: 11, color: "var(--faint)", fontVariantNumeric: "tabular-nums" }}>
+            <span
+              style={{
+                fontSize: 11,
+                color: "var(--faint)",
+                fontFamily: "var(--font-mono)",
+                fontVariantNumeric: "tabular-nums",
+              }}
+            >
               {formatElapsed(startedAt)}
             </span>
           ) : null}
@@ -63,6 +70,7 @@ export function JobProgress({
                 fontSize: 13,
                 color: "var(--ink)",
                 fontWeight: 600,
+                fontFamily: "var(--font-mono)",
                 fontVariantNumeric: "tabular-nums",
               }}
             >
