@@ -272,6 +272,9 @@ export default function Stage6InterviewPage() {
                   <div>
                     <h2 className="card-title">当前问题</h2>
                     <div className="card-kicker">
+                      {current && current.round_number && current.source !== "manual"
+                        ? `第 ${current.round_number} 问 · 最多 10 问 · `
+                        : ""}
                       已回答 {answeredCount} · AI 一次只问一个问题，回答后自动追问
                     </div>
                   </div>

@@ -19,6 +19,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiRequest, pagedItems } from "@/lib/api";
 import { ChartRenderer } from "@/components/analysis/ChartRenderer";
 import { ReportMarkdown } from "@/components/analysis/ReportMarkdown";
+import { JobProgress } from "@/components/common/JobProgress";
 import { toChartOption } from "@/lib/chartOption";
 import { getActiveProjectId, setActiveProjectId } from "@/lib/workflow";
 import { formatDateTime, formatFileSize } from "@/lib/format";
@@ -42,6 +43,7 @@ type AutoReport = {
   created_at?: string;
   confirmed_at?: string | null;
   narration_job_id?: string | null;
+  narration_progress?: { progress?: number | null; current_step?: string | null } | null;
 };
 
 type BatchUploadResult = {
@@ -49,7 +51,16 @@ type BatchUploadResult = {
   failures: Array<{ file_name?: string; code?: string; message?: string }>;
 };
 
-type JobRow = { id?: string; status?: string; error_message?: string };
+type JobRow = {
+  id?: string;
+  status?: string;
+  error_message?: string;
+  progress?: number;
+  current_step?: string;
+};
+
+/** Batch 25: live narration progress driving the JobProgress bar. */
+type NarrationProgress = { progress: number | null; currentStep: string | null; startedAt: number };
 
 type AnalysisRun = {
   id: string;
@@ -116,6 +127,7 @@ export default function WorkbenchPage() {
   const [regenerating, setRegenerating] = useState(false);
   const [deletingProject, setDeletingProject] = useState(false);
   const [narratingId, setNarratingId] = useState<string | null>(null);
+  const [narrationProgress, setNarrationProgress] = useState<NarrationProgress | null>(null);
   const [narrationNotice, setNarrationNotice] = useState("");
   // Batch 21: a "hint" notice invites the manual AI narration; an "error"
   // notice reports a failed narration and carries the retry button.
@@ -277,13 +289,15 @@ export default function WorkbenchPage() {
     });
   };
 
-  const waitForJob = useCallback(async (jobId: string) => {
+  const waitForJob = useCallback(async (jobId: string, onProgress?: (job: JobRow) => void) => {
     for (let attempt = 0; attempt < POLL_LIMIT; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 2000));
       try {
         const job = await apiRequest<JobRow>(`/jobs/${jobId}`);
         const status = String(job.status || "");
         if (TERMINAL_JOB_STATUS.has(status)) return status;
+        // Batch 25: surface the job's own progress/current_step while running.
+        if (onProgress) onProgress(job);
         setProgressNote((note) => (note.includes("…") ? note : note));
       } catch {
         /* transient read failure: keep polling */
@@ -329,14 +343,28 @@ export default function WorkbenchPage() {
       setNarratingId(targetReportId);
       setNarrationNotice("");
       setNarrationNoticeTone("hint");
-      const outcome = jobId ? await waitForJob(jobId) : "failed";
+      setNarrationProgress(
+        (current) => current ?? { progress: null, currentStep: null, startedAt: Date.now() },
+      );
+      const outcome = jobId
+        ? await waitForJob(jobId, (job) =>
+            setNarrationProgress((current) =>
+              current
+                ? { ...current, progress: job.progress ?? null, currentStep: job.current_step || null }
+                : current,
+            ),
+          )
+        : "failed";
       if (!mountedRef.current) return;
       const fresh = await refreshReport(targetReportId);
       if (!fresh || fresh.status !== "succeeded") {
         setNarrationNotice(narrationFailureNotice(fresh?.error_code, outcome));
         setNarrationNoticeTone("error");
       }
-      if (mountedRef.current) setNarratingId(null);
+      if (mountedRef.current) {
+        setNarratingId(null);
+        setNarrationProgress(null);
+      }
     },
     [refreshReport, waitForJob],
   );
@@ -365,6 +393,7 @@ export default function WorkbenchPage() {
           setNarrationNotice(message);
           setNarrationNoticeTone("error");
           setNarratingId(null);
+          setNarrationProgress(null);
         }
       }
     },
@@ -747,13 +776,12 @@ export default function WorkbenchPage() {
           <div style={{ display: "grid", gap: 4 }}>
             <ReportMarkdown markdown={markdown} />
             {narratingId === report.id && (
-              <div
-                className="card-kicker"
-                role="status"
-                style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}
-              >
-                <LoaderCircle size={13} className="animate-spin" />
-                AI 解读生成中…页面可以正常操作，离开本页不影响后台生成；返回后报告会显示最新状态。
+              <div style={{ marginTop: 10 }}>
+                <JobProgress
+                  progress={narrationProgress?.progress ?? null}
+                  currentStep={narrationProgress?.currentStep || "AI 解读生成中…离开本页不影响后台生成"}
+                  startedAt={narrationProgress?.startedAt}
+                />
               </div>
             )}
             {narrationNotice && !narratingId && narrationNoticeTone === "error" && (

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { Check, ChevronRight, Lightbulb, Pencil, Sparkles, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { apiRequest, accessToken } from "@/lib/api";
+import { JobProgress } from "@/components/common/JobProgress";
 import {
   WorkflowGate,
   WorkflowHeader,
@@ -18,6 +19,9 @@ export default function Stage7CopilotPage() {
   const [busyId, setBusyId] = useState("");
   const [notice, setNotice] = useState("");
   const [distilling, setDistilling] = useState(false);
+  // Batch 25: the distill request is synchronous (no job row) -- the bar runs
+  // in indeterminate mode with a timer while the call is in flight.
+  const [distillStartedAt, setDistillStartedAt] = useState<number | null>(null);
   // Batch 18: inline edit state per insight (null = not editing).
   const [editingId, setEditingId] = useState("");
   const [editTitle, setEditTitle] = useState("");
@@ -33,6 +37,7 @@ export default function Stage7CopilotPage() {
   async function distill() {
     if (!projectId || !accessToken()) return;
     setDistilling(true);
+    setDistillStartedAt(Date.now());
     setNotice("");
     try {
       const result = await apiRequest<{
@@ -59,6 +64,7 @@ export default function Stage7CopilotPage() {
       setNotice(distillError instanceof Error ? distillError.message : "蒸馏失败");
     } finally {
       setDistilling(false);
+      setDistillStartedAt(null);
     }
   }
 
@@ -255,6 +261,9 @@ export default function Stage7CopilotPage() {
               <Sparkles size={14} />
               {distilling ? "蒸馏中…" : draftInsights.length ? "重新蒸馏（刷新草稿）" : "从采访生成洞察草稿"}
             </button>
+            {distilling && distillStartedAt && (
+              <JobProgress indeterminate currentStep="正在蒸馏洞察…" startedAt={distillStartedAt} />
+            )}
           </div>
           {draftInsights.length > 0 && (
             <p style={{ color: "var(--muted)", marginTop: 8, marginBottom: 0 }}>

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Archive, ChevronRight, Download, FileText, Sparkles } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiRequest, accessToken, pagedItems } from "@/lib/api";
+import { JobProgress } from "@/components/common/JobProgress";
 import { formatWorkflowDate, setActiveProjectId } from "@/lib/workflow";
 import {
   SnapshotMeta,
@@ -30,6 +31,7 @@ type DocumentRow = {
   created_at?: string;
   current_version?: DocumentVersionRow | null;
   generation_job_id?: string | null;
+  generation_progress?: { progress?: number | null; current_step?: string | null } | null;
 };
 
 const DOCUMENT_TYPES = [
@@ -65,6 +67,9 @@ export default function Stage11PrdPage() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [progressNote, setProgressNote] = useState("");
+  // Batch 25: numeric progress + step from the job row, driving JobProgress.
+  const [generationProgress, setGenerationProgress] = useState<number | null>(null);
+  const [generationStartedAt, setGenerationStartedAt] = useState<number | null>(null);
   const [fallbackBanner, setFallbackBanner] = useState("");
   const [document, setDocument] = useState<DocumentRow | null>(null);
   const [archiving, setArchiving] = useState(false);
@@ -94,10 +99,13 @@ export default function Stage11PrdPage() {
       try {
         // Batch 17: two-pass generation reports per-section progress through
         // the job's current_step -- surface it verbatim ("正在撰写 第 N/M 节…").
-        const job = await apiRequest<{ status?: string; current_step?: string }>(`/jobs/${jobId}`);
+        const job = await apiRequest<{ status?: string; current_step?: string; progress?: number }>(
+          `/jobs/${jobId}`,
+        );
         const status = String(job.status || "");
         if (TERMINAL_JOB_STATUS.has(status)) return status;
         if (job.current_step) setProgressNote(job.current_step);
+        if (typeof job.progress === "number") setGenerationProgress(job.progress);
       } catch {
         /* transient read failure: keep polling */
       }
@@ -160,6 +168,8 @@ export default function Stage11PrdPage() {
     const jobId = document?.generation_job_id;
     if (!jobId || busy) return;
     setProgressNote("正在生成新版本…");
+    setGenerationProgress(document.generation_progress?.progress ?? null);
+    setGenerationStartedAt(Date.now());
     void (async () => {
       setBusy(true);
       try {
@@ -169,10 +179,14 @@ export default function Stage11PrdPage() {
         await refresh();
       } finally {
         setProgressNote("");
+        setGenerationProgress(null);
+        setGenerationStartedAt(null);
         setBusy(false);
       }
     })();
-  }, [document?.generation_job_id, busy, hydrateDocument, refresh]);
+    // generation_progress is only read as the bar's seed value; the effect
+    // re-runs are harmless (busy guard) and keep the lint contract whole.
+  }, [document?.generation_job_id, document?.generation_progress, busy, hydrateDocument, refresh]);
 
   async function generate() {
     if (!projectId || !confirmed.length || !accessToken()) return;
@@ -202,6 +216,7 @@ export default function Stage11PrdPage() {
       if (!docId) throw new Error("文档创建失败");
       // Old content stays visible while the new version is being written.
       setProgressNote("正在生成新版本…");
+      setGenerationStartedAt(Date.now());
       if (jobId) {
         await waitForJob(jobId);
       }
@@ -214,6 +229,8 @@ export default function Stage11PrdPage() {
       setNotice(cause instanceof Error ? cause.message : "文档生成失败");
     } finally {
       setProgressNote("");
+      setGenerationProgress(null);
+      setGenerationStartedAt(null);
       setBusy(false);
     }
   }
@@ -304,6 +321,15 @@ export default function Stage11PrdPage() {
                 <Sparkles size={14} />
                 {busy ? progressNote || "生成中…" : "生成文档"}
               </button>
+              {busy && generationStartedAt && (
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <JobProgress
+                    progress={generationProgress}
+                    currentStep={progressNote || "正在生成新版本…"}
+                    startedAt={generationStartedAt}
+                  />
+                </div>
+              )}
               {document && (
                 <button className="btn" onClick={download} disabled={!editorText.trim()}>
                   <Download size={14} />
