@@ -110,7 +110,7 @@ class DeepSeekSettings:
     timeout_seconds: float = 60.0
     max_retries: int = 2
     default_max_tokens: int = 1800
-    daily_token_budget: int = 500_000
+    daily_token_budget: int = 100_000_000
 
     @classmethod
     def from_env(cls) -> DeepSeekSettings:
@@ -128,7 +128,7 @@ class DeepSeekSettings:
             timeout_seconds=max(1.0, number("DEEPSEEK_TIMEOUT_SECONDS", 60.0, float)),
             max_retries=max(0, number("DEEPSEEK_MAX_RETRIES", 2, int)),
             default_max_tokens=max(1, number("DEEPSEEK_DEFAULT_MAX_TOKENS", 1800, int)),
-            daily_token_budget=max(1, number("DEEPSEEK_DAILY_TOKEN_BUDGET_PER_WORKSPACE", 500_000, int)),
+            daily_token_budget=max(1, number("DEEPSEEK_DAILY_TOKEN_BUDGET_PER_WORKSPACE", 100_000_000, int)),
         )
 
     @classmethod

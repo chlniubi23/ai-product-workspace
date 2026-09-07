@@ -92,6 +92,7 @@ ROUTE_MANIFEST: list[tuple[str, tuple[str, ...], str]] = [
     ('/api/v1/jobs/{job_id}/cancel', ('POST',), 'cancel_job'),
     ('/api/v1/jobs/{job_id}/retry', ('POST',), 'retry_job'),
     ('/api/v1/me', ('GET',), 'me'),
+    ('/api/v1/me', ('PATCH',), 'update_me'),
     ('/api/v1/metrics', ('GET',), 'list_metrics_alias'),
     ('/api/v1/metrics', ('POST',), 'create_metric_alias'),
     ('/api/v1/metrics/{metric_id}', ('DELETE',), 'delete_metric_alias'),

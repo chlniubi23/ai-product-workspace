@@ -63,7 +63,9 @@ class WorkspaceSettings(BaseModel):
     ai_model_id: str = Field(default="deepseek-chat", min_length=1, max_length=100)
     ai_max_output_tokens: int = Field(default=4096, ge=1, le=131072)
     ai_per_request_token_budget: int = Field(default=16000, ge=1, le=1_000_000)
-    ai_daily_token_budget: int = Field(default=500000, ge=1, le=100_000_000)
+    # Batch 26: effectively unlimited -- the valve stays as a runaway safety
+    # net only; every other budget default is deliberately untouched.
+    ai_daily_token_budget: int = Field(default=100_000_000, ge=1, le=100_000_000)
     feature_flags: WorkspaceFeatureFlags = Field(default_factory=WorkspaceFeatureFlags)
 
 
@@ -443,3 +445,17 @@ class CopilotSessionCreate(BaseModel):
 class CopilotMessageCreate(BaseModel):
     content: str = Field(min_length=1)
     context: dict[str, Any] = Field(default_factory=dict)
+
+
+class MeUpdate(BaseModel):
+    """Batch 26 user-center payload: rename and/or password change.
+
+    Password fields must appear together -- one without the other is a client
+    bug, not a partial intent.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    current_password: str | None = Field(default=None, min_length=1)
+    new_password: str | None = Field(default=None, min_length=1)
