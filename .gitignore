@@ -49,3 +49,7 @@ output/
 Thumbs.db
 .idea/
 .vscode/
+
+# Deployment CLI artifacts
+.vercel/
+.railway/
