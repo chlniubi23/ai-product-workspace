@@ -533,13 +533,13 @@ export default function WorkbenchPage() {
       <section className="card card-pad" style={{ marginTop: 16 }}>
         <div className="card-head">
           <div>
-            <h1 style={{ fontSize: 22, margin: 0 }}>上传数据，直接得到分析报告</h1>
+            <h1 style={{ fontSize: 22, margin: 0 }}>📊 上传数据，直接得到分析报告</h1>
             <p className="card-kicker" style={{ marginTop: 6 }}>
-              一次可传多个文件。解析、体检、挑分析维度、写报告全部自动完成——数字由 Pandas 计算，报告由 AI
-              依据这些数字撰写，每一句都可追溯到统计结果。
+              一次可传多个文件。解析、体检、挑分析维度、写报告全部自动完成——
+              <strong>数字由 Pandas 计算，报告由 AI 撰写</strong>，每一句都可追溯到统计结果。
             </p>
           </div>
-          <span className="tag tag-blue">计算 + AI 报告</span>
+          <span className="tag tag-blue">智能分析 + AI 报告</span>
         </div>
 
         <div style={{ display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap", marginTop: 8 }}>
@@ -556,10 +556,10 @@ export default function WorkbenchPage() {
                 disabled={!projects.length || phase === "running"}
                 style={{ flex: 1 }}
               >
-                <option value="">{projects.length ? "选择项目" : "暂无项目"}</option>
+                <option value="">{projects.length ? "选择现有项目" : "暂无项目 - 请先创建或新建"}</option>
                 {projects.map((project) => (
                   <option value={project.id} key={project.id}>
-                    {project.name}
+                    {project.name || `项目 ${projectId}`}
                   </option>
                 ))}
               </select>
@@ -582,7 +582,7 @@ export default function WorkbenchPage() {
               <input
                 id="workbench-new-project"
                 value={newProjectName}
-                placeholder="项目名称"
+                placeholder="请输入项目名称"
                 onChange={(event) => setNewProjectName(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") void createProject();
@@ -657,16 +657,15 @@ export default function WorkbenchPage() {
               }}
             />
             <div style={{ pointerEvents: "none" }}>
-              <div className="dropzone-icon" style={{ margin: "0 auto 9px" }}>
-                <FileUp size={19} />
+              <div className="dropzone-icon" style={{ margin: "0 auto 12px" }}>
+                <FileUp size={40} />
               </div>
-              <strong>
-                {files.length
-                  ? `已选择 ${files.length} 个文件（共 ${formatFileSize(totalSize)}）`
-                  : "点击选择或拖入文件，可多选"}
-              </strong>
-              <p>
-                {files.length ? "点击下方按钮开始，无需再做别的操作" : "自动识别 UTF-8、UTF-8-SIG、GBK 编码"}
+              <strong style={{ fontSize: 14, marginBottom: 6 }}>拖拽文件到此处，或点击上传</strong>
+              <p style={{ color: "var(--muted)", fontSize: 12, lineHeight: 1.55 }}>
+                支持 CSV / XLSX · 最多 50MB/ 文件 · 可同时上传多个文件
+              </p>
+              <p style={{ color: "var(--faint)", fontSize: 11, marginTop: 10 }}>
+                🔒 自动识别 UTF-8 / UTF-8-SIG / GBK 编码
               </p>
             </div>
           </div>
@@ -713,9 +712,14 @@ export default function WorkbenchPage() {
             </p>
           )}
           <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 18 }}>
-            <button className="btn btn-primary" disabled={!files.length || !projectId} onClick={startUpload}>
+            <button 
+              className="btn btn-primary btn-sm" 
+              disabled={!files.length || !projectId}
+              onClick={startUpload}
+              style={{ minWidth: 180 }}
+            >
               <UploadCloud size={14} />
-              {files.length > 1 ? `上传 ${files.length} 个文件并自动分析` : "上传并自动分析"}
+              {files.length > 1 ? `上传${files.length}个文件并自动分析` : "上传并开始智能分析"}
             </button>
           </div>
         </section>
@@ -811,7 +815,7 @@ export default function WorkbenchPage() {
           </div>
           <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
             <Link className="btn btn-primary btn-sm" href="/stage6-interview">
-              下一步·AI 采访 <ChevronRight size={13} />
+              🎤 进入 AI 采访 →
             </Link>
           </div>
         </section>
@@ -822,12 +826,12 @@ export default function WorkbenchPage() {
         <section className="card card-pad" style={{ marginTop: 16 }}>
           <div className="card-head">
             <div>
-              <h2 className="card-title">报告背后的计算图表</h2>
+              <h2 className="card-title">📈 报告背后的计算图表</h2>
               <div className="card-kicker">
-                共 {charts.length} 张，全部由 Pandas 计算结果直接绘制，可复现。
+                共 {charts.length} 张 — 全部由<strong>Pandas</strong>计算，可直接复现。
               </div>
             </div>
-            <span className="tag tag-green">计算层 · 无 AI</span>
+            <span className="tag tag-green">确定性计算 · 无 AI</span>
           </div>
           <div style={{ display: "grid", gap: 16 }}>
             {charts.map((chart) => (

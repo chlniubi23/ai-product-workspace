@@ -7,16 +7,17 @@
  * caller can fall back to its table view.
  */
 
+import * as echarts from "echarts";
+
 type ChartPayload = Record<string, unknown>;
 
-// Batch 22 palette: single brand blue leads, then restrained categorical
-// supports; axes/split lines follow the neutral tokens (#e4e4e7 / #71717a).
-// Batch 27 polish: unified tooltip card, dashed hairline split lines, one
-// motion contract (400ms cubicOut) and a brand area gradient for solo lines.
-const AXIS_LABEL = { color: "#71717a", fontSize: 11 };
-const AXIS_LINE = { lineStyle: { color: "#e4e4e7" } };
-const SPLIT_LINE = { lineStyle: { color: "#f0f0f1", type: "dashed" } };
-const PALETTE = ["#2563eb", "#0891b2", "#d97706", "#dc2626", "#64748b"];
+/** Batch 27 enhanced palette with stronger brand and professional gradients */
+const AXIS_LABEL = { color: "#64748b", fontSize: 11 };
+const AXIS_LINE = { lineStyle: { color: "#e2e8f0" } };
+const SPLIT_LINE = { lineStyle: { color: "#f1f5f9", type: "dashed" } };
+const PALETTE = ["#6366f1", "#0891b2", "#f59e0b", "#ef4444", "#10b981"];
+const BRAND_COLOR = PALETTE[0];
+const BRAND_LIGHT = "#818cf8";
 const BRAND_AREA = {
   color: {
     type: "linear",
@@ -25,30 +26,30 @@ const BRAND_AREA = {
     x2: 0,
     y2: 1,
     colorStops: [
-      { offset: 0, color: "rgba(37, 99, 235, 0.08)" },
-      { offset: 1, color: "rgba(37, 99, 235, 0)" },
+      { offset: 0, color: "rgba(99, 102, 241, 0.15)" },
+      { offset: 1, color: "rgba(99, 102, 241, 0)" },
     ],
   },
 };
 
-/** Shared tooltip card: white, hairline border, soft overlay shadow. */
+/** Shared tooltip card: white with elevated shadow */
 function tooltip(trigger: "item" | "axis", extra: Record<string, unknown> = {}) {
   return {
     trigger,
     backgroundColor: "#ffffff",
-    borderColor: "#e4e4e7",
+    borderColor: "#e2e8f0",
     borderWidth: 1,
-    borderRadius: 6,
-    padding: [8, 10],
-    textStyle: { color: "#18181b", fontSize: 12 },
-    extraCssText: "box-shadow: 0 8px 24px rgba(24,24,27,0.12);",
+    borderRadius: 8,
+    padding: [10, 12],
+    textStyle: { color: "#0f172a", fontSize: 12 },
+    extraCssText: "box-shadow: 0 8px 24px rgba(15,23,42,0.1);",
     ...extra,
   };
 }
 
-/** One global motion contract for every chart. */
-const ANIMATION = { animationDuration: 400, animationEasing: "cubicOut" } as const;
-const LEGEND_LABEL = { color: "#71717a", fontSize: 12 };
+/** One global motion contract with enhanced easing */
+const ANIMATION = { animationDuration: 500, animationEasing: "cubicOut" } as const;
+const LEGEND_LABEL = { color: "#64748b", fontSize: 12 };
 
 function rowsOf(chart: ChartPayload, key: string): Record<string, unknown>[] {
   const value = chart[key];
@@ -74,7 +75,7 @@ function funnelOption(chart: ChartPayload, title: string) {
   return {
     color: PALETTE,
     ...ANIMATION,
-    tooltip: tooltip("item", { formatter: "{b}: {c} 人" }),
+    tooltip: tooltip("item", { formatter: "{b}: {c}人" }),
     series: [
       {
         type: "funnel",
@@ -83,10 +84,12 @@ function funnelOption(chart: ChartPayload, title: string) {
         right: "8%",
         top: 24,
         bottom: 24,
-        minSize: "18%",
+        minSize: "15%",
+        maxSize: "100%",
         sort: "none",
-        gap: 3,
+        gap: 4,
         label: { position: "inside", formatter: "{b} · {c}", color: "#fff", fontSize: 12 },
+        labelLayout: { horizontalAlign: "center", verticalAlign: "middle" },
         data,
       },
     ],
@@ -103,10 +106,10 @@ function retentionOption(chart: ChartPayload) {
   const series = cohorts.map((cohort, index) => ({
     name: cohort,
     type: "line",
-    smooth: 0.3,
-    showSymbol: rows.length <= 60,
+    smooth: 0.4,
+    symbol: "circle",
     symbolSize: 5,
-    itemStyle: { color: PALETTE[index % PALETTE.length] },
+    itemStyle: { color: PALETTE[index % PALETTE.length], borderWidth: 1 },
     data: periods.map((period) => {
       const match = rows.find((row) => String(row.cohort) === cohort && String(row.period) === period);
       const rate = match ? num(match.retention_rate) : null;
@@ -172,15 +175,21 @@ function anomalyOption(chart: ChartPayload) {
       {
         name: "指标",
         type: "line",
-        smooth: 0.3,
+        smooth: 0.4,
         symbol: "circle",
-        symbolSize: 4,
-        showSymbol: false,
-        itemStyle: { color: PALETTE[0] },
+        symbolSize: 6,
+        showSymbol: true,
+        itemStyle: { color: BRAND_COLOR, borderWidth: 2 },
         areaStyle: BRAND_AREA,
         data: points.map((point) => point[1]),
       },
-      { name: "异常点", type: "scatter", symbolSize: 11, itemStyle: { color: "#dc2626" }, data: flagged },
+      { 
+        name: "异常点", 
+        type: "scatter", 
+        symbolSize: 12, 
+        itemStyle: { color: "#ef4444", borderWidth: 2, borderColor: "#fff" },
+        data: flagged 
+      },
     ],
   };
 }
@@ -222,13 +231,13 @@ function barOption(chart: ChartPayload, title: string) {
     color: PALETTE,
     ...ANIMATION,
     tooltip: tooltip("axis", { valueFormatter: (value: unknown) => `${num(value) ?? 0}%` }),
-    grid: baseGrid({ top: 34, bottom: 72 }),
+    grid: baseGrid({ top: 34, bottom: 68 }),
     xAxis: {
       type: "category",
       data: data.map((row) => row.name),
       name: title,
       nameTextStyle: AXIS_LABEL,
-      axisLabel: { ...AXIS_LABEL, rotate: 28 },
+      axisLabel: { ...AXIS_LABEL, rotate: 30 },
       axisLine: AXIS_LINE,
     },
     yAxis: {
@@ -242,19 +251,86 @@ function barOption(chart: ChartPayload, title: string) {
       {
         name: title || "占比",
         type: "bar",
-        barMaxWidth: 42,
-        itemStyle: { color: PALETTE[0], borderRadius: [4, 4, 0, 0] },
+        barMaxWidth: 48,
+        itemStyle: {
+          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+            { offset: 0, color: BRAND_COLOR },
+            { offset: 1, color: BRAND_LIGHT },
+          ]),
+          borderRadius: [6, 6, 0, 0],
+        },
         label: {
           show: true,
           position: "top",
           formatter: "{c}%",
-          color: "#71717a",
+          color: "#64748b",
           fontSize: 11,
           fontFamily: "var(--font-mono), Menlo, monospace",
         },
         data: data.map((row) => row.value),
       },
     ],
+  };
+}
+
+function countBarOption(chart: ChartPayload, title: string) {
+  const data = rowsOf(chart, "data")
+    .map((row) => ({ name: String(row.name ?? ""), value: num(row.value) ?? 0 }))
+    .filter((row) => row.name !== "");
+  if (!data.length) return null;
+  const unit = String(chart.unit ?? "");
+  return {
+    color: PALETTE,
+    ...ANIMATION,
+    tooltip: tooltip("axis", { valueFormatter: (value: unknown) => `${num(value) ?? 0}${unit}` }),
+    grid: baseGrid({ top: 34, bottom: 68 }),
+    xAxis: {
+      type: "category",
+      data: data.map((row) => row.name),
+      name: title,
+      nameTextStyle: AXIS_LABEL,
+      axisLabel: { ...AXIS_LABEL, rotate: 28 },
+      axisLine: AXIS_LINE,
+    },
+    yAxis: { type: "value", name: unit, nameTextStyle: AXIS_LABEL, axisLabel: AXIS_LABEL, splitLine: SPLIT_LINE },
+    series: [{
+      name: title,
+      type: "bar",
+      barMaxWidth: 48,
+      itemStyle: {
+        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+          { offset: 0, color: BRAND_COLOR },
+          { offset: 1, color: BRAND_LIGHT },
+        ]),
+        borderRadius: [6, 6, 0, 0],
+      },
+      data: data.map((row) => row.value),
+    }],
+  };
+}
+
+function correlationHeatmapOption(chart: ChartPayload) {
+  const labels = Array.isArray(chart.labels) ? chart.labels.map(String) : [];
+  const data = Array.isArray(chart.data) ? chart.data : [];
+  if (!labels.length || !data.length) return null;
+  return {
+    ...ANIMATION,
+    tooltip: tooltip("item", {
+      formatter: (params: unknown) => {
+        if (!params || typeof params !== "object") return "";
+        const item = params as { value?: unknown };
+        const values = Array.isArray(item.value) ? item.value : [];
+        const x = Number(values[0]);
+        const y = Number(values[1]);
+        const value = num(values[2]);
+        return `${labels[x] ?? ""} × ${labels[y] ?? ""}<br/>Pearson r: ${value ?? "—"}`;
+      },
+    }),
+    grid: { left: 104, right: 24, top: 20, bottom: 64 },
+    xAxis: { type: "category", data: labels, axisLabel: AXIS_LABEL, axisLine: AXIS_LINE },
+    yAxis: { type: "category", data: labels, axisLabel: AXIS_LABEL, axisLine: AXIS_LINE },
+    visualMap: { min: -1, max: 1, calculable: true, orient: "horizontal", left: "center", bottom: 0 },
+    series: [{ name: "Pearson r", type: "heatmap", data, label: { show: true, formatter: "{@[2]}" } }],
   };
 }
 
@@ -274,6 +350,10 @@ export function toChartOption(payload: unknown, title = ""): Record<string, unkn
       return anomalyOption(shape);
     case "bar":
       return barOption(shape, title);
+    case "count_bar":
+      return countBarOption(shape, title);
+    case "correlation_heatmap":
+      return correlationHeatmapOption(shape);
     case "line":
       return lineOption(shape);
     default:

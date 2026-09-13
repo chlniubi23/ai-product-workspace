@@ -3,40 +3,66 @@
 @tailwind utilities;
 
 :root {
-  /* 中性面 */
-  --canvas: #f7f8fa; /* 页面底 */
-  --panel: #ffffff; /* 卡片/表面 */
-  --fill: #f2f3f5; /* 次级填充/hover */
-  --ink: #18181b; /* 主文字 */
-  --muted: #71717a; /* 次要文字 */
-  --faint: #a1a1aa; /* 辅助文字 */
-  --line: #e4e4e7; /* 常规边框 */
-  --line-strong: #d4d4d8; /* 强边框/分隔 */
-  /* 品牌（唯一强调色） */
-  --brand: #2563eb;
-  --brand-hover: #1d4ed8;
-  --brand-soft: #eff6ff;
-  --brand-border: #bfdbfe;
-  /* 语义状态（仅真实业务状态使用：通过/待定/失败） */
-  --success: #059669;
-  --success-soft: #ecfdf5;
+  /* 🎨 PREMIUM DESIGN SYSTEM - Modern Color Theory */
+  /* 中性面 - Sophisticated grayscale with blue undertones */
+  --canvas: #f8fafc; /* Airy, breathable background */
+  --panel: #ffffff; /* Crisp surface */
+  --fill: #f1f5f9; /* Refined hover states */
+  --ink: #0f172a; /* Rich, deep primary text */
+  --muted: #475569; /* Professional secondary text */
+  --faint: #94a3b8; /* Subtle tertiary text */
+  --line: #e2e8f0; /* Delicate dividers */
+  --line-strong: #cbd5e1; /* Defined boundaries */
+  
+  /* 🌟 Brand identity - Vibrant & trustworthy */
+  --brand: #6366f1; /* Indigo - creativity + stability */
+  --brand-hover: #4f46e5;
+  --brand-soft: #eef2ff;
+  --brand-border: #c7d2fe;
+  --brand-glow: rgba(99, 102, 241, 0.12);
+  --brand-gradient: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  /* 💫 Semantic colors - Emotional resonance */
+  --success: #10b981; /* Hopeful green */
+  --success-soft: #ecfdf7;
   --success-border: #a7f3d0;
-  --warning: #b45309;
+  --warning: #f59e0b; /* Energetic amber */
   --warning-soft: #fffbeb;
   --warning-border: #fde68a;
-  --danger: #dc2626;
+  --danger: #ef4444; /* Urgent red */
   --danger-soft: #fef2f2;
   --danger-border: #fecaca;
-  /* 形状与阴影：线优于影；卡片=边框+极淡双层影，悬浮层用 overlay（批 27 精修） */
-  --radius: 8px;
-  --radius-lg: 10px;
-  --radius-sm: 6px;
-  --shadow-overlay: 0 8px 24px rgba(24, 24, 27, 0.12);
-  --shadow-hover: 0 4px 12px rgba(24, 24, 27, 0.06);
-  --shadow-card: 0 1px 2px rgba(24, 24, 27, 0.04);
-  /* 数据数字专用等宽栈（中文正文字体栈不变） */
+  
+  /* ✨ Shapes & Depth - Layered hierarchy */
+  --radius: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --radius-sm: 8px;
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05);
+  --shadow: 0 4px 6px rgba(15, 23, 42, 0.07);
+  --shadow-md: 0 8px 16px rgba(15, 23, 42, 0.08);
+  --shadow-lg: 0 12px 28px rgba(15, 23, 42, 0.1);
+  --shadow-xl: 0 20px 40px rgba(15, 23, 42, 0.12);
+  --shadow-interactive: 0 4px 14px rgba(99, 102, 241, 0.15);
+  --shadow-float: 0 8px 32px rgba(15, 23, 42, 0.12);
+  /* 🔤 Typography scale - Rhythmic hierarchy */
+  --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
   --font-mono: ui-monospace, "Cascadia Code", Consolas, "SF Mono", Menlo, monospace;
-  /* 旧令牌别名（历史选择器仍在引用；全部映射进新色板，保证不偏离） */
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.5rem;
+  --text-3xl: 1.875rem;
+  --text-4xl: 2.25rem;
+  
+  /* 🌊 Motion & Transition - Fluid dynamics */
+  --motion-fast: 150ms;
+  --motion-normal: 300ms;
+  --motion-slow: 500ms;
+  --ease-out: cubic-bezier(0.33, 1, 0.68, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  /* 旧令牌别名 (历史选择器仍在引用; 全部映射进新色板，保证不偏离) */
   --teal: var(--success);
   --teal-soft: var(--success-soft);
   --amber: var(--warning);
@@ -45,7 +71,7 @@
   --rose-soft: var(--danger-soft);
   --nav: var(--ink);
   --nav-muted: var(--muted);
-  --shadow: var(--shadow-overlay);
+  --shadow: var(--shadow-lg);
 }
 
 * {
@@ -75,15 +101,28 @@ body {
     "Microsoft YaHei",
     sans-serif;
   -webkit-font-smoothing: antialiased;
+  background-image:
+    radial-gradient(800px 400px at 50% -100px, var(--brand-glow) 0%, transparent 60%),
+    linear-gradient(rgba(15, 23, 42, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.03) 1px, transparent 1px);
+  background-size:
+    auto,
+    32px 32px,
+    32px 32px,
+    auto;
 }
-/* 6px 细滚动条（webkit 全局 + Firefox thin） */
+/* 🌊 Refined scrollbar - Minimal & elegant */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--line-strong);
-  border-radius: 3px;
+  background: linear-gradient(180deg, var(--line-strong) 0%, var(--line) 100%);
+  border-radius: 4px;
+  transition: background 0.2s ease;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
 }
 ::-webkit-scrollbar-track {
   background: transparent;
@@ -123,30 +162,37 @@ button {
   position: fixed;
   inset: 0 auto 0 0;
   z-index: 40;
-  width: 246px;
-  background: var(--panel);
+  width: 260px;
+  background: linear-gradient(180deg, var(--panel) 0%, var(--canvas) 100%);
   border-right: 1px solid var(--line);
   color: var(--ink);
   display: flex;
   flex-direction: column;
-  padding: 23px 15px 16px;
-  transition: transform 0.2s ease;
+  padding: 28px 20px 24px;
+  transition: transform var(--motion-normal) var(--ease-out);
   overflow-y: auto;
+  box-shadow: var(--shadow-sm);
 }
 .sidebar-brand {
   display: flex;
   align-items: center;
-  gap: 11px;
-  padding: 0 9px 24px;
+  gap: 12px;
+  padding: 0 10px 26px;
+  margin-bottom: 10px;
 }
 .brand-mark {
-  width: 30px;
-  height: 30px;
+  width: 36px;
+  height: 36px;
   display: grid;
   place-items: center;
-  border-radius: var(--radius);
-  background: var(--brand);
+  border-radius: 12px;
+  background: var(--brand-gradient);
   color: #fff;
+  box-shadow: var(--shadow-interactive);
+  transition: transform var(--motion-fast) var(--ease-out);
+}
+.brand-mark:hover {
+  transform: scale(1.05);
 }
 .brand-mark svg {
   width: 17px;
@@ -164,12 +210,13 @@ button {
   margin-top: 2px;
 }
 .nav-label {
-  padding: 5px 11px 8px;
+  padding: 6px 12px 10px;
   color: var(--faint);
   font-size: 10px;
   font-weight: 600;
-  letter-spacing: 0.09em;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
+  text-shadow: 0 1px 0 rgba(255,255,255,0.8);
 }
 .nav-list {
   display: grid;
@@ -178,28 +225,30 @@ button {
 .nav-item {
   display: flex;
   align-items: center;
-  gap: 11px;
-  min-height: 40px;
-  padding: 0 11px;
-  border-radius: var(--radius-sm);
+  gap: 12px;
+  min-height: 42px;
+  padding: 0 12px;
+  border-radius: var(--radius);
   color: var(--muted);
   font-size: 13px;
   transition:
     color 0.15s,
-    background 0.15s;
+    background 0.15s,
+    transform 0.1s ease-out;
 }
 .nav-item:hover {
   color: var(--ink);
-  background: var(--fill);
+  background: linear-gradient(90deg, var(--fill) 0%, transparent 100%);
 }
+
 .nav-item.active {
   color: var(--brand);
-  background: var(--brand-soft);
+  background: linear-gradient(90deg, var(--brand-soft) 0%, transparent 100%);
   font-weight: 600;
   box-shadow: inset 2px 0 0 var(--brand);
 }
+
 .nav-item svg {
-  flex: 0 0 auto;
   width: 17px;
   height: 17px;
 }
@@ -960,12 +1009,18 @@ button {
   border-color: var(--brand);
   background: var(--brand);
   color: #fff;
+  box-shadow: var(--shadow-interactive);
+  transition: all var(--motion-fast) var(--ease-out);
 }
+
 .btn-primary:hover {
   border-color: var(--brand-hover);
   background: var(--brand-hover);
   color: white;
+  box-shadow: 0 6px 20px rgba(99, 102, 241, 0.3);
+  transform: translateY(-2px);
 }
+
 .btn-dark {
   border-color: var(--ink);
   background: var(--ink);
@@ -1030,12 +1085,13 @@ button {
     border-color 0.15s ease-out,
     box-shadow 0.15s ease-out;
 }
-/* hover 微升：纯视觉反馈，不改变指针语义（可点击卡自带链接/按钮光标） */
+/* .card hover 微升 + 阴影加深 */
 .card:hover {
-  transform: translateY(-1px);
+  transform: translateY(-2px);
   border-color: var(--line-strong);
   box-shadow: var(--shadow-hover);
 }
+
 .card-pad {
   padding: 20px;
 }
