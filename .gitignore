@@ -53,3 +53,8 @@ Thumbs.db
 # Deployment CLI artifacts
 .vercel/
 .railway/
+
+# AI workspace data (session memory, caches). Keep the directory on disk --
+# it is project state managed by the tool, never source to be committed.
+.workbuddy/
+.workbuddy-ai/
