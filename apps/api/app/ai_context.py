@@ -175,6 +175,10 @@ _AGGREGATE_LIST_KEYS = frozenset(
         "evidence",
         "ids",
         "metrics",
+        # Variable-pair aggregates (e.g. correlation pairs: var1/var2 + scalars).
+        # Each entry is a pair of variable names plus scalar statistics -- never
+        # row-level data -- so the key is allow-listed as an aggregate carrier.
+        "pairs",
         "stages",
         "cohorts",
     }

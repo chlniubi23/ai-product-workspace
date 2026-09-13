@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from ..analytics.quality import assess_quality, infer_column_type
+from ..analytics.quality import assess_quality, generate_quality_report, infer_column_type
 from ..common import _require_pandas, error, model_dict, pd, serialize
 from ..config import settings
 from ..infrastructure.jobs import JobExecutionError
@@ -142,6 +142,12 @@ def _quality_summary(df: pd.DataFrame) -> tuple[float, str, dict[str, Any]]:
         "anomalies": anomalies,
         "sample": report.get("sample") or _json_records(df.head(5)),
     })
+    # Dual-dimension quality rides along as an extra ``summary_json`` key only.
+    # ``overall_score``/``status`` stay exactly as ``assess_quality`` produced them
+    # -- they remain the stage-3 gate and the analysis-run quality gate, so the
+    # split must never move them.  Parsing happens before any analysis run, so the
+    # analysis dimension is computed from empty inputs ("增强分析尚未运行").
+    report["dual_quality"] = generate_quality_report(df).to_dict()
     return float(report.get("overall_score", 0)), str(report.get("status", "needs_review")), report
 
 

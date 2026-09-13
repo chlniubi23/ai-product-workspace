@@ -450,6 +450,11 @@ _AI_ARTIFACT_KEY_MAP = {
     "group_results": "categories",
     "anomalies": "evidence",
     "trend_points": "series",
+    # Phase 1: EDA now carries the enhanced correlation statistics (p values,
+    # robust estimates) under ``correlation_pairs_detail``.  Each entry is a
+    # variable pair plus scalars -- no row data -- so it maps onto the
+    # ``pairs`` aggregate key and survives the firewall.
+    "correlation_pairs_detail": "pairs",
 }
 # Row-level or render-only payload that must never reach a provider.
 _AI_ARTIFACT_DROP_KEYS = frozenset({"rows", "records", "data", "samples", "chart", "option", "configSnapshot", "chartType", "datasetVersionId"})

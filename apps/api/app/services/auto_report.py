@@ -13,6 +13,7 @@ from ..ai_context import (
     empty_report_output,
     validate_report_output,
 )
+from ..analytics.dag import build_lineage_map
 from ..analytics.digest import column_display, dataset_display
 from ..analytics.engine import AnalysisEngine, choose_trend_frequency
 from ..analytics.text_metrics import extract_text_metrics
@@ -67,8 +68,14 @@ def _compute_report_aggregates(snapshot: dict[str, Any]) -> dict[str, Any]:
     # EDA / trend / grouping all run on the extended frame so derived metrics
     # (e.g. "metrics_summary__DAU") become first-class numbers.
     frame, _extraction_report = extract_text_metrics(frame)
+    extracted_columns = {
+        str(item.get("name"))
+        for item in snapshot.get("columns") or []
+        if isinstance(item, Mapping) and item.get("source") == "extracted" and item.get("name")
+    }
+    lineage_map = build_lineage_map([str(name) for name in frame.columns], extracted_columns)
     engine = AnalysisEngine(snapshot["version_id"])
-    eda = engine.run_eda(frame, top_n=5).to_dict()
+    eda = engine.run_eda(frame, top_n=5, lineage_map=lineage_map).to_dict()
     eda_payload = dict(eda.get("payload_json") or {})
 
     schema_types = {str(item["name"]): str(item["type"]) for item in snapshot.get("columns") or []}
@@ -164,6 +171,22 @@ def _compute_report_aggregates(snapshot: dict[str, Any]) -> dict[str, Any]:
             correlations[f"{pair.get('left')} ~ {pair.get('right')}"] = round(float(pair["correlation"]), 4)
     if correlations:
         aggregates["correlation_pairs"] = correlations
+    correlation_details = [
+        {
+            key: pair.get(key)
+            for key in ("var1", "var2", "pearson_r", "pearson_p", "robust_pearson", "robust_spearman", "is_significant", "correlation_strength", "robustness_note")
+            if pair.get(key) is not None
+        }
+        for pair in list(eda_payload.get("correlation_pairs_detail") or [])[:12]
+        if isinstance(pair, Mapping)
+    ]
+    if correlation_details:
+        # ``pairs`` is a firewall-approved aggregate carrier; all fields here
+        # are scalar pair statistics, with no row-level references.
+        aggregates["correlation_pairs_detail"] = correlation_details
+    excluded_correlation_pairs = int(eda_payload.get("excluded_correlation_pairs") or 0)
+    if excluded_correlation_pairs:
+        aggregates["excluded_correlation_pairs"] = excluded_correlation_pairs
 
     if datetime_column and numeric_column:
         try:

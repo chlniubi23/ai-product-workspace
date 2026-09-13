@@ -43,7 +43,12 @@ def test_reducer_keeps_real_numbers_for_every_artifact_type():
             )
             assert context["artifacts"][0]["payload"], f"{kind}/{artifact['artifact_type']} reduced to nothing"
             seen += 1
-    assert seen >= 3
+    # Phase 1 collapsed the two former EDA artifacts ("Descriptive statistics"
+    # table + "Dataset summary" metric) into a single "EDA summary" artifact whose
+    # payload still carries the per-column statistics, so eda + retention now emit
+    # 2 artifacts instead of 3.  The guard stays non-vacuous: every artifact of
+    # both kinds must survive reduction with real numbers.
+    assert seen >= 2
 
 
 def test_reducer_drops_row_level_data():

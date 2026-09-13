@@ -2,16 +2,204 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from typing import Any
 
 from sqlalchemy.orm import Session
 
+from ..analytics.corelation import compute_full_correlation_matrix
+from ..analytics.dag import build_lineage_map
 from ..analytics.engine import AnalysisEngine, choose_trend_frequency
+from ..analytics.outliers import build_outlier_aggregates, build_raw_outliers_map
+from ..analytics.types import TYPE_LABELS, compute_type_aware_stats
 from ..common import _require_pandas, error, pd, serialize
 from ..models import AnalysisArtifact, AnalysisRun, DataColumn, DataQualityReport, DatasetVersion, Project, now
 from ..schemas import AnalysisCreate
 from ..services.audit import audit
 from .datasets import _json_records
+
+#: Phase 1 新增的增强分析类型（**仅手动可选**，不进 `_auto_analysis_plan`）。
+ENHANCED_ANALYSIS_TYPES = frozenset({"correlation_analysis", "type_profile", "outlier_objects"})
+
+
+def _extracted_column_names(version: DatasetVersion) -> set[str]:
+    """``DataColumn.source == "extracted"`` 的列名集合 —— 派生列的**权威来源**。
+
+    解析阶段（``job_handlers._handle_dataset_parse``）把字段字典写进
+    ``version.schema_json`` 并同步落库 ``data_columns.source``，两者同源。这里读
+    ``schema_json`` 而不是 ``version.columns`` 关系，避免在无 session 的调用路径上
+    触发额外查询。
+    """
+
+    schema = version.schema_json
+    if isinstance(schema, Mapping):
+        entries = schema.get("columns") or []
+    elif isinstance(schema, list):
+        entries = schema
+    else:
+        entries = []
+    extracted = {
+        str(column.name)
+        for column in (getattr(version, "columns", None) or [])
+        if getattr(column, "source", None) == "extracted" and getattr(column, "name", None)
+    }
+    if extracted:
+        return extracted
+    return {
+        str(item.get("name"))
+        for item in entries
+        if isinstance(item, Mapping) and item.get("source") == "extracted" and item.get("name")
+    }
+
+
+def _lineage_for_version(frame: pd.DataFrame, version: DatasetVersion) -> dict[str, Any]:
+    """合并派生列的两套判定（抽取记录为权威 + dag 列名模式识别叠加）。"""
+
+    return build_lineage_map([str(column) for column in frame.columns], _extracted_column_names(version))
+
+
+def _numeric_targets(frame: pd.DataFrame, config: Mapping[str, Any]) -> list[str]:
+    """新分析类型的数值列目标：``columns`` 白名单优先，其次 ``metric_column``，否则全部数值列。"""
+
+    pd = _require_pandas()
+    requested = config.get("columns")
+    if isinstance(requested, list) and requested:
+        candidates = [str(name) for name in requested]
+    elif config.get("metric_column"):
+        candidates = [str(config["metric_column"])]
+    else:
+        candidates = [str(column) for column in frame.select_dtypes(include="number").columns]
+    return [name for name in candidates if name in frame.columns and pd.api.types.is_numeric_dtype(frame[name])]
+
+
+def _correlation_analysis_artifact(frame: pd.DataFrame, version: DatasetVersion, config: dict[str, Any]) -> dict[str, Any]:
+    """增强相关性分析：每对变量带 p 值与稳健估计，并排除伪相关对。
+
+    产物形状按 §3 对齐防火墙：变量对放在 ``pairs``（Phase 1 决策 2 新增的聚合键）
+    下，每项全为标量，**不含行级数据**，因此不需要放宽 ``_ROW_LIST_KEYS``。
+    """
+
+    pd = _require_pandas()
+    numeric_columns = _numeric_targets(frame, config)
+    lineage_map = _lineage_for_version(frame, version)
+    outliers_map = build_raw_outliers_map(frame, numeric_columns) if numeric_columns else {}
+
+    matrix, results, mechanical_excluded, excluded_derived_pairs = compute_full_correlation_matrix(
+        frame,
+        numeric_columns,
+        lineage_map,
+        outliers_map=outliers_map,
+    )
+    labels = [str(column) for column in numeric_columns]
+    heatmap: list[list[Any]] = []
+    for row_index, row_name in enumerate(labels):
+        for column_index, column_name in enumerate(labels):
+            value = matrix.loc[row_name, column_name] if labels else None
+            heatmap.append([column_index, row_index, round(float(value), 4) if pd.notna(value) else None])
+
+    option = {
+        "tooltip": {"position": "top"},
+        "grid": {"left": 104, "right": 24, "top": 20, "bottom": 64},
+        "xAxis": {"type": "category", "data": labels, "splitArea": {"show": True}},
+        "yAxis": {"type": "category", "data": labels, "splitArea": {"show": True}},
+        "visualMap": {"min": -1, "max": 1, "calculable": True, "orient": "horizontal", "left": "center", "bottom": 0},
+        "series": [{"name": "Pearson r", "type": "heatmap", "data": heatmap, "label": {"show": True, "formatter": "{@[2]}"}}],
+    }
+    payload = {
+        "datasetVersionId": version.id,
+        "configSnapshot": config,
+        "chartType": "correlation_heatmap",
+        "title": "Correlation analysis",
+        "pairs": [result.to_dict() for result in results],
+        "excluded_correlation_pairs": excluded_derived_pairs + len(mechanical_excluded),
+        "chart": {"type": "correlation_heatmap", "labels": labels, "data": heatmap},
+        "option": option,
+    }
+    return {"artifact_type": "chart", "title": "Correlation analysis", "payload_json": payload}
+
+
+def _type_profile_artifact(frame: pd.DataFrame, version: DatasetVersion, config: dict[str, Any]) -> dict[str, Any]:
+    """类型感知统计：序数列出分布+众数、占比列出分位数+极值，其余出标准描述统计。
+
+    每列一项 ``metrics`` 条目（``[{name, ...}]`` 列表形状，不是「以列名为键的 dict」）。
+    刻意**不搬运** ``min_row_index`` / ``max_row_index`` / ``range_info`` —— 它们携带
+    行身份（``range_info`` 文本里写着「第 N 行」），按决策 1 一律不出站。
+    """
+
+    stats = compute_type_aware_stats(frame)
+    metrics: list[dict[str, Any]] = []
+    counts: dict[str, int] = {}
+    for name, info in stats.items():
+        if not isinstance(info, Mapping):
+            continue
+        inferred = str(info.get("inferred_type") or "unknown")
+        label = TYPE_LABELS.get(inferred, "未知")
+        entry: dict[str, Any] = {
+            "name": str(name),
+            "inferred_type": inferred,
+            "type_label": label,
+            "dtype": str(info.get("dtype") or ""),
+            "confidence": info.get("confidence"),
+        }
+        for key in ("distribution", "percentages", "mode", "mode_percentage", "quantiles", "min_value", "max_value", "mean", "median", "n_total"):
+            value = info.get(key)
+            if value is not None:
+                entry[key] = value
+        statistics = info.get("statistics")
+        if isinstance(statistics, Mapping):
+            entry["statistics"] = {key: value for key, value in statistics.items() if value is not None}
+        metrics.append(entry)
+        counts[label] = counts.get(label, 0) + 1
+
+    data = [{"name": label, "value": count} for label, count in sorted(counts.items(), key=lambda item: item[1], reverse=True)]
+    option = {
+        "tooltip": {"trigger": "axis"},
+        "grid": {"left": 52, "right": 20, "top": 24, "bottom": 44},
+        "xAxis": {"type": "category", "data": [item["name"] for item in data]},
+        "yAxis": {"type": "value"},
+        "series": [{"name": "列数", "type": "bar", "data": [item["value"] for item in data], "itemStyle": {"color": "#6366f1"}}],
+    }
+    payload = {
+        "datasetVersionId": version.id,
+        "configSnapshot": config,
+        "chartType": "count_bar",
+        "title": "Type-aware statistics",
+        "metrics": metrics,
+        "chart": {"type": "count_bar", "data": data, "unit": "列"},
+        "option": option,
+    }
+    return {"artifact_type": "metric", "title": "Type-aware statistics", "payload_json": payload}
+
+
+def _outlier_objects_artifact(frame: pd.DataFrame, version: DatasetVersion, config: dict[str, Any]) -> dict[str, Any]:
+    """对象级离群值摘要（决策 1 · 方案 A：按列有界聚合，**不含行号**）。"""
+
+    metrics = build_outlier_aggregates(frame, _numeric_targets(frame, config))
+    data = [{"name": str(item["name"]), "value": int(item["count"])} for item in metrics]
+    option = {
+        "tooltip": {"trigger": "axis"},
+        "grid": {"left": 52, "right": 20, "top": 24, "bottom": 64},
+        "xAxis": {"type": "category", "axisLabel": {"rotate": 28}, "data": [item["name"] for item in data]},
+        "yAxis": {"type": "value"},
+        "series": [{"name": "离群值个数", "type": "bar", "data": [item["value"] for item in data], "itemStyle": {"color": "#6366f1"}}],
+    }
+    payload = {
+        "datasetVersionId": version.id,
+        "configSnapshot": config,
+        "chartType": "count_bar",
+        "title": "Outlier objects",
+        "metrics": metrics,
+        "chart": {"type": "count_bar", "data": data, "unit": "个"},
+        "option": option,
+    }
+    return {"artifact_type": "chart", "title": "Outlier objects", "payload_json": payload}
+
+
+_ENHANCED_ARTIFACT_BUILDERS = {
+    "correlation_analysis": _correlation_analysis_artifact,
+    "type_profile": _type_profile_artifact,
+    "outlier_objects": _outlier_objects_artifact,
+}
 
 
 def _analysis_artifacts(frame: pd.DataFrame, version: DatasetVersion, analysis_type: str, config: dict[str, Any]) -> list[dict[str, Any]]:
@@ -22,6 +210,10 @@ def _analysis_artifacts(frame: pd.DataFrame, version: DatasetVersion, analysis_t
     kind = str(analysis_type or "").strip().lower()
     engine = AnalysisEngine(dataset_version_id=version.id)
     field_mapping = dict(config.get("field_mapping") or {}) if isinstance(config.get("field_mapping"), dict) else {}
+
+    enhanced_builder = _ENHANCED_ARTIFACT_BUILDERS.get(kind)
+    if enhanced_builder is not None:
+        return [enhanced_builder(frame, version, config)]
 
     # The user-facing API and Copilot tool registry share the same deterministic
     # implementation so an identical version/config produces the same evidence.
@@ -156,10 +348,16 @@ def _analysis_artifacts(frame: pd.DataFrame, version: DatasetVersion, analysis_t
         return [{"artifact_type": result["artifact_type"], "title": result["title"], "payload_json": payload}]
 
     if analysis_type in {"eda", "descriptive", "overview"}:
-        describe = frame.describe(include="all").replace({float("nan"): None})
-        payload = {str(k): serialize(v) for k, v in describe.to_dict().items()}
-        artifacts.append({"artifact_type": "table", "title": "Descriptive statistics", "payload_json": {"columns": list(frame.columns), "rows": _json_records(describe.reset_index())}})
-        artifacts.append({"artifact_type": "metric", "title": "Dataset summary", "payload_json": {"row_count": len(frame), "column_count": len(frame.columns), "numeric_columns": numeric_columns, "missing_cells": int(frame.isna().sum().sum()), "stats": payload}})
+        # Phase 1: EDA has one deterministic correlation implementation.  The
+        # enhanced engine keeps the legacy ``correlations`` entries and appends
+        # scalar detail under ``correlation_pairs_detail``; the service stores
+        # that artifact unchanged so report narration and digest share it.
+        eda_payload = engine.run_eda(
+            frame,
+            top_n=int(config.get("top_n") or 10),
+            lineage_map=_lineage_for_version(frame, version),
+        ).to_dict()["payload_json"]
+        artifacts.append({"artifact_type": "table", "title": "EDA summary", "payload_json": eda_payload})
     elif analysis_type in {"group", "grouped", "segmentation", "group_analysis"}:
         group_column = config.get("group_column") or config.get("segment_column")
         metric_column = config.get("metric_column")
@@ -328,6 +526,9 @@ SUPPORTED_ANALYSIS_TYPES = {
     "eda", "descriptive", "overview", "trend", "time_series", "group", "grouped",
     "segmentation", "group_analysis", "group_comparison", "funnel", "conversion",
     "retention", "retention_analysis", "anomaly", "anomalies", "health", "health_score",
+    # Phase 1: enhanced analysis types.  Deliberately **manual only** -- they are
+    # not added to ``_auto_analysis_plan`` (which stays capped at four).
+    "correlation_analysis", "type_profile", "outlier_objects",
 }
 
 
@@ -476,6 +677,21 @@ def _analysis_config_validation(version: DatasetVersion, analysis_type: str, con
             errors.append("method must be iqr, zscore or rolling")
     elif kind in {"health", "health_score"} and not columns:
         errors.append("health analysis requires a non-empty dataset")
+    elif kind in {"correlation_analysis", "type_profile", "outlier_objects"}:
+        # Phase 1 enhanced types need no required mapping: correlation_analysis and
+        # outlier_objects fall back to every numeric column, type_profile covers all
+        # columns.  ``columns`` is an optional whitelist, so only reject unknown names.
+        requested = config.get("columns")
+        if requested is not None:
+            if not isinstance(requested, list) or any(not str(name).strip() for name in requested):
+                errors.append("columns must be a list of column names")
+            else:
+                for name in requested:
+                    if str(name) not in columns:
+                        errors.append(f"Missing column: {name}")
+        metric_column = config.get("metric_column")
+        if metric_column and str(metric_column) not in columns:
+            errors.append(f"Missing column: {metric_column}")
     # Preserve stable ordering for deterministic API responses and tests.
     return {
         "errors": list(dict.fromkeys(errors)),
