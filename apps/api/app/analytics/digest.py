@@ -124,6 +124,24 @@ def _correlation_findings(dataset: dict[str, Any], findings: list[dict[str, Any]
         )
 
 
+def _excluded_correlation_findings(dataset: dict[str, Any], findings: list[dict[str, Any]]) -> None:
+    """Expose pseudo-correlation exclusions as an auditable, bounded finding."""
+
+    count = dataset.get("excluded_correlation_pairs")
+    if not isinstance(count, (int, float)) or int(count) <= 0:
+        return
+    findings.append(
+        {
+            "kind": "pseudo_correlation_excluded",
+            "dataset": str(dataset.get("name") or ""),
+            "statement": f"「{dataset_display(dataset)}」已排除 {int(count)} 对派生列/机械相关，避免将数学必然性误判为业务洞察。",
+            "severity": 1,
+            "columns": [],
+            "value": int(count),
+        }
+    )
+
+
 def _trend_findings(dataset: dict[str, Any], findings: list[dict[str, Any]]) -> None:
     trend = dataset.get("trend")
     if not isinstance(trend, dict):
@@ -313,6 +331,7 @@ def build_findings_digest(aggregates: list[dict[str, Any]]) -> list[dict[str, An
             continue
         _missing_findings(dataset, findings)
         _correlation_findings(dataset, findings)
+        _excluded_correlation_findings(dataset, findings)
         _trend_findings(dataset, findings)
         _concentration_findings(dataset, findings)
         _duplicate_findings(dataset, findings)

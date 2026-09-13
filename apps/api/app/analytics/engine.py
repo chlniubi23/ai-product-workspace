@@ -19,6 +19,10 @@ from uuid import uuid4
 import numpy as np
 import pandas as pd
 
+from .corelation import compute_full_correlation_matrix
+from .dag import ColumnLineage
+from .outliers import build_raw_outliers_map
+
 
 def _jsonable(value: Any) -> Any:
     if value is None or value is pd.NA or value is pd.NaT:
@@ -242,7 +246,13 @@ class AnalysisEngine:
             fingerprint=_fingerprint(self.dataset_version_id, config),
         )
 
-    def run_eda(self, data: pd.DataFrame | Sequence[Mapping[str, Any]], *, top_n: int = 10) -> AnalysisArtifact:
+    def run_eda(
+        self,
+        data: pd.DataFrame | Sequence[Mapping[str, Any]],
+        *,
+        top_n: int = 10,
+        lineage_map: dict[str, ColumnLineage] | None = None,
+    ) -> AnalysisArtifact:
         if top_n < 1:
             raise ValueError("top_n must be at least 1")
         frame = _dataframe(data)
@@ -276,19 +286,43 @@ class AnalysisEngine:
             columns.append(item)
 
         numeric = frame.select_dtypes(include=[np.number])
+        numeric_columns = [str(name) for name in numeric.columns]
         correlations: list[dict[str, Any]] = []
-        if numeric.shape[1] >= 2:
-            matrix = numeric.corr(method="pearson")
-            for left_index, left in enumerate(matrix.columns):
-                for right in matrix.columns[left_index + 1 :]:
-                    value = matrix.loc[left, right]
-                    correlations.append({"left": str(left), "right": str(right), "correlation": float(value) if pd.notna(value) else None})
+        correlation_pairs_detail: list[dict[str, Any]] = []
+        excluded_correlation_pairs = 0
+        if len(numeric_columns) >= 2:
+            # Phase 1: the EDA correlation block is backed by the enhanced
+            # correlation analysis (significance tests, robust estimates and
+            # pseudo-correlation exclusion).  There is still exactly ONE
+            # correlation path -- ``payload["correlations"]`` keeps its historical
+            # ``{left, right, correlation}`` contract because
+            # ``auto_report._compute_report_aggregates`` and
+            # ``digest._correlation_findings`` read it; the richer statistics are
+            # appended alongside it instead of replacing it.
+            outliers_map = build_raw_outliers_map(frame, numeric_columns)
+            matrix, results, mechanical_excluded, excluded_derived_pairs = compute_full_correlation_matrix(
+                frame,
+                numeric_columns,
+                lineage_map,
+                outliers_map=outliers_map,
+            )
+            excluded_correlation_pairs = excluded_derived_pairs + len(mechanical_excluded)
+            for result in results:
+                value = result.pearson_r
+                correlations.append({
+                    "left": str(result.var1),
+                    "right": str(result.var2),
+                    "correlation": float(value) if pd.notna(value) else None,
+                })
+                correlation_pairs_detail.append(result.to_dict())
         payload = {
             "row_count": int(len(frame)),
             "column_count": int(len(frame.columns)),
             "columns": columns,
             "duplicate_rows": int(frame.duplicated(keep="first").sum()),
             "correlations": correlations,
+            "correlation_pairs_detail": _jsonable(correlation_pairs_detail),
+            "excluded_correlation_pairs": int(excluded_correlation_pairs),
             "preview": _jsonable(frame.head(10).replace({np.nan: None}).to_dict(orient="records")),
         }
         config = {"analysis_type": "eda", "top_n": top_n}

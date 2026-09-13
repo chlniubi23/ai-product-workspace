@@ -1,4 +1,11 @@
-"""Deterministic data quality checks (the cleaning pipeline was removed in batch 11; the cleaning_operations table is kept but unused)."""
+"""Deterministic data quality checks, plus enhanced dual-dimension quality assessment.
+
+The first part of this module preserves the original, stable quality contract
+(``QualityReport`` / ``assess_quality``) used across the API and background jobs.
+The second part adds the batch: split quality into a *data quality* score
+(completeness/type compliance) and an *analysis quality* score (method coverage),
+so callers no longer read a single number as if it meant both.
+"""
 
 from __future__ import annotations
 
@@ -57,16 +64,7 @@ def _jsonable(value: Any) -> Any:
 
 
 def infer_column_type(series: pd.Series) -> str:
-    """Infer one of the product's stable display types.
-
-    Batch 14 delegates to ``parsing.infer_column_type_v2`` so upload inference,
-    the report pipeline and the derived-metric engine share one grammar
-    (thousands separators, currency, percent, magnitude suffixes, Chinese
-    dates, booleans).  The v2 semantic type maps onto the historical
-    vocabulary: numeric/datetime/boolean keep their names, while
-    category/text/identifier all surface as ``categorical`` -- the finer
-    classification lives in the v2 result, not in this legacy contract.
-    """
+    """Infer one of the product's stable display types (legacy contract)."""
 
     if pd.api.types.is_bool_dtype(series):
         return "boolean"
@@ -186,8 +184,6 @@ def assess_quality(
                 })
         column_reports.append(report)
 
-    # Count rows that would be removed by a stable first-occurrence de-duplication.
-    # This matches the backend quality endpoint and keeps the metric actionable.
     duplicate_rows = int(frame_for_checks.duplicated(keep="first").sum())
     duplicate_key_rows = 0
     if key_columns:
@@ -263,10 +259,228 @@ def assess_quality(
 run_quality_checks = assess_quality
 check_data_quality = assess_quality
 
+
+# ============================================================================
+# Enhanced dual-dimension quality assessment (batch: split the single score)
+# ============================================================================
+
+
+@dataclass
+class DataQualityMetrics:
+    """数据质量指标：完整性、类型合规、缺失率（原质量分真正衡量的维度）。"""
+
+    completeness_score: float
+    type_compliance_score: float
+    missing_rate_overall: float
+    n_columns: int
+    n_rows: int
+    duplicate_rows: int
+
+    @property
+    def overall_score(self) -> float:
+        weighted = self.completeness_score * 0.6 + self.type_compliance_score * 0.4
+        return round(min(100, max(0, weighted)), 1)
+
+    def to_dict(self) -> dict:
+        return {
+            "score": self.overall_score,
+            "completeness": round(self.completeness_score, 1),
+            "type_compliance": round(self.type_compliance_score, 1),
+            "missing_rate": round(self.missing_rate_overall, 4),
+            "n_columns": self.n_columns,
+            "n_rows": self.n_rows,
+            "duplicate_rows": self.duplicate_rows,
+            "label": "数据质量",
+        }
+
+
+@dataclass
+class AnalysisQualityMetrics:
+    """分析质量指标：统计方法是否完备、口径是否正确（新维度）。"""
+
+    has_outlier_detection: bool
+    correlation_tests_completed: int
+    has_robust_correlation: bool
+    ordinal_cols_handled_properly: int
+    ratio_cols_explicitly_marked: int
+
+    @property
+    def overall_score(self) -> float:
+        base = 0
+        if self.has_outlier_detection:
+            base += 30
+        if self.correlation_tests_completed > 0:
+            base += min(30, self.correlation_tests_completed * 5)
+        if self.has_robust_correlation:
+            base += 15
+        if self.ordinal_cols_handled_properly > 0:
+            base += min(15, self.ordinal_cols_handled_properly * 5)
+        if self.ratio_cols_explicitly_marked > 0:
+            base += min(10, self.ratio_cols_explicitly_marked * 3)
+        return round(base, 1)
+
+    def to_dict(self) -> dict:
+        return {
+            "score": self.overall_score,
+            "outlier_detection": self.has_outlier_detection,
+            "correlation_tests": self.correlation_tests_completed,
+            "robust_analysis": self.has_robust_correlation,
+            "ordinal_handling": self.ordinal_cols_handled_properly,
+            "ratio_marking": self.ratio_cols_explicitly_marked,
+            "label": "分析质量",
+            "note": "反映统计分析方法的完整性与口径正确性",
+        }
+
+
+@dataclass
+class ComprehensiveQualityReport:
+    """完整质量评估：数据质量 + 分析质量 两个独立维度。"""
+
+    data_quality: DataQualityMetrics
+    analysis_quality: AnalysisQualityMetrics
+
+    @property
+    def recommendation(self) -> str:
+        issues: list[str] = []
+        if self.data_quality.missing_rate_overall > 0.1:
+            issues.append("填充或减少关键列的缺失值")
+        if not self.analysis_quality.has_outlier_detection:
+            issues.append("添加离群值检测")
+        if self.analysis_quality.correlation_tests_completed < 3:
+            issues.append("增加相关性分析深度")
+        if self.analysis_quality.ordinal_cols_handled_properly == 0:
+            issues.append("为序数量表列输出分布而非均值")
+        return ", ".join(issues) if issues else "无明显改进空间"
+
+    @property
+    def summary(self) -> str:
+        dq = self.data_quality.overall_score
+        aq = self.analysis_quality.overall_score
+        if dq >= 90 and aq >= 85:
+            level = "优秀"
+        elif dq >= 75 and aq >= 70:
+            level = "良好"
+        elif dq >= 60 and aq >= 55:
+            level = "合格"
+        else:
+            level = "待改进"
+        return f"{level} | 数据质量{dq}, 分析质量{aq} | 建议：{self.recommendation}"
+
+    def to_dict(self) -> dict:
+        return {
+            "summary": self.summary,
+            "recommendation": self.recommendation,
+            "data_quality": self.data_quality.to_dict(),
+            "analysis_quality": self.analysis_quality.to_dict(),
+        }
+
+
+def compute_data_quality_metrics(df: pd.DataFrame) -> DataQualityMetrics:
+    """计算数据质量维度：完整性 + 类型合规。"""
+
+    n_rows, n_cols = df.shape
+    total_cells = max(n_rows * n_cols, 1)
+    missing_cells = int(df.isna().sum().sum())
+    missing_rate = missing_cells / total_cells
+    completeness = (1 - missing_rate) * 100
+
+    numeric_cells = 0
+    finite_cells = 0
+    for col in df.columns:
+        if pd.api.types.is_numeric_dtype(df[col]):
+            non_null = df[col].dropna()
+            numeric_cells += len(non_null)
+            finite_cells += int(pd.to_numeric(non_null, errors="coerce").apply(np.isfinite).sum())
+    type_compliance = (finite_cells / numeric_cells * 100) if numeric_cells else 100.0
+
+    return DataQualityMetrics(
+        completeness_score=completeness,
+        type_compliance_score=type_compliance,
+        missing_rate_overall=missing_rate,
+        n_columns=int(n_cols),
+        n_rows=int(n_rows),
+        duplicate_rows=int(df.duplicated().sum()),
+    )
+
+
+def compute_analysis_quality_metrics(
+    outstats_output: dict,
+    corr_results: list,
+    type_stats_info: dict,
+) -> AnalysisQualityMetrics:
+    """计算分析质量维度：统计方法覆盖度与口径正确性。
+
+    Args:
+        outstats_output: 对象级离群值检测结果（含 has_outliers）
+        corr_results: 相关性结果列表（元素可访问 robustness_note / is_significant）
+        type_stats_info: types.compute_type_aware_stats 的输出（按列含 inferred_type）
+    """
+
+    has_outlier_detection = bool(outstats_output) and ("total_count" in outstats_output or "has_outliers" in outstats_output)
+    n_corr = len(corr_results or [])
+
+    def _has_robust(item: Any) -> bool:
+        note = getattr(item, "robustness_note", None)
+        if note is None and isinstance(item, dict):
+            note = item.get("robustness_note")
+        return bool(note)
+
+    has_robust = any(_has_robust(r) for r in (corr_results or []))
+
+    ordinal_handled = 0
+    ratio_marked = 0
+    for _col, info in (type_stats_info or {}).items():
+        if not isinstance(info, dict):
+            continue
+        inferred = info.get("inferred_type")
+        # 序数列若带 distribution/mode 说明走了正确的序数路径
+        if inferred == "ordinal" and ("distribution" in info or "mode" in info):
+            ordinal_handled += 1
+        # 占比列若带分位数/极值对象说明走了正确的占比路径
+        if inferred in {"ratio", "percentage"} and (
+            "quantiles" in info or "range_info" in info or "min_row_index" in info
+        ):
+            ratio_marked += 1
+
+    return AnalysisQualityMetrics(
+        has_outlier_detection=has_outlier_detection,
+        correlation_tests_completed=n_corr,
+        has_robust_correlation=has_robust,
+        ordinal_cols_handled_properly=ordinal_handled,
+        ratio_cols_explicitly_marked=ratio_marked,
+    )
+
+
+def generate_quality_report(
+    df: pd.DataFrame,
+    outstats_output: dict | None = None,
+    corr_results: list | None = None,
+    type_stats_info: dict | None = None,
+) -> ComprehensiveQualityReport:
+    """生成综合质量报告（数据质量 + 分析质量）。"""
+
+    data_quality = compute_data_quality_metrics(df)
+    analysis_quality = compute_analysis_quality_metrics(
+        outstats_output or {},
+        corr_results or [],
+        type_stats_info or {},
+    )
+    return ComprehensiveQualityReport(
+        data_quality=data_quality,
+        analysis_quality=analysis_quality,
+    )
+
+
 __all__ = [
     "QualityReport",
     "assess_quality",
     "check_data_quality",
     "infer_column_type",
     "run_quality_checks",
+    "DataQualityMetrics",
+    "AnalysisQualityMetrics",
+    "ComprehensiveQualityReport",
+    "compute_data_quality_metrics",
+    "compute_analysis_quality_metrics",
+    "generate_quality_report",
 ]
