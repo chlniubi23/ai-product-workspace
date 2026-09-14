@@ -12,15 +12,45 @@ before returning the response, so results are ready as soon as the POST returns.
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
 from uuid import uuid4
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-TEST_ROOT = REPO_ROOT / "output" / "test-runtime"
+
+
+def _resolve_test_root() -> Path:
+    """Locate the throwaway test runtime where deletes stay permanent.
+
+    On this machine a plain ``Path.unlink()`` (Win32 ``DeleteFile``) is
+    intercepted by a filesystem-level agent for **every** directory except the
+    system temp tree: measured deltas were ``+1`` Recycle Bin item under the
+    OneDrive-synced checkout, under ``AppData\\Roaming`` and under the user home
+    root, but ``+0`` under ``%TEMP%``.  Because SQLite recreated and deleted
+    ``api-test.db-journal`` on every write transaction, a single suite run used
+    to recycle ~10k journal files.  The runtime therefore lives under the system
+    temp directory, which is the one place a delete is not turned into a bin
+    entry.  Override with ``APW_TEST_ROOT``.
+    """
+
+    override = os.environ.get("APW_TEST_ROOT")
+    if override:
+        return Path(override)
+    for base in (tempfile.gettempdir(), os.environ.get("LOCALAPPDATA")):
+        if base and os.access(base, os.W_OK):
+            return Path(base) / "apw-test-runtime"
+    return REPO_ROOT / "output" / "test-runtime"
+
+
+TEST_ROOT = _resolve_test_root()
 TEST_ROOT.mkdir(parents=True, exist_ok=True)
 DB_PATH = TEST_ROOT / "api-test.db"
-if DB_PATH.exists():
-    DB_PATH.unlink()
+# Drop the previous run's database and any rollback journal it left behind.
+# With ``journal_mode=MEMORY`` (see _sqlite_test_pragmas below) no journal is
+# written to disk at all, so this normally only removes the database file.
+for stale in (DB_PATH, DB_PATH.with_name(f"{DB_PATH.name}-journal")):
+    if stale.exists():
+        stale.unlink()
 
 os.environ.update(
     {
@@ -40,12 +70,32 @@ os.environ.update(
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 
 from app import db as database
 from app.db import Base
 from app.main import app
 from app.models import AuditLog
+
+
+@event.listens_for(database.engine, "connect")
+def _sqlite_test_pragmas(dbapi_connection, _connection_record):
+    """Keep the rollback journal in memory for the disposable test database.
+
+    The default ``journal_mode=DELETE`` makes SQLite create
+    ``api-test.db-journal`` on the first write of every transaction and delete
+    it again on COMMIT — thousands of create/delete pairs per run, each of
+    which used to become a Recycle Bin entry.  ``MEMORY`` keeps that journal in
+    RAM so no journal file is ever written.  ``synchronous=OFF`` drops the
+    per-commit fsync; the database is dropped and recreated every session, so
+    crash durability is irrelevant.
+    """
+
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=MEMORY")
+    cursor.execute("PRAGMA synchronous=OFF")
+    cursor.close()
+
 
 PASSWORD = "test-password-123"
 FIXTURES = Path(__file__).resolve().parent / "fixtures"

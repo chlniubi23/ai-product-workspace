@@ -41,7 +41,9 @@ apps/api/data/exports/*
 # Pytest temp dirs created when the shared Windows temp dir is unreadable
 .pytest-*/
 
-# Test-run artifacts recreated by apps/api/tests/conftest.py on every run
+# Test-run artifacts. The suite's runtime (database, uploads) now lives under
+# the system temp directory -- see the note in apps/api/tests/conftest.py -- so
+# this only covers leftovers from earlier runs and ad-hoc probes.
 output/
 
 # IDE / OS
