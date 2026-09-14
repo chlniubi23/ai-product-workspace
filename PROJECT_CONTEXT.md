@@ -8,6 +8,9 @@
 **最近增量**：2026-09-13 执行 Phase 0 工程收口（`docs/dev-prompts/phase0-cleanup.md`）——仅补依赖声明、ruff 归零、测试归位、清临时文件，**未改任何业务行为**；受影响条目已就地更新（§3 / §3.1 / §4 / §10 / §11 / §13）。
 **其后增量**：2026-09-13 执行 README 文档对齐（仅 `README.md`，**零代码改动**）——router 数 13→14、main.py 152→151 行、DB 表清单按 `V11_CORE_TABLE_NAMES`/`V11_LEGACY_TABLE_NAMES` 校正、补全后端依赖清单、补全空的「仓库结构」章节、两处 ASCII 框按显示宽度重新对齐；受影响条目仅 §13.1。
 **再后增量**：2026-09-13 执行仓库整理与提交（`.gitignore` + 8 条语义提交，见 §13.1）——**唯一代码类改动**是 `tests/test_report_narration.py` 的产物覆盖断言随 EDA 产物合并由 `>= 3` 改为 `>= 2`（业务代码零改动）；`.workbuddy/`、`.workbuddy-ai/` 已忽略且目录保留。
+**本批增量**：2026-09-13 修复计算层 4 处正确性缺陷（未提交，见 §13.4 / §11）——血缘源列误判、离群值三套口径、质量分类型维度恒 0、中文长句 identifier 误判；未改 API 契约 / 防火墙白名单 / 11 阶段门控 / 迁移，测试由 366 增至 **375 passed, 1 xfailed**。
+**最新增量**：2026-09-13 修复「每跑一次测试回收站堆积约 1 万个文件」（未提交，见 §13.4 / §11.15）——测试运行时迁到 `%TEMP%\apw-test-runtime`、测试库改 `journal_mode=MEMORY` + `synchronous=OFF`，全量耗时 210s → **78.74s**、回收站增量 **0**。
+**第二批增量**：2026-09-13 落地双维度质量 + 可审计排除明细 + 死代码清理（未提交，见 §13.4）——`analysis_quality` 不再恒 0、`excluded_correlation_pairs_detail` 可人工审计（不出站）、抽取列防同名覆盖、删除 `enhanced_engine.py` / `test_enhanced_engine.py` / `detect_outliers_lof`、修 `types.py` 的 0 值 bug；全量 **374 passed, 1 xfailed**（375 收集）。
 
 **协作协议（用户强制，2026-09-13 起）**：每次开发任务结束后必须核对本文件，只增量更新真正变化的条目；并向用户回报「改了什么 / 是否影响架构 / 是否需要更新本文件 / 本文件更新了哪些条目」四项——详见 §12.1。
 
@@ -61,7 +64,7 @@ AI_Product_Workspace/
 ├── docker-compose.yml           # 仅 mysql:8.0 服务
 ├── README.md                    # 已扩写（工作区中已暂存未提交，见 §13）
 ├── PROJECT_CONTEXT.md           # 本文件
-├── output/test-runtime/         # 测试运行产物（gitignore）
+├── output/test-runtime/         # 旧测试运行产物（gitignore；现运行时已迁至 %TEMP%\apw-test-runtime）
 └── apps/
     ├── api/                     # FastAPI 后端（151 行 main.py 组装层）
     │   ├── app/
@@ -88,7 +91,7 @@ AI_Product_Workspace/
     │   │   ├── analytics/       #   计算层（见 §3.1）
     │   │   └── infrastructure/  #   jobs.py（285 行）/ llm/deepseek.py（828 行）
     │   ├── alembic/versions/    #   17 个迁移（0001..0017）
-    │   ├── tests/               #   27 个测试文件，362 用例（含 `test_enhanced_engine.py`，Phase 0 移入）
+    │   ├── tests/               #   28 个测试文件，375 用例
     │   ├── pyproject.toml / requirements.txt
     │   └── Procfile
     └── web/                     # Next.js 14 前端
@@ -105,20 +108,20 @@ AI_Product_Workspace/
         └── lib/                 #   api.ts · workflow.ts(490) · navigation.ts · chartOption.ts(295) · format.ts · upload.ts
 ```
 
-### 3.1 `analytics/` 计算层实际文件（**【实测】**，含未跟踪新文件）
+### 3.1 `analytics/` 计算层实际文件（**【实测】** 2026-09-13 计算层修复后）
 
 | 文件 | 行数 | 状态 | 说明 |
 |---|---|---|---|
-| `engine.py` | 771 | **已修改未提交** | **生产引擎**：`run_eda` / `run_trend_analysis` / `run_funnel_analysis` / `run_retention_analysis` / `run_anomaly_detection` / `run_group_comparison` + `choose_trend_frequency` + 函数式 facade；Phase 1 将 EDA 相关性统一接入增强计算，保留 legacy correlations 契约 |
-| `quality.py` | 486 | **已修改未提交** | `assess_quality`（生产契约，未变）+ **新增**双维度质量（`DataQualityMetrics`/`AnalysisQualityMetrics`/`ComprehensiveQualityReport`/`generate_quality_report` 等）；Phase 1 通过 datasets 服务附加至 `summary_json["dual_quality"]` |
-| `parsing.py` | 181 | 已提交 | v2 解析（千分位/货币/中文日期/k\|M\|万\|亿）+ `infer_column_type_v2` |
-| `text_metrics.py` | 149 | 已提交 | 自由文本数值列抽取（`{源列}__{指标}`） |
-| `digest.py` | 329 | 已提交 | 规则化 findings digest（纯函数，阈值模块常量） |
-| `dag.py` | 274 | **未跟踪** | 【新发现】派生列血缘识别与伪相关排除 |
-| `corelation.py` | 240 | **未跟踪** | 【新发现】显著性检验（p 值）+ 稳健相关 + 多方法（**依赖 scipy**） |
-| `outliers.py` | 265 | **未跟踪** | 【新发现】对象级离群值（IQR/Z-score/LOF；**sklearn 为可选导入**，缺失时降级空结果） |
-| `types.py` | 301 | **未跟踪** | 【新发现】类型感知统计（序数/占比/二元） |
-| `enhanced_engine.py` | 286 | **未跟踪** | 【新发现】增强分析引擎，整合上述 5 个修复点 |
+| `engine.py` | 771 | **已修改未提交** | **生产引擎**：`run_eda` / `run_trend_analysis` / `run_funnel_analysis` / `run_retention_analysis` / `run_anomaly_detection` / `run_group_comparison` + `choose_trend_frequency` + 函数式 facade；EDA 相关性统一接入增强计算，保留 legacy correlations 契约；**本批**：payload 新增 `excluded_correlation_pairs_detail`（≤20 条，人工审计用，不出站） |
+| `quality.py` | 501 | **已修改未提交** | `assess_quality`（生产契约：`overall_score`/`status` 仍是唯一门控）+ 双维度质量（`DataQualityMetrics`/`AnalysisQualityMetrics`/`ComprehensiveQualityReport`/`generate_quality_report`）；**计算层修复批**：类型维度改为未传 `expected_types` 时自动派生（`_derived_expected_type`，仅 numeric/datetime/boolean），outlier 段改用 `outliers.compute_column_outliers` |
+| `parsing.py` | 213 | **已修改未提交** | v2 解析（千分位/货币/中文日期/k\|M\|万\|亿）+ `infer_column_type_v2`；**计算层修复批**：identifier 判据收紧为 `_looks_like_identifier`（无空白 + 长度 ≤ `IDENTIFIER_MAX_LENGTH=40` + 无句读标点），无空格中文长句回落 `text` |
+| `text_metrics.py` | 149 | 已提交 | 自由文本数值列抽取（`{源列}__{指标}`）；只扫描 `semantic_type ∈ {text, category}` 的列，因此依赖 `parsing.py` 的 identifier 判据 |
+| `digest.py` | 355 | **已修改未提交** | 规则化 findings digest（纯函数，阈值模块常量）；**计算层修复批**：outlier 文案由「IQR 离群值」改为「离群值」，与新口径（IQR∪Z 并集）一致 |
+| `dag.py` | 340 | **已修改未提交** | 派生列血缘识别与伪相关排除；**计算层修复批**：`_match_builtin_rules` 只认 `rule.name`（不再把源列误判为派生列）、补上策略 2 缺失的 `derivation_description` |
+| `corelation.py` | 253 | **已修改未提交** | 显著性检验（p 值）+ 稳健相关 + 多方法（**依赖 scipy**）；**本批**：血缘排除由计数改为明细列表，并新增 `EXCLUDED_PAIRS_DETAIL_LIMIT=20` |
+| `outliers.py` | 437 | **已修改未提交** | 对象级离群值（IQR/Z-score 并集统一口径）；**本批**：删除 `detect_outliers_lof`（无调用点 + `pred[int(idx)]` 索引错位），**scikit-learn 由此失去唯一消费方** |
+| `types.py` | 307 | **已修改未提交** | 类型感知统计（序数/占比/二元）；**本批**：`OrdinalStatistics.to_dict` 与 mode 判定改用 `is not None`，0 值不再被当缺失 |
+| `text_metrics.py` | 177 | **已修改未提交** | 自由文本数值列抽取（`{源列}__{指标}`）；**本批**：派生列撞名时追加确定性后缀 `__dupN` 并写 `renamed_from`，report 记录同一 normalized 指标的 `display_variants` |
 
 ---
 
@@ -136,7 +139,7 @@ AI_Product_Workspace/
 | 测试 | pytest（实测 `361 passed, 1 xfailed`，362 收集，207.04s） |
 | Lint | ruff（line-length 120, target py311）；eslint + prettier（前端） |
 
-**可选依赖**：`scikit-learn` 走 `[project.optional-dependencies] ml`（`scikit-learn>=1.4,<2`），仅供 `outliers.py` 的 LOF 使用；**刻意不进必需依赖**，缺失时 `detect_outliers_lof` 降级返回空列表（`【实测】`：拦截 sklearn 导入后 `enhanced_engine` 仍可导入、全流程跑通）。`scipy` 为必需依赖（`corelation.py` 顶层导入、`enhanced_engine.py` 函数内导入）。
+**可选依赖**：`scikit-learn` 走 `[project.optional-dependencies] ml`（`scikit-learn>=1.4,<2`）。~~仅供 `outliers.py` 的 LOF 使用~~ **2026-09-13：`detect_outliers_lof` 已随死代码清理删除，`scikit-learn` 当前**没有消费方**；`[ml]` extra 暂保留（删除会让 `pip install -e ".[ml]"` 直接报错），pyproject 注释已同步改为"当前无消费方"。`scipy` 为必需依赖（`corelation.py` 顶层导入）。
 
 ---
 
@@ -277,7 +280,7 @@ AI_Product_Workspace/
 ## 10. 当前完成度（**【实测】** 2026-09-13）
 
 **已实现且验证**：
-- 后端测试套件 **366 passed, 1 xfailed**（367 收集，209.94s，实测运行；较 Phase 0 +5，含 `tests/test_enhanced_integration.py`）。覆盖：RBAC 与 workspace 隔离、数据管线（上传/版本/质量）、分析引擎全类型、增强相关性/类型感知/离群摘要与 AI 防火墙契约、AI 降级边界（无 key 绝不 500、输出契约、上下文白名单、反馈原文不外泄）、决策链规则、项目级联删除、报告叙述消毒、采访/蒸馏、文档并行生成、字段语义、用户资料。
+- 后端测试套件 **374 passed, 1 xfailed**（375 收集，**78.74s**，实测运行；= 计算层修复批的 375 − 删除的 9 个 `test_enhanced_engine` 用例 + 本批新增 6）。速度从 ~210s 降到 ~78s，来自测试库 `journal_mode=MEMORY` + `synchronous=OFF`。覆盖：RBAC 与 workspace 隔离、数据管线（上传/版本/质量）、分析引擎全类型、增强相关性/类型感知/离群摘要与 AI 防火墙契约、**计算层 4 项正确性缺陷（血缘方向 / 离群单一口径 / 类型合规 / 中文长句 identifier 误判）**、**双维度质量与排除明细可审计**、**测试运行时位置与日志模式守护**、AI 降级边界（无 key 绝不 500、输出契约、上下文白名单、反馈原文不外泄）、决策链规则、项目级联删除、报告叙述消毒、采访/蒸馏、文档并行生成、字段语义、用户资料。
 - 17 个 Alembic 迁移可从零建库；`.env` 已配置 DeepSeek；前后端均可本地跑通。
 - 前端 11 阶段页面、工作台、数据管理、历史回看齐全（**设置页已随第二十六批删除**）。
 - **全链路已真实手动冒烟走通**（11 阶段版 2026-09-01）。
@@ -302,10 +305,19 @@ AI_Product_Workspace/
 
 1. ~~**【新发现】依赖未声明会炸部署**~~ **已修复**：`scipy>=1.11,<2` 已进 `[project.dependencies]` + `requirements.txt`；`scikit-learn>=1.4,<2` 进 `[project.optional-dependencies] ml`，`outliers.py` 改为函数内可选导入并降级空结果。
 2. ~~**【新发现】ruff 基线被破坏**~~ **已修复**：`ruff check app tests` 回到**零告警**，无 `noqa`/`per-file-ignores`。
-3. ~~**【新发现】新测试实际不运行**~~ **已修复**：文件移入 `apps/api/tests/test_enhanced_engine.py`，并新增 `tests/test_enhanced_integration.py`；当前全量 367 收集。
+3. ~~**【新发现】新测试实际不运行**~~ **已修复**：文件移入 `apps/api/tests/test_enhanced_engine.py`，并新增 `tests/test_enhanced_integration.py`。**2026-09-13 该测试文件已随 `enhanced_engine.py` 一并删除**；当前全量 375 收集。
 4. ~~**【新发现】增强分析引擎未集成**：原本与生产 `AnalysisEngine` 并行。~~ **Phase 1 已集成**：生产 `AnalysisEngine.run_eda` 统一走增强相关性实现；三个新类型（`correlation_analysis` / `type_profile` / `outlier_objects`）接入 `_analysis_artifacts` 与配置校验，按决策 3 仅手动可选，不进入 `_auto_analysis_plan`。
 5. ~~**【新发现】新引擎输出契约与防火墙冲突**：相关对/类型统计/离群对象原形状会被静默剥离，且行级离群信息触及安全边界。~~ **Phase 1 已修复**：`pairs` 加入 `_AGGREGATE_LIST_KEYS`（17 键）；相关详情映射为 `correlation_pairs_detail→pairs`；类型/离群产物统一为 `metrics` 列表；离群出站摘要不含 `row_index`/行引用；`_ROW_LIST_KEYS` 与反馈黑名单未放宽。
 6. **【新发现】前端视觉大改与既有设计体系冲突**：用户决定保留；Phase 1 已把 `chartOption.ts` 的硬编码 `#3b82f6` 统一到 `--brand: #6366f1` 的 indigo 体系，并新增 `correlation_heatmap` / `count_bar` 图表分支。
+
+**计算层正确性缺陷（2026-09-13 只读脚本实测复现 → 同批修复，未提交，见 §13.4）**：
+
+1. ~~**血缘把源列误判为派生列**：`dag._match_builtin_rules` 的 `target_lower in rule.source_columns` 分支会把规则里的**源列本身**判成派生列 → `should_exclude_from_correlation` 排除错误的列对、方向说反，真正的派生列反而漏判。~~ **已修复**：只认 `rule.name`，并要求源列存在且不等于目标列。实测：`should_exclude(周活跃用户, 总用户数)` 由 `True`（理由反向）变为 `False`；`should_exclude(周活跃用户, 渗透率(% 占周活))` 由 `False`（漏判）变为 `True` 且方向正确。
+2. ~~**离群值三套口径**：`quality.assess_quality`（并集掩码）vs `outliers.build_outlier_aggregates`（IQR 列表 + Z 列表相加 → 重复计数、rate 可 >1、series 出重复值）vs `auto_report`/`digest`（仅 IQR）——同一概念三个数。~~ **已修复**：新增唯一实现 `outliers.compute_column_outliers`（并集掩码按行去重、`rate = count / 非空样本数`、极值样本按值去重有界），quality / raw map / 出站聚合 / auto_report 四处全部改由它驱动；digest 文案同步为「离群值」。实测同一列：旧 count `2` → 新 `1`，`series` 由重复两条变为单条。
+3. ~~**质量分类型维度恒为 0**：生产 `assess_quality(df)` 从不传 `expected_types` → `type_error_count` 恒 0 → `0.4*missing+0.25*dup+0.2*type+0.15*outlier` 的惩罚上限只有 80，分数系统性虚高。~~ **已修复**：未显式传参时用 `infer_column_type_v2` 自动派生（仅 numeric/datetime/boolean；category/text/identifier 跳过），显式传入仍以传入为准。实测「9 个数字 + 1 个中文字符串」的列：旧分 `100.0` → 新分 `98.0`，`type_error_count` `0` → `1`。
+4. ~~**无空格中文长句被误判为 identifier**：`parsing.infer_column_type_v2` 只检查「近唯一 + 无空格」，于是中文长句判 identifier → `_is_textlike` 为假 → `extract_text_metrics` 不扫描，句内指标全部抽不出来。~~ **已修复**：identifier 需同时满足无空白、长度 ≤ 40、无句读标点（`_looks_like_identifier`）；长句回落 `text` 并被扫描。实测 45 字中文列由 `identifier` 变 `text`，`备注__本周DAU110k留存率` 成功抽出（coverage 1.0）。
+
+> ~~**仍未修（同批实测，本次未纳入范围）**：`dual_quality.analysis_quality` 在生产路径恒为 0；`analytics/enhanced_engine.py` 仍是被测试引用的死代码；`outliers.detect_outliers_lof` 无调用点且 `pred[int(idx)]` 索引错位。~~ **三项已全部处理（2026-09-13 第二批，见 §13.4）**：`analysis_quality` 由解析 job 用真实产物回写；`enhanced_engine.py` + `test_enhanced_engine.py` 已删除；`detect_outliers_lof` 已删除（连带 `scikit-learn` 失去唯一消费方，`[ml]` extra 暂保留）。
 
 **长期项（**【沿用】** 自 2026-09-06，本次未逐条复核）**：
 
@@ -317,7 +329,7 @@ AI_Product_Workspace/
 12. **前端认证是软门禁**：middleware 只查 `apw_session=1` cookie 存在性（可伪造绕过页面守卫），真实鉴权仅在 API 层——**设计上可接受但需明确这不是安全边界**。JWT 在 localStorage（常规 XSS 暴露面），无服务端吊销。
 13. **SSE 非实时**：copilot 事件回放式；`DeepSeekAdapter.stream()` 是伪流（一次性 complete 后整体 yield）。
 14. **文件存储在本机磁盘**：`data/uploads|processed|exports`，无对象存储；`_purge_project` 物理删除不可恢复（有审计）。删除前经 `_safe_data_file` 做 DATA_ROOT 越界防护。
-15. **测试基建小脆弱点**：`tests/conftest.py` 必须在 import app 前设置环境变量（ruff 按文件豁免 E402）；测试库文件在 `output/test-runtime`（每次 rebuild）。
+15. **测试基建小脆弱点**：`tests/conftest.py` 必须在 import app 前设置环境变量（ruff 按文件豁免 E402）。~~测试库文件在 `output/test-runtime`（每次 rebuild）。~~ **2026-09-13 已迁移**：测试运行时（数据库 + 上传产物）改放 `%TEMP%\apw-test-runtime`，并对测试库设 `PRAGMA journal_mode=MEMORY` / `synchronous=OFF` —— 本机上**除 `%TEMP%` 以外的任何目录**删除文件都会被系统级代理转成回收站条目（实测 `AppData\Local`、`AppData\Roaming`、用户主目录、OneDrive 目录均 `+1`，仅 `%TEMP%` 为 `+0`），原先每次跑测试会向回收站写入约 **1 万个** `api-test.db-journal`。两条不变量由 `tests/test_test_environment.py` 锁定；`APW_TEST_ROOT` 可覆盖位置。
 16. **真实 key 下 AI 输出可靠性残余**：`deepseek-v4-flash` 仍偶发返回非 JSON 或 provider 错误（降级路径行为正确）；Copilot 编排 plan 校验（`INVALID_ANALYSIS_PLAN`）真实 key 下偶发失败降级，未修。
 17. **项目删除与解析任务竞态可泄漏上传文件（未修）**：上传后 <1s 删除项目、后台 `dataset_parse` job 未完成时，`_purge_project` 返回 `files: 0` 且上传文件遗留磁盘（版本行被级联删除，泄漏仅限磁盘文件）。
 18. **文档生成上下文丢失洞察正文（未修）**：`_build_document_context` 的洞察 payload 用 `content` 键，而 `content` 在 `_FEEDBACK_CONTENT_KEYS` 黑名单内——装配时洞察正文被静默剥离，文档 AI 实际只能看到标题/置信度/证据骨架。修复方向：改用非保留键（如 `body`）或开专用通道。
@@ -335,6 +347,9 @@ AI_Product_Workspace/
 - job handler：`app/services/job_handlers.py`，`job_executor` 全仓库唯一实例在此；新增 handler 后在 `_register_job_handlers()` 注册（`main.py` 末尾恰好调用一次）。
 - **新增 AI 能力**：服务逻辑进 `services/ai_stages.py`（复用 `_run_ai_stage()` 模板，可传 `response_schema`/`output_validator`/`empty_output`/`min_output_tokens` 定义阶段契约），路由壳进 `routers/ai.py`；上下文必须过 `build_ai_context`，AI 结果一律 draft；Copilot 的 insights 上下文由服务端注入，客户端传入的一律丢弃。**例外**：字段语义解读是 job 内可选增强（`services/field_semantics.py`，无路由），结果按列名落库而非 draft。
 - **分析类型扩展点**：`analytics/engine.py`（计算）+ `services/analysis_pipeline.py`（`_analysis_artifacts` 持久化映射、`_analysis_config_validation`、`SUPPORTED_ANALYSIS_TYPES`、`_auto_analysis_plan`）+ `infrastructure/llm/deepseek.py` 的 `ALLOWED_TOOL_NAMES`（若暴露给 Copilot）+ 前端 `lib/chartOption.ts`（新图表渲染）。
+- **离群值只有一个口径**：任何离群值的计数 / 比率必须走 `analytics/outliers.compute_column_outliers`（返回 `ColumnOutlierStats`），**不得**再自己写 IQR/Z 掩码或把两个方法的列表相加；进程内行级用途走 `build_raw_outliers_map`，出站只走 `build_outlier_aggregates`（有界标量、不含行号）。默认阈值取自 `OUTLIER_IQR_MULTIPLIER` / `OUTLIER_Z_THRESHOLD`，z 值统一 `ddof=0`。
+- **列类型判据联动**：`parsing.infer_column_type_v2` 的 `identifier` 判据被 `text_metrics._is_textlike` 直接消费（只有 `text` / `category` 会被文本指标抽取扫描）。改动 identifier 判据前先确认这条链路：放宽会把自由文本判成 identifier 而**静默丢掉**列内指标。
+- **测试运行时只能放在 `%TEMP%` 之下**（`tests/conftest.py:_resolve_test_root`，可被 `APW_TEST_ROOT` 覆盖）：本机在 `%TEMP%` 以外删除任何文件都会被系统级代理转成回收站条目（见 §11.15），且测试库必须保持 `journal_mode=MEMORY` + `synchronous=OFF`（由 `tests/test_test_environment.py` 锁定）。给测试新增落盘文件时也要放进这个目录，不要写进仓库树。
 - **AI 上下文防火墙**：新产物若含列表，必须放在 `_AGGREGATE_LIST_KEYS` 允许键下，或先在 `services/ai_stages.py` 写适配映射；**行级数据禁止出站**（`_ROW_LIST_KEYS`）；产物形状优先 `[{name, ...}]` 列表而非「以列名为键的 dict」（避免撞 `_FEEDBACK_CONTENT_KEYS`）。
 - **前端新页面惯例**：`app/(workspace)/` 下建目录，用 `WorkflowFrame` 的 `WorkflowHeader/WorkflowGate` 包裹，门控逻辑改 `lib/workflow.ts` 的 `stepCompletion()`，导航加 `lib/navigation.ts`。
 - **归档语义**：归档只能走 `POST /projects/{id}/archive|unarchive`（`ProjectPatch` 不含 status）；归档项目的 editor+ 写路径全部 409 `PROJECT_ARCHIVED`；前端「当前项目」持久化键 `apw_active_project`。
@@ -373,7 +388,8 @@ AI_Product_Workspace/
 ## 13. 提交状态与工作区清单（**【实测】** 2026-09-13 整理后）
 
 > 2026-09-13 执行仓库整理：原 §13.1 / §13.2 记录的全部内容已按语义分组提交（共 **8 条**，自 `22657c2` 起）；
-> `.workbuddy/`、`.workbuddy-ai/` 已加入 `.gitignore`（目录仍保留在磁盘）。**当前工作区干净（`git status` 除忽略项外为空）。**
+> `.workbuddy/`、`.workbuddy-ai/` 已加入 `.gitignore`（目录仍保留在磁盘）。
+> **其后又产生一批未提交改动（计算层修复批，见 §13.4），因此当前工作区**不是**干净的。**
 
 ### 13.1 本批提交（8 条）
 
@@ -399,32 +415,70 @@ AI_Product_Workspace/
 
 > 提交前已扫描待提交文件：无密钥、无私钥、无真实凭据。发现 `docs/dev-prompts/phase0-cleanup.md` 中一处本地绝对路径含操作系统用户名，已改写为 `<本地用户目录>` 占位后再提交。
 
-### 13.3 可验证指标（**【实测】** 2026-09-13 提交前复跑）
+### 13.3 可验证指标（**【实测】** 2026-09-13）
 
-| 指标 | 值 |
-|---|---|
-| `ruff check app tests` | **0 错** |
-| `pytest tests -q` | **366 passed, 1 xfailed**（236.79s） |
-| `pytest --collect-only -q` | **367 collected**（含 `test_enhanced_engine.py` / `test_enhanced_integration.py`） |
-| 首次复跑时 `test_report_narration.py` | **1 failed**（`seen >= 3` 期望过期）→ 已随 commit 5 修正为 `>= 2`，二次复跑全绿 |
-| `git status --porcelain -uall` | **空**（除被忽略项） |
-| 路由数 | 137（14 router） |
-| Alembic 迁移 | 17（0001..0017） |
+| 指标 | 整理批提交前 | 计算层修复批 | 计算层第二/三批（当前） |
+|---|---|---|---|
+| `ruff check app tests` | **0 错** | **0 错** | **0 错** |
+| `pytest tests -q` | **366 passed, 1 xfailed**（236.79s） | **375 passed, 1 xfailed**（210.02s） | **374 passed, 1 xfailed**（**78.74s**，提速约 2.7 倍） |
+| `pytest --collect-only -q` | 367 collected | 376 collected | **375 collected** |
+| 首次复跑异常 | `test_report_narration.py` 1 failed（`seen >= 3` 期望过期）→ 修正为 `>= 2` | 无失败 | 无失败 |
+| 回收站增量（跑一轮全量） | **约 1 万条** `api-test.db-journal` | 未测（测试运行时仍在仓库树内） | **0 条**（实测 155 → 155） |
+| `git status --porcelain -uall` | 空（除被忽略项） | 7 改 1 新 | **18 改 3 新 2 删（§13.4，2026-09-14 复核更正）** |
+| 路由数 | 137（14 router） | 137（未改动） | 137（**未改动**） |
+| Alembic 迁移 | 17（0001..0017） | 17（未改动） | 17（**未改动**） |
 
-### 13.4 Phase 1 已确认并落地的设计决策
+### 13.4 计算层修复批 + 测试环境批（**已修改未提交**，2026-09-13 第二/三批）
+
+第一批修复 §11「计算层正确性缺陷」的 4 项（血缘方向 / 离群单一口径 / 类型合规 / identifier 误判）并新增 9 个针对性用例；
+第二批解决「每跑一次测试回收站堆积约 1 万个文件」（见 §11.15），并新增 2 个守护用例；
+第三批落地双维度质量与可审计排除明细，并清理计算层死代码（本任务，新增 6 个用例）。
+
+| 文件 | 规模（`git diff`） | 性质 |
+|---|---|---|
+| `apps/api/app/analytics/outliers.py` | +167 / -28 | **新增唯一口径** `ColumnOutlierStats` + `compute_column_outliers`（并集掩码按行去重、`rate=count/非空样本数`、极值样本按值去重有界、z 用 `ddof=0`）；`build_raw_outliers_map` / `build_outlier_aggregates` 改由它驱动 |
+| `apps/api/app/analytics/dag.py` | +36 / -17 | `_match_builtin_rules` 只认 `rule.name` 且源列须存在、不等于目标列；`should_exclude_from_correlation` 主语固定为派生列；补上策略 2 缺失的 `derivation_description` |
+| `apps/api/app/analytics/quality.py` | +42 / -27 | outlier 段改用统一函数（默认阈值取自 `OUTLIER_*` 常量）；新增 `_derived_expected_type`，未显式传 `expected_types` 时按列自动派生（仅 numeric/datetime/boolean） |
+| `apps/api/app/analytics/parsing.py` | +37 / -5 | 新增 `IDENTIFIER_MAX_LENGTH=40` / `IDENTIFIER_SENTENCE_PUNCTUATION` + `_looks_like_identifier`，identifier 判据收紧 |
+| `apps/api/app/services/auto_report.py` | +8 / -6 | `entry["outliers"]` 改用同一函数（原为 IQR-only） |
+| `apps/api/app/analytics/digest.py` | +9 / -2 | outlier 文案「IQR 离群值」→「离群值」，与新口径一致 |
+| `apps/api/tests/test_field_semantics.py` | +1 / -1 | 随上条同步断言文案（**因预期口径变化而更新的断言**） |
+| `apps/api/tests/test_analytics_correctness.py` | 新增（9 用例） | 4 项缺陷各有用例锁定 + EDA 出站无 `row_index` 的防火墙回归 |
+| `apps/api/app/services/analysis_pipeline.py` | +55 / -6 | **第三批**：`_run_auto_analyses` 返回值新增 `artifacts`；新增 `_analysis_quality_payload` / `_refresh_dual_quality`（解析 job 收尾回写真实分析质量）；`_correlation_analysis_artifact` 补 `excluded_correlation_pairs_detail` |
+| `apps/api/app/services/job_handlers.py` | +4 / 0 | **第三批**：`_handle_dataset_parse` 在 `_run_auto_analyses` 之后、commit 之前调用 `_refresh_dual_quality` |
+| `apps/api/app/analytics/text_metrics.py` | +26 / -1 | **第三批**：抽取列撞名时追加确定性后缀 `__dupN` 并写 `renamed_from`；report 记录同一 normalized 指标的 `display_variants` |
+| `apps/api/app/analytics/types.py` | +6 / -3 | **第三批**：`OrdinalStatistics.to_dict` 与 mode 判定改用 `is not None`，0 值不再被当缺失 |
+| `apps/api/app/analytics/corelation.py` | +16 / -6 | **第三批**：血缘排除由计数改为 `{'var1','var2','reason'}` 明细列表；新增 `EXCLUDED_PAIRS_DETAIL_LIMIT=20` |
+| `apps/api/app/analytics/engine.py` | +13 / -5 | **第三批**：EDA payload 新增 `excluded_correlation_pairs_detail`（有界，人工审计用、不出站） |
+| `apps/api/app/analytics/enhanced_engine.py`、`apps/api/tests/test_enhanced_engine.py` | **删除** | **第三批死代码清理**：全仓库已无 `enhanced_engine` / `run_enhanced_analysis` / `EnhancedAnalysisEngine` 引用 |
+| `apps/api/app/analytics/outliers.py`（lof 段） | **删除** | **第三批**：`detect_outliers_lof` 无调用点且 `pred[int(idx)]` 索引错位；**连带 `scikit-learn` 失去唯一消费方** |
+| `apps/api/tests/test_test_environment.py` | 新增（2 用例） | **测试环境批**：守护两条不变量——运行时必须位于系统临时目录下、测试库 `journal_mode` 必须是 `memory` |
+| `apps/api/tests/conftest.py` | +54 / -4 | **测试环境批**：`_resolve_test_root()` 把运行时迁到 `%TEMP%\apw-test-runtime`（`APW_TEST_ROOT` 可覆盖），并对测试库执行 `PRAGMA journal_mode=MEMORY` / `synchronous=OFF` |
+| `.gitignore` | +3 / -1 | `output/` 条目注释更新（测试运行时已迁至系统临时目录，该条目只覆盖历史残留） |
+
+**本批实测**（**2026-09-14 复核更正**：原文误写 377 passed/378 收集/76.81s，与 §10、§13.3 及独立复验不符）：`ruff check app tests` 0 错；`pytest tests -q` → **374 passed, 1 xfailed（375 收集）**，耗时随机器波动、以最近一次实跑为准（约 78–105s；基线 366/1 → +9 计算层用例 + 2 环境守护用例，**零回归**）。**回收站增量实测为 0**（改造前每轮约 +1 万条）。
+
+**被影响的行为（预期，已实测量化）**：
+- 质量分：类型维度真正参与惩罚，「多数可解析 + 少量脏值」的列会被扣分（实测 100.0 → 98.0）；`overall_score`/`status` 的**判定口径未变**（仍是 `>=95 passed / >=80 needs_review / else failed`），但它们只是前端徽标与 `quality_score` 展示，**不构成任何硬门控**（阶段 3 门控只要求"存在质量报告"）。
+- 离群值：同一列 count 由"重复计数"回落为按行去重（实测 2 → 1），`rate` 分母由总行数改为非空样本数，出站 `series` 不再出现重复值。
+- 相关性：不再错误排除源列对，且真正派生列的对被正确排除（实测排除对数与 `excluded_correlation_pairs` 在样例数据上未变，已有断言仍然成立）。
+- digest：outlier 条目文案变化，数值随新口径变化。
+- 文本指标：无空格中文长句列重新被扫描，可能新增 `{源列}__{指标}` 派生列。
+
+### 13.5 Phase 1 已确认并落地的设计决策
 
 1. **行级数据不出站（方案 A）**：离群值仍可在进程内用 `row_index` 计算稳健相关，但 AI/报告出站只保留每列有界摘要（`name/method/count/rate/min_value/max_value/series`），不含行号或行引用。
 2. **新增 `pairs` 键**：`_AGGREGATE_LIST_KEYS` 从 16→17；仅允许变量对及其标量统计（p 值、稳健系数等），配套 `test_enhanced_integration.py` 守护。
 3. **新分析类型仅手动可选**：`correlation_analysis` / `type_profile` / `outlier_objects` 接入 `SUPPORTED_ANALYSIS_TYPES` 与 `_analysis_artifacts`，`_auto_analysis_plan` 和 `_AUTO_ANALYSIS_LIMIT=4` 零改动。
 4. **保留前端视觉大改并统一令牌**：`chartOption.ts` 复用 indigo 品牌色（`#6366f1`）并新增 `correlation_heatmap` / `count_bar` 分支；`typecheck` 与 `lint` 通过。
 
-### 13.5 开发 Prompt 归档（已随 commit 8 入库）
+### 13.6 开发 Prompt 归档（已随 commit 8 入库）
 
 见 `docs/dev-prompts/phase0-cleanup.md`（收口）与 `docs/dev-prompts/phase1-integration.md`（完整集成）；两份文档已提交，不再属于未跟踪文件。
 
 - **Phase 0（收口）已执行完毕**（2026-09-13）：依赖声明 / ruff 归零 / 测试归位 / 临时文件清理四项完成。
-- **Phase 1（增强分析引擎集成）已执行完毕**（2026-09-13）：EDA 统一接入增强相关性；新增 3 个手动分析类型；双维度质量附加落库；防火墙 `pairs` 与有界离群摘要接线；digest/报告/前端图表同步；5 个新增集成测试全绿。上述四项设计决策已按 §13.4 落地。
+- **Phase 1（增强分析引擎集成）已执行完毕**（2026-09-13）：EDA 统一接入增强相关性；新增 3 个手动分析类型；双维度质量附加落库；防火墙 `pairs` 与有界离群摘要接线；digest/报告/前端图表同步；5 个新增集成测试全绿。上述四项设计决策已按 §13.5 落地。
 
-### 13.6 历史提交基线
+### 13.7 历史提交基线
 
 `22657c2`（batch 27 complete — motion and data-typography polish）是本批 8 条提交之前的最后一个提交；本项目共 100 条提交到达该基线。

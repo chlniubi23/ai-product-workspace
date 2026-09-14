@@ -189,7 +189,7 @@ PyJWT>=2.8,<3 | python-multipart>=0.0.9,<1 | pandas>=2.1,<3
 numpy>=1.26,<2 | scipy>=1.11,<2 | openpyxl>=3.1,<4 | httpx>=0.27,<1
 ```
 
-可选 extras：`pip install -e ".[ml]"` 会额外装上 `scikit-learn>=1.4,<2`，仅供电给 `analytics/outliers.py` 的 LOF 离群检测——该库刻意不进必需依赖，缺失时 LOF 检测降级为空结果，其余流程不受影响。
+可选 extras：`pip install -e ".[ml]"` 会额外装上 `scikit-learn>=1.4,<2`。**当前代码没有任何模块使用它**（原 LOF 离群检测已随死代码清理移除），该 extra 仅为兼容既有安装命令而保留。
 
 ### 前端 (`package.json`)
 ```
@@ -221,7 +221,7 @@ AI_Product_Workspace/
     │   │   ├── db.py               引擎与会话 + SQLite 回退 + 启动补列安全网
     │   │   ├── routers/            14 个按域拆分的 router
     │   │   ├── services/           12 个业务逻辑模块（禁止反向导入 routers）
-    │   │   ├── analytics/          纯计算层（engine / quality / parsing / text_metrics / digest / dag / corelation / outliers / types / enhanced_engine）
+    │   │   ├── analytics/          纯计算层（engine / quality / parsing / text_metrics / digest / dag / corelation / outliers / types）
     │   │   └── infrastructure/     jobs.py（进程内 JobExecutor）+ llm/deepseek.py（DeepSeek 适配层）
     │   ├── alembic/versions/       17 个迁移（0001..0017，最新 0017_field_semantics）
     │   ├── tests/                  27 个测试模块 + conftest.py；test_route_manifest.py 冻结 137 条路由
