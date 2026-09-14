@@ -513,7 +513,8 @@ def _narration_context(
             }
             for artifact in artifacts
         ],
-        question="请解读这些自动分析结果：指出可验证的事实、需要进一步验证的假设，以及下一步建议。自动选列的局限必须写进 limitations。",
+        question="请解读这些自动分析结果：指出可验证的事实、待验证的假设与下一步建议；"
+        "尊重各列 stat_note 口径与小样本标记，自动选列的局限必须写进 limitations；每条结论引用给定 artifact id。",
         metrics=[{"name": "auto_analysis_count", "value": len(runs)}, {"name": "row_count", "value": version.row_count}],
     )
 

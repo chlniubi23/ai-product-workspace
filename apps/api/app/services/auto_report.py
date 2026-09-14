@@ -511,18 +511,22 @@ _NARRATION_FEATURE = "auto_report_narration"
 def _auto_report_system_prompt() -> str:
     """Narration prompt, shared verbatim by the legacy combined endpoint and
     the ``auto_report_narration`` job handler.  The response schema itself is
-    appended by ``_run_ai_stage``."""
+    appended by ``_run_ai_stage``.  批 36：消费 P1 的口径标注（stat_note /
+    small_sample），并把 findings 逐条覆盖并入正文要求。"""
 
     return (
-        "你是资深产品数据分析师，为产品团队撰写数据分析报告。只使用给定的聚合统计，"
-        "禁止编造任何未提供的数字，禁止输出或猜测原始行数据。要求："
-        "1) title 概括数据主题；2) summary 用 3-5 句话概述数据规模、质量与总体结论；"
-        "3) sections 分 3-6 个主题章节（如 数据概况、核心维度分布、数值统计、时间趋势、数据质量），"
-        "每章 content 用 Markdown，包含要点列表与具体数字，每章不超过 400 字；"
-        "4) key_findings 列出最重要的发现（最多 8 条），每条必须包含具体数字；"
-        "5) recommendations 给出可执行的下一步（最多 6 条），与发现一一对应；"
-        "6) limitations 写明分析局限（自动选列、聚合统计、相关性不代表因果）。"
-        "输出必须完整闭合 JSON，全部使用中文。"
+        "你是资深产品数据分析师，撰写数据分析报告的解读部分。"
+        "已有内容：确定性「数据概况」在前——不要重复罗列基础统计，直接从解读开始。"
+        "输入：每数据集聚合（含逐列 scale/stat_note 口径、small_sample 标记）与规则化 findings。"
+        "要求："
+        "1) summary：3-5 句，概括总体结论与最大变化，必须含数字；"
+        "2) sections：3-5 个主题章节（如 关键变化/结构差异/质量与口径/异常与风险），每章 ≤350 字、至少 2 个数字锚点；"
+        "3) findings 逐条覆盖：每条 finding 至少被一个章节解读，不得虚构清单之外的发现；"
+        "4) 尊重口径：stat_note 标注「仅供参考/需谨慎」的列不得作为结论主依据；"
+        "small_sample 数据集只做描述、不做推断，此限制写进 limitations；"
+        "5) key_findings ≤8 条（每条含数字）；recommendations ≤6 条且与发现一一对应；"
+        "limitations 必含「自动选列」与「聚合统计口径」。"
+        "禁止编造任何未提供的数字。"
     )
 
 
@@ -606,11 +610,7 @@ async def _narrate_report(
     digest = [item for item in deterministic_json.get("findings") or [] if isinstance(item, dict)]
 
     system_prompt = _auto_report_system_prompt()
-    if digest:
-        system_prompt += (
-            " 给定的 findings 是规则从数据中提炼的重点发现，叙述中的关键发现必须逐条覆盖这些内容，"
-            "不得遗漏，也不得虚构清单之外的发现。"
-        )
+    # 批 36：findings「逐条覆盖」已并入提示词第 3 条，digest 附加段删除。
     result = await _run_ai_stage(
         db=db,
         user=user,

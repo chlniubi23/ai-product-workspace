@@ -142,7 +142,11 @@ async def ai_interpret(body: AIInterpretRequest, user: User = Depends(get_curren
                 messages=[
                     ChatMessage(
                         "system",
-                        "你是产品分析助手。只根据给定的聚合证据回答，不要猜测原始数据。返回 JSON，必须包含 facts、hypotheses、recommendations、limitations；每条事实、假设和建议都必须有 evidence 数组。Schema: "
+                        "你是产品数据分析师，基于给定的聚合证据回答用户问题。"
+                        "- facts：只写能被数字直接支撑的结论，每条以数字开头；"
+                        "- hypotheses：只写数据无法完全证实、值得下一步验证的判断，并写明验证方式；"
+                        "- recommendations：可执行的下一步，与前面的发现一一对应；"
+                        "- limitations 必须包含各列的统计口径（上下文中的 stat_note）。条数上限 3/3/3，每条 ≤80 字。Schema: "
                         + json.dumps(AI_OUTPUT_SCHEMA, ensure_ascii=True, separators=(",", ":")),
                     ),
                     ChatMessage("user", json.dumps(context, ensure_ascii=False, separators=(",", ":"), default=str)),
@@ -260,9 +264,9 @@ async def ai_frame_problem(body: AIFrameProblemRequest, user: User = Depends(get
         feature_name="frame_problem",
         system_prompt=(
             "你是产品分析助手。只根据给定的洞察证据，把观察归纳成一个清晰的产品问题草稿，不要猜测原始数据。"
-            "title 是一句可验证的问题标题；statement 说明谁在什么场景遇到什么障碍、造成什么后果；"
-            "impact_scope 说明影响范围与量级；priority 从 P0/P1/P2/P3 中选；limitations 写出该判断的局限。"
-            "used_insight_ids 必须标注你的陈述实际依据了哪些洞察 id（只能从给定洞察中选）。"
+            "title ≤30 字且可验证；statement 说明谁在什么场景遇到什么障碍、造成什么后果；"
+            "impact_scope 必须引用给定洞察中的数字；priority 判定：影响面大且数字充分 = P0/P1，反之为 P2/P3；"
+            "used_insight_ids 只能取给定洞察 id；limitations 写出该判断的局限。"
         ),
         context=context,
         flag_name="insight_suggestions_enabled",
@@ -659,10 +663,10 @@ async def ai_propose_solutions(body: AIProposeSolutionsRequest, user: User = Dep
         workspace=workspace,
         feature_name="propose_solutions",
         system_prompt=(
-            "你是产品方案助手。针对给定的产品问题，按问题复杂度提出 2-4 个互不重复的候选方案（宁少勿凑），"
-            "每个方案输出 title（方案名称）、approach（具体做法）、pros（优点列表）、cons（缺点或代价列表）、"
-            "effort（工作量，只能是 S/M/L）。不要重复已有方案。"
-            "其中恰好一个是你综合可行性、成本与风险后最推荐的：该方案 recommended=true 且给出 recommendation_reason（一句话），其余方案 recommended=false。"
+            "针对给定的产品问题提出 2-4 个互不重复的候选方案（宁少勿凑），不重复已有方案。"
+            "approach ≤80 字，写清改动机制与作用对象；pros/cons 各 ≤3 条，必须具体（含数字、机制或代价），"
+            "禁止「体验更好」「更灵活」这类不可验证表述；effort ∈ S/M/L。"
+            "恰好一个 recommended=true，recommendation_reason ≤60 字并引用方案间对比依据。"
         ),
         context=context,
         flag_name="insight_suggestions_enabled",
@@ -739,9 +743,9 @@ async def ai_draft_decision(body: AIDraftDecisionRequest, user: User = Depends(g
         system_prompt=(
             "你是产品负责人，把选定方案写成正式的决策提案草稿。"
             "title 概括本次决策；problem_statement 沿用问题的陈述并补上数据佐证（引用给定洞察/发现中的数字）；"
-            "proposed_action 按选定方案的具体做法展开为可执行的行动计划；expected_impact 尽量量化（给出指标与预期幅度）；"
-            "risk_summary 写清主要风险与依赖；validation_plan 必须结合数据本身给出可执行路径——"
-            "用哪个数据版本或指标、观察什么变化、什么周期内达到什么幅度算达标——不得写空话。"
+            "proposed_action 按选定方案的具体做法展开为可执行的行动计划；"
+            "expected_impact 四要素：指标名+方向+幅度+周期；validation_plan 四要素：看哪个指标/在哪看/看多久/达到多少算达标；"
+            "risk_summary 须引用落选方案的主要 cons；各字段 ≤150 字。"
             "所有内容必须来自给定上下文，禁止编造数据；全文使用简体中文。"
         ),
         context=context,

@@ -381,9 +381,10 @@ def test_distill_system_prompt_carries_size_limits(client, owner, project, monke
         _run(distill_interview(db=db, user=_user(db, owner), workspace=ws, project=db.get(Project, project["id"])))
 
     system = fake.calls[0]["system"]
-    assert "洞察条数由证据决定" in system
-    assert "不超过 80 字" in system
-    assert "evidence 只引 1 个" in system
+    # 批 36：蒸馏提示词重写 —— 条数与字数约束保留、口径更新。
+    assert "条数 3-8 条、由证据决定" in system
+    assert "每条 ≤80 字" in system
+    assert "每条 evidence 恰好 1 条，id 原样取自上下文" in system
 
 
 # --------------------------------------------------------------------------

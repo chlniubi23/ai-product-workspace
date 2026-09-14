@@ -219,6 +219,7 @@ AI_Product_Workspace/
 - Copilot SSE 是**回放**而非实时流：事件先存 `AIRun.input_summary_json.events`，`GET /copilot/runs/{id}/events` 逐条吐出。
 - Copilot 上下文中的洞察由**服务端**注入（按 `session.project_id` 查 confirmed 洞察 ≤20 条），不信任前端传的 insight_ids。
 - **提示词底座（批 34）**：`_run_ai_stage` 的 JSON 尾缀两分支统一为共享规则——①简体中文 + 严格符合 Schema（默认分支另含四节清单与 80 字/宁少勿凑约束）；②只使用上下文信息、禁止编造数字/结论/id；③**每条 evidence 的 id 必须原样取自上下文中出现的资源 id**（幻觉 id 第一道闸）。应用层的 draft 状态短语已从全部提示词删除（对 LLM 无操作语义）；Copilot SYSTEM_PROMPT 追加引用 id 溯源一句；各环节 prompt 仅保留专属规则。改提示词前先看本条——共享三规则不要再在各环节重复，也不要往回加 draft 句。
+- **环节级提示词约束（批 36）**：interpret 逐节定义 facts/hypotheses/recommendations 的可执行标准并消费 stat_note 口径；frame-problem 的 priority/impact_scope/used_insight_ids 有硬判定规则；propose-solutions 的 pros/cons 禁止不可验证表述（≥1 数字/机制/代价）且 recommended 恰一个；draft-decision 的 expected_impact/validation_plan 各四要素、risk_summary 引落选 cons、各字段 ≤150 字；narration question 消费 stat_note/小样本标记并要求引用 artifact id。改这些 prompt 时保持「可执行约束」风格（字数/条数/判定规则），不要退回泛泛描述。
 
 ### 7.4 自动报告：先算后叙两步链路（**【实测】**）
 - `POST /projects/{id}/auto-report/compute`：仅确定性部分——`_latest_project_versions` + `_compute_report_aggregates_batch`（`asyncio.to_thread`，单文件失败隔离为 read_failure）+ `_deterministic_report_parts` + `build_findings_digest`，落库 `AutoAnalysisReport`（status=`not_configured`）并立即返回；**零 AI 调用、零 token、不建 AIRun/job**。重复调用始终新建报告并**删除该项目全部旧报告**（报告唯一化，第十五批）。
@@ -235,6 +236,8 @@ AI_Product_Workspace/
 
 ### 7.6 字段语义标签贯通（第二十一批，**【实测】**）
 `services/field_semantics.py:interpret_fields` 在解析 job 尾部用一次 AI 调用为每列生成 `label`（≤10 字）+ `description`（≤50 字）与数据集 `dataset_label`，按列名精确匹配落库 `data_columns.semantic_label/semantic_description`；隔离模式与 `_run_auto_analyses` 相同（任何异常只写审计）；无「重新解读」入口。标签经持久化聚合自动进入报告叙述、采访地基、文档生成（`digest.display_name/column_display/dataset_display`）。
+
+**采访提示词约束（批 36）**：下一问 prompt 为五条可执行规则（指向高严重度未覆盖疑点、question_text ≤60 字含落点、rationale ≤50 字指明发现编号、完成判定条件、不语义重复），重试 nudge（`extra`）机制不变；`asked_items` 精简为 `{id, artifact_type, payload_json:{question,status}}`（title 与 question_text 重复已删）；小结 collected/gaps 各 ≤6 条每条 ≤40 字、ready_for ≤3 句；蒸馏 prompt 条数 3-8、每条 ≤80 字、evidence 恰好 1 条且 id 原样取自上下文（type 枚举句删除——Schema 已约束，`_normalize_distill_evidence` 未动）。
 
 ---
 
@@ -486,7 +489,9 @@ AI_Product_Workspace/
 
 **提示词底座统一（batch 34，2026-09-14，已提交 `7815638`）**：纯提示词字符串改动——`_run_ai_stage` 的 JSON 尾缀两分支替换为共享规则（简体中文 + 严格 Schema + 只用上下文/禁编造 + **evidence id 原样取自上下文**）；全站删除「输出默认是 draft」6 处（ai_stages ×2、interview ×3、ai.py interpret ×1，interpret 的四节字段清单句保留——该端点不走 `_run_ai_stage`）；各环节 prompt 仅删与共享规则逐字重复的表述，专属规则全保留；Copilot SYSTEM_PROMPT 追加引用 id 溯源一句。Schema/重试/装配/参数零改动。验收 grep：draft 句 0 命中、共享 id 规则 ai_stages.py 恰 2 命中；测试未 pin 提示词子串，无断言需更新。
 
-**PRD 分节上下文裁剪（batch 35，2026-09-14，**未提交**）**：①`DOCUMENT_OUTLINE_SCHEMA`/`validate_document_outline` 的 `sections[]` 增加可选 `key_refs`（字符串数组，清洗后 ≥2 才保留，缺失容忍）；②`_outline_context` 增加 `finding_refs`（finding-N→材料标题映射）；③分节装配改走 `documents.py:_section_context`——`dataset_summary` 只保留 key_refs 命中切片（ref 直连 id 或 finding-N→第 N 条 finding→payload.dataset），缺失/解析不到回退全量，裁剪后再过 `assert_safe_ai_context`（防火墙三键未动，每节仍独立 `_run_ai_stage`/AIRun/阀门，`min_output_tokens=8192` 不变）；④分节 prompt 重写为三要素（数字锚点 `[finding-N]`/设计决策/badcase），「写深写透」「表格 cell」空话删除；harmonize 追加 105% 字数上限；单次旧路径与共享尾缀去重。新增 `tests/test_document_section_context.py`（10 用例）；`test_document_generation/parallel` 4 处提示词文案断言按预期变化更新。
+**PRD 分节上下文裁剪（batch 35，2026-09-14，已提交 `52227eb`）**：①`DOCUMENT_OUTLINE_SCHEMA`/`validate_document_outline` 的 `sections[]` 增加可选 `key_refs`（字符串数组，清洗后 ≥2 才保留，缺失容忍）；②`_outline_context` 增加 `finding_refs`（finding-N→材料标题映射）；③分节装配改走 `documents.py:_section_context`——`dataset_summary` 只保留 key_refs 命中切片（ref 直连 id 或 finding-N→第 N 条 finding→payload.dataset），缺失/解析不到回退全量，裁剪后再过 `assert_safe_ai_context`（防火墙三键未动，每节仍独立 `_run_ai_stage`/AIRun/阀门，`min_output_tokens=8192` 不变）；④分节 prompt 重写为三要素（数字锚点 `[finding-N]`/设计决策/badcase），「写深写透」「表格 cell」空话删除；harmonize 追加 105% 字数上限；单次旧路径与共享尾缀去重。新增 `tests/test_document_section_context.py`（13 用例）；`test_document_generation/parallel` 4 处提示词文案断言按预期变化更新。
+
+**环节级提示词重写（batch 36，2026-09-14，**未提交**）**：只改提示词字符串与 asked_items 装配——①`/ai/interpret` system 逐节定义 facts/hypotheses/recommendations 标准并消费 stat_note；②frame-problem 的 title ≤30 字、impact_scope 引数字、priority 硬判定、used_insight_ids 只取给定 id；③propose-solutions 的 pros/cons 禁不可验证表述、recommended 恰一个；④draft-decision 的 expected_impact/validation_plan 四要素、risk_summary 引落选 cons、各字段 ≤150 字；⑤`_auto_report_system_prompt` 全文重写（消费 stat_note/small_sample、findings 逐条覆盖并入第 3 条，digest 附加段删除）；⑥`_narration_context` question 消费口径标记并要求引用 artifact id；⑦采访三 prompt 重写（五规则下一问/小结预算/蒸馏 3-8 条）+ `asked_items` 删 title。P1 的 stat_note/small_sample 经聚合整体进入 `_report_ai_context` artifacts（grep 核实），无需装配改动。`test_interview.py` 1 处蒸馏 prompt 断言按新口径更新。
 
 **本批实测**（**2026-09-14 复核更正**：原文误写 377 passed/378 收集/76.81s，与 §10、§13.3 及独立复验不符）：`ruff check app tests` 0 错；`pytest tests -q` → **374 passed, 1 xfailed（375 收集）**，耗时随机器波动、以最近一次实跑为准（约 78–105s；基线 366/1 → +9 计算层用例 + 2 环境守护用例，**零回归**）。**回收站增量实测为 0**（改造前每轮约 +1 万条）。
 

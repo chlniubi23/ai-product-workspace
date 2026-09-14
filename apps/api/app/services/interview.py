@@ -178,7 +178,8 @@ async def generate_next_question(
         {
             "id": q.id,
             "artifact_type": "asked_question",
-            "title": (q.topic or q.question_text[:60]),
+            # 批 36：title 与 question_text 重复，精简掉——asked_items 只保留
+            # id/question/status，降低下一问调用的上下文体积。
             "payload_json": {"question": q.question_text, "status": q.status},
         }
         for q in existing
@@ -203,13 +204,13 @@ async def generate_next_question(
             workspace=workspace,
             feature_name="interview_next_question",
             system_prompt=(
-                "你是产品分析师（采访者），正在进行一次一问的自适应采访。"
-                "基于给定的项目目标、报告聚合与数据发现，以及已回答的问答对，判断："
-                "若数据发现中最重要的未澄清点都已覆盖，返回 interview_complete=true 并在 completion_note 说明已收集到什么、还差什么、建议直接进入洞察蒸馏；"
-                "仅当用户的回答已覆盖关键开放问题、或明确表示无更多补充时才可置 true；不确定时默认继续提问；"
-                "置 true 时 completion_note 必须逐条说明依据了哪些回答。"
-                "否则只提出一个问题（优先围绕数据发现中最重要的未澄清点，并根据已有回答追问），输出 topic、question_text、rationale（引用哪条结论）。"
-                "新问题不得与已有问题重复（含语义重复）。" + extra
+                "你是产品访谈者，一次只问一个问题。"
+                "输入：项目目标、数据发现（含严重度）、已问清单、已回答摘要。"
+                "规则：1) 下一问必须指向「高严重度发现中尚未被任何回答覆盖」的一个具体疑点；"
+                "2) question_text ≤60 字，含一个可回答的落点（数字/原因/场景）；"
+                "3) rationale ≤50 字，指明所依据的发现编号；"
+                "4) 若高严重度发现均已被回答覆盖，返回 interview_complete=true，completion_note ≤80 字说明判定依据；"
+                "5) 不得与已问清单语义重复。" + extra
             ),
             context=context,
             flag_name="insight_suggestions_enabled",
@@ -337,12 +338,13 @@ async def complete_interview(
         user=user,
         workspace=workspace,
         feature_name="interview_summary",
-        system_prompt=(
-            "你是产品分析师。基于给定的报告聚合、数据发现与采访问答对，生成本次采访的收尾小结，"
-            "全部使用简体中文：collected 列出围绕哪些数据发现收集到了哪些判断（每条一句话，可引用数字）；"
-            "gaps 列出未覆盖、只能依赖数据本身回答的部分；ready_for 用 2-3 句话给出对下一步洞察蒸馏的建议"
-            "（哪些结论可以直接蒸馏、哪些还需要数据验证）。"
-        ),
+            system_prompt=(
+                "你是产品分析师。基于给定的报告聚合、数据发现与采访问答对，生成本次采访的收尾小结，"
+                "全部使用简体中文：collected 列出围绕哪些数据发现收集到了哪些判断（每条一句话，可引用数字）；"
+                "gaps 列出未覆盖、只能依赖数据本身回答的部分；ready_for 用 ≤3 句话给出对下一步洞察蒸馏的建议"
+                "（哪些结论可以直接蒸馏、哪些还需要数据验证）。"
+                "collected/gaps 各 ≤6 条、每条 ≤40 字。"
+            ),
         context=context,
         flag_name="insight_suggestions_enabled",
         response_schema=SUMMARY_SCHEMA,
@@ -455,12 +457,11 @@ async def distill_interview(
         workspace=workspace,
         feature_name="interview_distill",
         system_prompt=(
-            "你是产品分析助手。把给定的采访问答（interview_answer 产物）与数据结论（分析产物、报告聚合）蒸馏成洞察草稿："
-            "facts（有依据的事实）、hypotheses（待验证的假设）、recommendations（下一步建议）。"
-            "洞察条数由证据决定，通常 5-10 条，证据不足时宁少勿凑；每条 text 不超过 80 字；"
-            "每条的 evidence 只引 1 个最相关的 id；limitations 最多 3 条。"
-            "每条必须带 evidence 数组，每项必须是 {\"type\": \"...\", \"id\": \"...\"} 对象，type 取 interview_question（采访问答）或 analysis_artifact（分析产物）。"
-            "不要臆测未提供的信息。"
+            "你是产品分析助手。把采访回答（interview_answer 产物）与数据结论蒸馏成洞察草稿。"
+            "facts=有数字或回答原文直接支撑的结论；hypotheses=待验证判断（写明验证方式）；"
+            "recommendations=可执行下一步。"
+            "条数 3-8 条、由证据决定，每条 ≤80 字，宁少勿凑；"
+            "每条 evidence 恰好 1 条，id 原样取自上下文；limitations ≤3 条。"
         ),
         context=context,
         flag_name="insight_suggestions_enabled",
