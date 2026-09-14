@@ -316,6 +316,7 @@ AI_Product_Workspace/
 2. ~~**离群值三套口径**：`quality.assess_quality`（并集掩码）vs `outliers.build_outlier_aggregates`（IQR 列表 + Z 列表相加 → 重复计数、rate 可 >1、series 出重复值）vs `auto_report`/`digest`（仅 IQR）——同一概念三个数。~~ **已修复**：新增唯一实现 `outliers.compute_column_outliers`（并集掩码按行去重、`rate = count / 非空样本数`、极值样本按值去重有界），quality / raw map / 出站聚合 / auto_report 四处全部改由它驱动；digest 文案同步为「离群值」。实测同一列：旧 count `2` → 新 `1`，`series` 由重复两条变为单条。
 3. ~~**质量分类型维度恒为 0**：生产 `assess_quality(df)` 从不传 `expected_types` → `type_error_count` 恒 0 → `0.4*missing+0.25*dup+0.2*type+0.15*outlier` 的惩罚上限只有 80，分数系统性虚高。~~ **已修复**：未显式传参时用 `infer_column_type_v2` 自动派生（仅 numeric/datetime/boolean；category/text/identifier 跳过），显式传入仍以传入为准。实测「9 个数字 + 1 个中文字符串」的列：旧分 `100.0` → 新分 `98.0`，`type_error_count` `0` → `1`。
 4. ~~**无空格中文长句被误判为 identifier**：`parsing.infer_column_type_v2` 只检查「近唯一 + 无空格」，于是中文长句判 identifier → `_is_textlike` 为假 → `extract_text_metrics` 不扫描，句内指标全部抽不出来。~~ **已修复**：identifier 需同时满足无空白、长度 ≤ 40、无句读标点（`_looks_like_identifier`）；长句回落 `text` 并被扫描。实测 45 字中文列由 `identifier` 变 `text`，`备注__本周DAU110k留存率` 成功抽出（coverage 1.0）。
+5. ~~**【2026-09-14 复核新发现】文本指标标签吞数字**：`text_metrics` 的标签子模式允许以数字结尾，贪婪回溯只到「最后一个数字前」→ `本周DAU110k，7日留存45%` 抽出 `本周DAU11`=0.0、`7日留存4`=5.0（差一个数量级甚至为 0）。~~ **已修复**：标签末字符必须是字母/汉字，且**标签内部的数字后不得紧跟单位字符**（后者是把长句拆成 `本周DAU`=110000 + `留存率`=45 的必要护栏——仅有前者时 `本周DAU110k留存率45%` 仍会整体当标签、丢掉 110k）；`Top3销量 800` 因内层数字后跟字母而保持完整。四条验收行为均已实测锁定（`tests/test_parsing.py` 新增 4 用例）。
 
 > ~~**仍未修（同批实测，本次未纳入范围）**：`dual_quality.analysis_quality` 在生产路径恒为 0；`analytics/enhanced_engine.py` 仍是被测试引用的死代码；`outliers.detect_outliers_lof` 无调用点且 `pred[int(idx)]` 索引错位。~~ **三项已全部处理（2026-09-13 第二批，见 §13.4）**：`analysis_quality` 由解析 job 用真实产物回写；`enhanced_engine.py` + `test_enhanced_engine.py` 已删除；`detect_outliers_lof` 已删除（连带 `scikit-learn` 失去唯一消费方，`[ml]` extra 暂保留）。
 
@@ -417,16 +418,16 @@ AI_Product_Workspace/
 
 ### 13.3 可验证指标（**【实测】** 2026-09-13）
 
-| 指标 | 整理批提交前 | 计算层修复批 | 计算层第二/三批（当前） |
-|---|---|---|---|
-| `ruff check app tests` | **0 错** | **0 错** | **0 错** |
-| `pytest tests -q` | **366 passed, 1 xfailed**（236.79s） | **375 passed, 1 xfailed**（210.02s） | **374 passed, 1 xfailed**（**78.74s**，提速约 2.7 倍） |
-| `pytest --collect-only -q` | 367 collected | 376 collected | **375 collected** |
-| 首次复跑异常 | `test_report_narration.py` 1 failed（`seen >= 3` 期望过期）→ 修正为 `>= 2` | 无失败 | 无失败 |
-| 回收站增量（跑一轮全量） | **约 1 万条** `api-test.db-journal` | 未测（测试运行时仍在仓库树内） | **0 条**（实测 155 → 155） |
-| `git status --porcelain -uall` | 空（除被忽略项） | 7 改 1 新 | **18 改 3 新 2 删（§13.4，2026-09-14 复核更正）** |
-| 路由数 | 137（14 router） | 137（未改动） | 137（**未改动**） |
-| Alembic 迁移 | 17（0001..0017） | 17（未改动） | 17（**未改动**） |
+| 指标 | 整理批提交前 | 计算层修复批 | 计算层第二/三批 | 第四批·标签修复（当前，已提交） |
+|---|---|---|---|---|
+| `ruff check app tests` | **0 错** | **0 错** | **0 错** | **0 错** |
+| `pytest tests -q` | **366 passed, 1 xfailed**（236.79s） | **375 passed, 1 xfailed**（210.02s） | **374 passed, 1 xfailed**（210.02s / 103.49s 复跑） | **378 passed, 1 xfailed**（78.67s） |
+| `pytest --collect-only -q` | 367 collected | 376 collected | 375 collected | **379 collected** |
+| 首次复跑异常 | `test_report_narration.py` 1 failed（`seen >= 3` 期望过期）→ 修正为 `>= 2` | 无失败 | 无失败 | 无失败 |
+| 回收站增量（跑一轮全量） | **约 1 万条** `api-test.db-journal` | 未测（测试运行时仍在仓库树内） | **0 条**（实测 155 → 155） | 0（同机制） |
+| `git status --porcelain -uall` | 空（除被忽略项） | 18 改 1 新 | 18 改 3 新 2 删 | **干净**（四批已全部入库） |
+| 路由数 | 137（14 router） | 137（未改动） | 137（**未改动**） | 137（**未改动**） |
+| Alembic 迁移 | 17（0001..0017） | 17（未改动） | 17（**未改动**） | 17（**未改动**） |
 
 ### 13.4 计算层修复批 + 测试环境批（**已修改未提交**，2026-09-13 第二/三批）
 
@@ -455,8 +456,13 @@ AI_Product_Workspace/
 | `apps/api/tests/test_test_environment.py` | 新增（2 用例） | **测试环境批**：守护两条不变量——运行时必须位于系统临时目录下、测试库 `journal_mode` 必须是 `memory` |
 | `apps/api/tests/conftest.py` | +54 / -4 | **测试环境批**：`_resolve_test_root()` 把运行时迁到 `%TEMP%\apw-test-runtime`（`APW_TEST_ROOT` 可覆盖），并对测试库执行 `PRAGMA journal_mode=MEMORY` / `synchronous=OFF` |
 | `.gitignore` | +3 / -1 | `output/` 条目注释更新（测试运行时已迁至系统临时目录，该条目只覆盖历史残留） |
+| `apps/api/app/analytics/text_metrics.py`（标签正则） | +17 / -8 | **第四批（2026-09-14）**：标签末字符必须是字母/汉字 + 标签内层数字不得紧跟单位字符，修复「标签吞数字」P0（详见 §11.5） |
+| `apps/api/tests/test_parsing.py` | +45 / 0 | **第四批**：新增 4 个抽取用例（无分隔符 / 无单位 / 内层数字标签 / 长句双指标） |
+| `apps/api/tests/test_dual_quality_audit.py` | +1 / -1 | **第四批**：同名覆盖用例的期望值随标签修复由 45.0 更正为 110000.0（**因预期口径变化而更新的断言**） |
 
 **本批实测**（**2026-09-14 复核更正**：原文误写 377 passed/378 收集/76.81s，与 §10、§13.3 及独立复验不符）：`ruff check app tests` 0 错；`pytest tests -q` → **374 passed, 1 xfailed（375 收集）**，耗时随机器波动、以最近一次实跑为准（约 78–105s；基线 366/1 → +9 计算层用例 + 2 环境守护用例，**零回归**）。**回收站增量实测为 0**（改造前每轮约 +1 万条）。
+
+**第四批实测（2026-09-14）**：`ruff check app tests` 0 错；`pytest tests -q` 全绿（数字见 §13.3 当前列）；四条验收行为实测成立——`本周DAU{n}k，7日留存{m}%` → `周报__本周DAU`=`n*1000`、`周报__7日留存`=`m`（coverage 1.0）；`本周DAU110，` → 110.0；`Top3销量 800` → `周报__Top3销量`=800；长句 `本周DAU110k留存率45%…` → `备注__本周DAU`=110000 与 `备注__留存率`=45 两个指标。
 
 **被影响的行为（预期，已实测量化）**：
 - 质量分：类型维度真正参与惩罚，「多数可解析 + 少量脏值」的列会被扣分（实测 100.0 → 98.0）；`overall_score`/`status` 的**判定口径未变**（仍是 `>=95 passed / >=80 needs_review / else failed`），但它们只是前端徽标与 `quality_score` 展示，**不构成任何硬门控**（阶段 3 门控只要求"存在质量报告"）。

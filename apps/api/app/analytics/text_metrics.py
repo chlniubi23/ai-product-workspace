@@ -21,15 +21,27 @@ from .parsing import infer_column_type_v2, parse_boolean, parse_datetime_value, 
 # Number token: digits with optional thousands separators, then an optional
 # unit suffix (percent / magnitude / common business units).
 _NUMERIC_TOKEN = r"\d[\d,\.]*\s*(?:%|％|k|K|M|m|万|亿|分|元|人|天|小时)?"
-# Label: the 2-12 CJK/latin/digit run immediately before the number ("7日留存"
-# keeps its leading digit; "周 DAU" yields "DAU" because the single "周" is
-# split off by whitespace and too short).  The lookahead inside the class
-# rejects all-digit runs ("202" out of a date is not a metric name).
+# Label: the 2-12 CJK/latin/digit run immediately before the number.  Two
+# boundary rules, both needed:
+#
+# 1. the last character must be a letter or CJK -- a label may never end on a
+#    digit.  Without it the greedy quantifier backtracked only to the last
+#    digit, so "本周DAU110k" labelled as "本周DAU11" and the number became
+#    "0k" -> 0.0 instead of 110000.0;
+# 2. a digit inside the label may not be followed by a unit char.  Without it
+#    "本周DAU110k留存率45%" still labelled as "本周DAU110k留存率" (a valid
+#    12-char run ending on 率), swallowing the 110k entirely instead of
+#    yielding 本周DAU=110000 plus 留存率=45.  "Top3销量 800" keeps its label
+#    because the inner "3" is followed by a letter, not a unit.
+_METRIC_LABEL_BODY = (
+    r"(?:(?![0-9](?:%|％|k|K|M|m|万|亿|分|元|人|天|小时))[0-9A-Za-z\u4e00-\u9fff]){1,11}"
+    r"[A-Za-z\u4e00-\u9fff]"
+)
 _METRIC_LABEL_RE = re.compile(
-    r"((?=[0-9A-Za-z\u4e00-\u9fff]*[A-Za-z\u4e00-\u9fff])[0-9A-Za-z\u4e00-\u9fff]{2,12})\s*[:：]?\s*(?=[0-9]|(?:%|％|k|K|M|m|万|亿))"
+    rf"({_METRIC_LABEL_BODY})\s*[:：]?\s*(?=[0-9]|(?:%|％|k|K|M|m|万|亿))"
 )
 _COMBINED_RE = re.compile(
-    rf"(?:((?=[0-9A-Za-z\u4e00-\u9fff]*[A-Za-z\u4e00-\u9fff])[0-9A-Za-z\u4e00-\u9fff]{{2,12}})\s*[:：]?\s*)?({_NUMERIC_TOKEN})"
+    rf"(?:({_METRIC_LABEL_BODY})\s*[:：]?\s*)?({_NUMERIC_TOKEN})"
 )
 
 _MIN_LABEL_COVERAGE = 0.3

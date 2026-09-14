@@ -123,8 +123,8 @@ def test_extracted_column_never_overwrites_an_existing_column():
     assert renamed, report
     assert renamed[0]["renamed_from"] == derived_name
     assert renamed[0]["derived_column"] == f"{derived_name}__dup1"
-    # 该列的指标是留存率（45%）——数值来自 "45%" 这一段。
-    assert working[f"{derived_name}__dup1"].tolist() == [45.0] * 5
+    # 该列的指标是 DAU（"110k" 紧贴标签）——数值已按千位展开。
+    assert working[f"{derived_name}__dup1"].tolist() == [110000.0] * 5
 
 
 def test_extraction_report_records_display_variants():

@@ -191,3 +191,41 @@ def test_extracted_derived_column_feeds_the_trend_engine():
     assert len(rows) == 10
     assert rows[-1]["value"] == pytest.approx(127000.0)
     assert rows[-1]["period_over_period"] is not None
+
+
+def test_extract_reads_numbers_glued_to_the_label():
+    # 无分隔符写法：数字紧跟标签（旧实现会把 "DAU110k" 拆成 标签"DAU11"+数字"0k"）。
+    rows = [f"本周DAU{n}k，7日留存{m}%" for n, m in ((110, 45), (120, 46), (130, 47), (140, 48), (150, 49))]
+    working, report = extract_text_metrics(pd.DataFrame({"周报": rows}))
+
+    by_column = {row["derived_column"]: row for row in report}
+    assert set(by_column) == {"周报__本周DAU", "周报__7日留存"}
+    assert by_column["周报__本周DAU"]["coverage"] == pytest.approx(1.0)
+    assert by_column["周报__7日留存"]["coverage"] == pytest.approx(1.0)
+    assert working["周报__本周DAU"].tolist() == [110000.0, 120000.0, 130000.0, 140000.0, 150000.0]
+    assert working["周报__7日留存"].tolist() == [45.0, 46.0, 47.0, 48.0, 49.0]
+
+
+def test_extract_reads_a_unitless_number_glued_to_the_label():
+    working, report = extract_text_metrics(pd.DataFrame({"周报": [f"本周DAU110，{s}" for s in "甲乙丙丁戊"]}))
+    assert [item["derived_column"] for item in report] == ["周报__本周DAU"]
+    assert working["周报__本周DAU"].tolist() == [110.0] * 5
+
+
+def test_extract_keeps_a_label_with_an_inner_digit():
+    # "Top3销量" 以汉字结尾、内含数字：标签不得在数字处截断（旧实现会回退成 "Top"+3）。
+    working, report = extract_text_metrics(pd.DataFrame({"周报": [f"Top3销量 800，{s}" for s in "甲乙丙丁戊"]}))
+    assert [item["derived_column"] for item in report] == ["周报__Top3销量"]
+    assert working["周报__Top3销量"].tolist() == [800.0] * 5
+
+
+def test_extract_yields_two_correct_metrics_for_a_glued_prose_pair():
+    # 长句里 "110k" 与 "45%" 都紧贴文字：应拆成 本周DAU=110000 与 留存率=45 两个指标，
+    # 而不是把 110k 吞进指标名。
+    prose = "本周DAU110k留存率45%需要继续观察后续走势避免结论被单周波动带偏并且核对周维度口径"
+    working, report = extract_text_metrics(pd.DataFrame({"备注": [f"{prose}{s}" for s in "甲乙丙丁戊"]}))
+
+    by_column = {row["derived_column"]: row for row in report}
+    assert set(by_column) == {"备注__本周DAU", "备注__留存率"}
+    assert working["备注__本周DAU"].tolist() == [110000.0] * 5
+    assert working["备注__留存率"].tolist() == [45.0] * 5
