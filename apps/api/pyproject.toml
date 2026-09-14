@@ -31,9 +31,10 @@ dev = [
   "pytest>=7.4,<9",
   "ruff>=0.6,<1",
 ]
-# Optional ML extras. `scikit-learn` powers the Local-Outlier-Factor detector in
-# analytics/outliers.py, which degrades to an empty result when it is absent --
-# so it must stay optional, never a required dependency.
+# Optional ML extra.  Kept only for install-command compatibility: the last
+# consumer (the Local-Outlier-Factor detector in analytics/outliers.py) was
+# removed in the 2026-09-13 dead-code cleanup, so nothing imports
+# scikit-learn any more.  Drop this extra if LOF is not reintroduced.
 ml = [
   "scikit-learn>=1.4,<2",
 ]
