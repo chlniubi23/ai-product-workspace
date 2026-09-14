@@ -86,12 +86,12 @@ AI_Product_Workspace/
     │   │   │   ├── documents.py          #   740 行：文档上下文装配 + Markdown 渲染 + 三遍生成提示词
     │   │   │   ├── interview.py          #   600 行：自适应一问一答 + 收尾小结 + 蒸馏落库
     │   │   │   ├── field_semantics.py    #   142 行：LLM 字段语义字典（仅 _handle_dataset_parse 调用）
-    │   │   │   └── job_handlers.py       #   771 行：job_executor 唯一实例 + 6 个 handler + _register_job_handlers
+    │   │   │   └── job_handlers.py       #   829 行：job_executor 唯一实例 + 6 个 handler + _register_job_handlers
     │   │   ├── routers/         #   14 个文件：auth/workspaces/projects/datasets/analysis/insights/interview/feedback/problems/decisions/documents/jobs/copilot/ai
     │   │   ├── analytics/       #   计算层（见 §3.1）
     │   │   └── infrastructure/  #   jobs.py（285 行）/ llm/deepseek.py（828 行）
     │   ├── alembic/versions/    #   17 个迁移（0001..0017）
-    │   ├── tests/               #   28 个测试文件，375 用例
+    │   ├── tests/               #   29 个测试文件，386 用例
     │   ├── pyproject.toml / requirements.txt
     │   └── Procfile
     └── web/                     # Next.js 14 前端
@@ -112,16 +112,15 @@ AI_Product_Workspace/
 
 | 文件 | 行数 | 状态 | 说明 |
 |---|---|---|---|
-| `engine.py` | 771 | **已修改未提交** | **生产引擎**：`run_eda` / `run_trend_analysis` / `run_funnel_analysis` / `run_retention_analysis` / `run_anomaly_detection` / `run_group_comparison` + `choose_trend_frequency` + 函数式 facade；EDA 相关性统一接入增强计算，保留 legacy correlations 契约；**本批**：payload 新增 `excluded_correlation_pairs_detail`（≤20 条，人工审计用，不出站） |
-| `quality.py` | 501 | **已修改未提交** | `assess_quality`（生产契约：`overall_score`/`status` 仍是唯一门控）+ 双维度质量（`DataQualityMetrics`/`AnalysisQualityMetrics`/`ComprehensiveQualityReport`/`generate_quality_report`）；**计算层修复批**：类型维度改为未传 `expected_types` 时自动派生（`_derived_expected_type`，仅 numeric/datetime/boolean），outlier 段改用 `outliers.compute_column_outliers` |
-| `parsing.py` | 213 | **已修改未提交** | v2 解析（千分位/货币/中文日期/k\|M\|万\|亿）+ `infer_column_type_v2`；**计算层修复批**：identifier 判据收紧为 `_looks_like_identifier`（无空白 + 长度 ≤ `IDENTIFIER_MAX_LENGTH=40` + 无句读标点），无空格中文长句回落 `text` |
-| `text_metrics.py` | 149 | 已提交 | 自由文本数值列抽取（`{源列}__{指标}`）；只扫描 `semantic_type ∈ {text, category}` 的列，因此依赖 `parsing.py` 的 identifier 判据 |
-| `digest.py` | 355 | **已修改未提交** | 规则化 findings digest（纯函数，阈值模块常量）；**计算层修复批**：outlier 文案由「IQR 离群值」改为「离群值」，与新口径（IQR∪Z 并集）一致 |
-| `dag.py` | 340 | **已修改未提交** | 派生列血缘识别与伪相关排除；**计算层修复批**：`_match_builtin_rules` 只认 `rule.name`（不再把源列误判为派生列）、补上策略 2 缺失的 `derivation_description` |
-| `corelation.py` | 253 | **已修改未提交** | 显著性检验（p 值）+ 稳健相关 + 多方法（**依赖 scipy**）；**本批**：血缘排除由计数改为明细列表，并新增 `EXCLUDED_PAIRS_DETAIL_LIMIT=20` |
-| `outliers.py` | 437 | **已修改未提交** | 对象级离群值（IQR/Z-score 并集统一口径）；**本批**：删除 `detect_outliers_lof`（无调用点 + `pred[int(idx)]` 索引错位），**scikit-learn 由此失去唯一消费方** |
-| `types.py` | 307 | **已修改未提交** | 类型感知统计（序数/占比/二元）；**本批**：`OrdinalStatistics.to_dict` 与 mode 判定改用 `is not None`，0 值不再被当缺失 |
-| `text_metrics.py` | 177 | **已修改未提交** | 自由文本数值列抽取（`{源列}__{指标}`）；**本批**：派生列撞名时追加确定性后缀 `__dupN` 并写 `renamed_from`，report 记录同一 normalized 指标的 `display_variants` |
+| `engine.py` | 778 | 已提交 | **生产引擎**：`run_eda` / `run_trend_analysis` / `run_funnel_analysis` / `run_retention_analysis` / `run_anomaly_detection` / `run_group_comparison` + `choose_trend_frequency` + 函数式 facade；EDA 相关性统一接入增强计算，保留 legacy correlations 契约；payload 含 `excluded_correlation_pairs_detail`（≤20 条，人工审计用，不出站） |
+| `quality.py` | 501 | 已提交 | `assess_quality`（生产契约：`overall_score`/`status` 仍是唯一门控）+ 双维度质量（`DataQualityMetrics`/`AnalysisQualityMetrics`/`ComprehensiveQualityReport`/`generate_quality_report`）；类型维度未传 `expected_types` 时自动派生（`_derived_expected_type`，仅 numeric/datetime/boolean），outlier 段用 `outliers.compute_column_outliers` |
+| `parsing.py` | 213 | 已提交 | v2 解析（千分位/货币/中文日期/k\|M\|万\|亿）+ `infer_column_type_v2`（返回 `semantic_type`/`parse_rate`/`constant`/`identifier`）；identifier 判据 `_looks_like_identifier`（无空白 + 长度 ≤ 40 + 无句读标点），无空格中文长句回落 `text` |
+| `text_metrics.py` | 217 | 已提交 | 自由文本数值列抽取（`{源列}__{指标}`）；标签末字符必须为字母/汉字且内层数字后不得紧跟单位；派生列撞名追加 `__dupN` 并写 `renamed_from`，report 记录 `display_variants`；**字符串列物化段抽为 `materialize_string_columns`（`UNPARSED_SAMPLE_LIMIT=5` 留痕 parser 拒绝的非空单元格）** |
+| `digest.py` | 355 | 已提交 | 规则化 findings digest（纯函数，阈值模块常量）；outlier 文案为「离群值」（IQR∪Z 并集口径） |
+| `dag.py` | 340 | 已提交 | 派生列血缘识别与伪相关排除；`_match_builtin_rules` 只认 `rule.name`，排除理由从派生列一侧陈述 |
+| `corelation.py` | 255 | 已提交 | 显著性检验（p 值）+ 稳健相关 + 多方法（**依赖 scipy**）；血缘排除返回 `[{'var1','var2','reason'}]` 明细，`EXCLUDED_PAIRS_DETAIL_LIMIT=20` |
+| `outliers.py` | 389 | 已提交 | 对象级离群值（IQR/Z-score 并集统一口径 `compute_column_outliers`） |
+| `types.py` | 306 | 已提交 | 类型感知统计（序数/占比/二元）；0 值用 `is not None` 判定，不再被当缺失 |
 
 ---
 
@@ -136,7 +135,7 @@ AI_Product_Workspace/
 | LLM | DeepSeek `chat/completions`（OpenAI 兼容），默认模型 `deepseek-chat`；调用走 **httpx fallback**（`openai` SDK 不在依赖中） |
 | 前端 | Next.js 14.2 (App Router), React 18, TailwindCSS 3.4, ECharts 5.6, lucide-react |
 | 存储 | MySQL 8（生产）/ SQLite（dev+test） |
-| 测试 | pytest（实测 `361 passed, 1 xfailed`，362 收集，207.04s） |
+| 测试 | pytest（实测 `385 passed, 1 xfailed`，386 收集；耗时随机器波动 约 78–117s，对账二次读取略有增加） |
 | Lint | ruff（line-length 120, target py311）；eslint + prettier（前端） |
 
 **可选依赖**：`scikit-learn` 走 `[project.optional-dependencies] ml`（`scikit-learn>=1.4,<2`）。~~仅供 `outliers.py` 的 LOF 使用~~ **2026-09-13：`detect_outliers_lof` 已随死代码清理删除，`scikit-learn` 当前**没有消费方**；`[ml]` extra 暂保留（删除会让 `pip install -e ".[ml]"` 直接报错），pyproject 注释已同步改为"当前无消费方"。`scipy` 为必需依赖（`corelation.py` 顶层导入）。
@@ -352,6 +351,7 @@ AI_Product_Workspace/
 - **离群值只有一个口径**：任何离群值的计数 / 比率必须走 `analytics/outliers.compute_column_outliers`（返回 `ColumnOutlierStats`），**不得**再自己写 IQR/Z 掩码或把两个方法的列表相加；进程内行级用途走 `build_raw_outliers_map`，出站只走 `build_outlier_aggregates`（有界标量、不含行号）。默认阈值取自 `OUTLIER_IQR_MULTIPLIER` / `OUTLIER_Z_THRESHOLD`，z 值统一 `ddof=0`。
 - **列类型判据联动**：`parsing.infer_column_type_v2` 的 `identifier` 判据被 `text_metrics._is_textlike` 直接消费（只有 `text` / `category` 会被文本指标抽取扫描）。改动 identifier 判据前先确认这条链路：放宽会把自由文本判成 identifier 而**静默丢掉**列内指标。
 - **测试运行时只能放在 `%TEMP%` 之下**（`tests/conftest.py:_resolve_test_root`，可被 `APW_TEST_ROOT` 覆盖）：本机在 `%TEMP%` 以外删除任何文件都会被系统级代理转成回收站条目（见 §11.15），且测试库必须保持 `journal_mode=MEMORY` + `synchronous=OFF`（由 `tests/test_test_environment.py` 锁定）。给测试新增落盘文件时也要放进这个目录，不要写进仓库树。
+- **文件名双轨 + parse_manifest 对账（批 32）**：`Dataset.name` / `DatasetVersion.file_name` 一律存**客户端原始文件名**（可含中文），`_safe_name` 生成的安全名**只**用于磁盘路径（`storage_path`）——两者不可再混用。每次解析在 `version.schema_json["parse_manifest"]` 落机器可验凭证（encoding/bom/rows/cols/逐列 semantic_type+parse_rate/未解析样本/警告，全为标量与小列表，**不出站**进 AI 上下文）；job 收尾前用 `_read_dataframe_with_meta` **独立二次读取**核对行列数，不一致抛 `PARSE_INTEGRITY_FAILED`（retryable=True → 版本置 failed），绝不带病通过。修改读取/对账逻辑时两条不变量都不能破坏（`tests/test_parse_manifest.py` 锁定）。
 - **AI 上下文防火墙**：新产物若含列表，必须放在 `_AGGREGATE_LIST_KEYS` 允许键下，或先在 `services/ai_stages.py` 写适配映射；**行级数据禁止出站**（`_ROW_LIST_KEYS`）；产物形状优先 `[{name, ...}]` 列表而非「以列名为键的 dict」（避免撞 `_FEEDBACK_CONTENT_KEYS`）。
 - **前端新页面惯例**：`app/(workspace)/` 下建目录，用 `WorkflowFrame` 的 `WorkflowHeader/WorkflowGate` 包裹，门控逻辑改 `lib/workflow.ts` 的 `stepCompletion()`，导航加 `lib/navigation.ts`。
 - **归档语义**：归档只能走 `POST /projects/{id}/archive|unarchive`（`ProjectPatch` 不含 status）；归档项目的 editor+ 写路径全部 409 `PROJECT_ARCHIVED`；前端「当前项目」持久化键 `apw_active_project`。
@@ -474,6 +474,8 @@ AI_Product_Workspace/
 门禁：`npm run typecheck` 与 `npm run lint` 均 0 错误；未引入新依赖（圆环为内联 SVG/CSS）。
 
 **全站文案专业化（batch 31，2026-09-14，已提交）**：纯文案改动——统一陈述式语气与术语（确定性计算引擎 / 质量评估 / 洞察蒸馏 / 草稿-确认-采用 / 落选理由）、导航与页头命名统一（决策副驾→洞察蒸馏、PRD→交付文档、问题定义→产品问题、接数据→数据管理）、移除用户可见 emoji（📊🎤📈🔒）与登录页"忘记密码"死链、门控提示不再出现「第 N 步」。涉及 14 个文件（`lib/navigation.ts` 只改 label、href 不动）；验收 grep（emoji 与旧术语）为零；`typecheck`/`lint` 0 错误。
+
+**解析完整性加固 P0（batch 32，2026-09-14，**未提交**）**：①文件名保真——`Dataset.name`/`DatasetVersion.file_name` 存客户端原始名（中文不再被 `_safe_name` 清洗），安全名只用于磁盘路径（`routers/datasets.py` 单传/批传两端点 + `services/datasets.py`）；②`_read_dataframe_with_meta` 返回实际编码与 BOM 标记（BOM 文件优先 `utf-8-sig`，避免 `\ufeff` 粘在首列名上），`_read_dataframe` 改为其薄封装（全部既有调用点零改动）；③`text_metrics.materialize_string_columns` 抽出（行为逐字节等价）+ `UNPARSED_SAMPLE_LIMIT=5` 留痕物化拒绝样本；④解析 job 落 `schema_json["parse_manifest"]`（encoding/bom/rows/cols/逐列语义与 parse_rate/未解析样本/U+FFFD 警告，不出站）并用独立二次读取对账行列数，不一致抛 `PARSE_INTEGRITY_FAILED`；⑤报告概况首行加数据集覆盖说明，`deterministic_json["coverage"]` 落 `{included,total,omitted}`，聚合并入 `parse_encoding`/`parse_rows`/`parse_warnings_count` 标量。新增 `tests/test_parse_manifest.py`（7 用例）；全量 **385 passed, 1 xfailed**（386 收集），既有统计断言零变化。
 
 **本批实测**（**2026-09-14 复核更正**：原文误写 377 passed/378 收集/76.81s，与 §10、§13.3 及独立复验不符）：`ruff check app tests` 0 错；`pytest tests -q` → **374 passed, 1 xfailed（375 收集）**，耗时随机器波动、以最近一次实跑为准（约 78–105s；基线 366/1 → +9 计算层用例 + 2 环境守护用例，**零回归**）。**回收站增量实测为 0**（改造前每轮约 +1 万条）。
 

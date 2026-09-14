@@ -159,6 +159,14 @@ def _compute_report_aggregates(snapshot: dict[str, Any]) -> dict[str, Any]:
     dataset_label = str(snapshot.get("dataset_label") or "").strip()
     if dataset_label:
         aggregates["dataset_label"] = dataset_label
+    # 批 32：解析凭证的标量摘要（encoding / rows / warnings 数）。明细
+    # （逐列语义、未解析样本）只存 schema_json 不出站 —— 这里只带标量。
+    # 旧版本没有 manifest，键缺席，叙述侧按缺省处理。
+    manifest_summary = snapshot.get("parse_manifest_summary")
+    if isinstance(manifest_summary, dict) and manifest_summary:
+        aggregates["parse_encoding"] = manifest_summary.get("parse_encoding")
+        aggregates["parse_rows"] = manifest_summary.get("parse_rows")
+        aggregates["parse_warnings_count"] = manifest_summary.get("parse_warnings_count")
     if snapshot.get("quality_score") is not None:
         aggregates["quality_score"] = snapshot["quality_score"]
         aggregates["quality_status"] = snapshot.get("quality_status")
@@ -300,6 +308,7 @@ def _deterministic_report_parts(
     project_name: str,
     aggregates: list[dict[str, Any]],
     digest: list[dict[str, Any]] | None = None,
+    coverage: dict[str, Any] | None = None,
 ) -> tuple[str, str, list[dict[str, str]], list[str]]:
     """Deterministic report body used directly when AI is unavailable, and as
     the persisted trace of the numbers behind an AI-written report.
@@ -308,6 +317,9 @@ def _deterministic_report_parts(
     when present, the key-findings section is generated from its statements --
     strictly more informative than the legacy top-category/missing-rate
     listing, which is kept as the fallback for empty digests.
+
+    ``coverage`` (batch 32) is ``{"included", "total", "omitted": [...]}``;
+    when given, the overview opens with the dataset-coverage statement.
     """
 
     title = f"{project_name} 数据分析报告"
@@ -321,12 +333,27 @@ def _deterministic_report_parts(
     findings: list[str] = []
 
     overview_lines: list[str] = []
+    if coverage is not None and int(coverage.get("total") or 0) > 0:
+        included = int(coverage.get("included") or 0)
+        total = int(coverage.get("total") or 0)
+        omitted = [str(name) for name in coverage.get("omitted") or [] if str(name)]
+        if included == total:
+            overview_lines.append(f"本报告包含全部 {total} 个数据集。")
+        else:
+            overview_lines.append(
+                f"本报告包含 {included}/{total} 个数据集，未纳入：{'、'.join(omitted) or '未知数据集'}。"
+            )
     for item in aggregates:
         # Batch 21: "name（dataset_label）" when the semantics dictionary
         # named the dataset; unchanged otherwise.
         line = f"- **{dataset_display(item)}**：{item.get('row_count')} 行 × {item.get('column_count')} 列"
         if item.get("quality_score") is not None:
             line += f"，质量分 {item.get('quality_score')}（{item.get('quality_status')}）"
+        # 批 32：解析凭证标量摘要（旧记录无 manifest 时缺席，行保持不变）。
+        if item.get("parse_encoding"):
+            line += f"，解析编码 {item.get('parse_encoding')}"
+        if item.get("parse_warnings_count"):
+            line += f"，{item.get('parse_warnings_count')} 条解析警告"
         overview_lines.append(line)
     if overview_lines:
         sections.append({"heading": "一、数据概况", "content": "\n".join(overview_lines)})

@@ -21,7 +21,8 @@ from ..ai_context import (
     validate_document_sections,
     validate_report_output,
 )
-from ..analytics.text_metrics import extract_text_metrics
+from ..analytics.parsing import infer_column_type_v2
+from ..analytics.text_metrics import extract_text_metrics, materialize_string_columns
 from ..common import _require_pandas, model_dict, pd
 from ..config import settings
 from ..db import SessionLocal
@@ -60,6 +61,7 @@ from .datasets import (
     _job_storage_path,
     _quality_summary,
     _read_dataframe,
+    _read_dataframe_with_meta,
 )
 from .documents import (
     _HARMONIZE_BATCH_SIZE,
@@ -102,11 +104,23 @@ def _handle_dataset_parse(context: JobContext) -> JobResult:
     file_name = str(payload.get("file_name") or version.file_name)
     storage_path = str(payload.get("_storage_path") or version.storage_path)
     context.progress(10, "读取上传文件")
-    frame = _read_dataframe(_job_storage_path(storage_path), file_name, payload.get("worksheet_name"))
+    frame, read_meta = _read_dataframe_with_meta(_job_storage_path(storage_path), file_name, payload.get("worksheet_name"))
     if len(frame) > settings.max_rows_per_dataset or len(frame.columns) > settings.max_columns_per_dataset:
         raise JobExecutionError("VALIDATION_ERROR", f"Dataset exceeds {settings.max_rows_per_dataset} rows or {settings.max_columns_per_dataset} columns", retryable=False)
     if len(frame.columns) == 0 or len(frame) == 0:
         raise JobExecutionError("VALIDATION_ERROR", "Dataset must contain a header row and at least one data row", retryable=False)
+    # 批 32：解码可疑性检测 —— 替换字符 U+FFFD 是"解码器硬猜"的痕迹，静默放过
+    # 会把乱码当数据入库。只记入 manifest 的 warnings，不改变任何数值口径。
+    # 注意：common.pd 是惰性占位（import 时为 None），必须先 _require_pandas()。
+    pd = _require_pandas()
+    parse_warnings: list[str] = []
+    replacement_hits = 0
+    for column in frame.columns:
+        series = frame[column]
+        if pd.api.types.is_object_dtype(series) or pd.api.types.is_string_dtype(series):
+            replacement_hits += int(series.astype("string").str.contains("\ufffd", regex=False, na=False).sum())
+    if replacement_hits:
+        parse_warnings.append(f"encoding_suspicious: {replacement_hits} 个单元格含 U+FFFD 替换字符")
     context.progress(45, "检查数据质量")
     # Batch 14: derive numeric columns from free-text metrics BEFORE schema and
     # analyses.  Quality assessment still runs on the original frame; EDA,
@@ -114,15 +128,55 @@ def _handle_dataset_parse(context: JobContext) -> JobResult:
     # prose-only business table unlocks real numeric analysis.  The uploaded
     # file (and the original frame) is never modified.
     frame_ext, extraction_report = extract_text_metrics(frame)
+    # 批 32：完整性凭证 —— 物化时被 parser 拒绝的非空单元格留痕。与
+    # extract_text_metrics 内部走同一段确定性逻辑，样本一致。
+    _materialized_frame, unparsed_samples = materialize_string_columns(frame)
     score, quality_status, summary = _quality_summary(frame)
     schema = _column_schema(frame_ext)
     extracted_names = {str(name) for name in frame_ext.columns if str(name) not in {str(c) for c in frame.columns}}
     for item in schema:
         item["source"] = "extracted" if str(item["name"]) in extracted_names else "original"
+    # 批 32：逐列语义与解析率来自 infer_column_type_v2（与物化共用同一判据）。
+    manifest_columns = []
+    for column in frame.columns:
+        info = infer_column_type_v2(frame[column])
+        manifest_columns.append(
+            {
+                "name": str(column),
+                "semantic_type": str(info["semantic_type"]),
+                "parse_rate": round(float(info["parse_rate"]), 4),
+                "missing": int(frame[column].isna().sum()),
+                "constant": bool(info["constant"]),
+                "identifier": bool(info["identifier"]),
+            }
+        )
+    parse_manifest = {
+        "file_name": file_name,
+        "encoding": read_meta["encoding"],
+        "bom": bool(read_meta["bom"]),
+        "rows": int(len(frame)),
+        "cols": int(len(frame.columns)),
+        "columns": manifest_columns,
+        "unparsed_samples": unparsed_samples,
+        "warnings": parse_warnings,
+    }
+    # 批 32：完整性对账 —— 独立二次读取同一文件（重新走编码尝试），仅核对行列
+    # 数，不复用第一个 DataFrame。不一致绝不带病通过：JobExecutionError 走
+    # _mark_dataset_parse_failed 把版本置 failed，retryable=True 允许重试；
+    # recover_pending 重放时对账确定性一致，无副作用。
+    verified_frame, _verify_meta = _read_dataframe_with_meta(
+        _job_storage_path(storage_path), file_name, payload.get("worksheet_name")
+    )
+    if len(verified_frame) != len(frame) or len(verified_frame.columns) != len(frame.columns):
+        raise JobExecutionError(
+            "PARSE_INTEGRITY_FAILED",
+            "解析完整性对账失败：行/列数与二次读取不一致",
+            retryable=True,
+        )
     context.progress(75, "写入字段字典")
     version.row_count = len(frame)
     version.column_count = len(frame.columns)
-    version.schema_json = {"columns": schema, "text_metric_extraction": extraction_report}
+    version.schema_json = {"columns": schema, "text_metric_extraction": extraction_report, "parse_manifest": parse_manifest}
     version.status = "ready"
     _replace_version_columns(db, version, schema)
     _replace_quality_report(db, version, score, quality_status, summary)

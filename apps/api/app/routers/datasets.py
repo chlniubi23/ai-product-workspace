@@ -57,8 +57,12 @@ async def upload_dataset(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     project = project_for(db, user, project_id, "editor")
-    filename = _safe_name(file.filename or "upload.csv")
-    _reject_unsupported_upload(filename)
+    # 批 32：文件名保真 —— 展示字段（Dataset.name / DatasetVersion.file_name）存
+    # 客户端原始名（含扩展名），磁盘路径仍用 _safe_name 生成的安全名；两者从
+    # 此分离，中文名不再被清洗成下划线。
+    raw_name = file.filename or "upload.csv"
+    filename = _safe_name(raw_name)
+    _reject_unsupported_upload(raw_name)
     content = await file.read()
     max_bytes = settings.max_upload_size_mb * 1024 * 1024
     if len(content) > max_bytes:
@@ -67,7 +71,7 @@ async def upload_dataset(
     upload_path.write_bytes(content)
     # Re-uploading under an existing dataset name appends an immutable new
     # version instead of forking a parallel dataset (BUG-015).
-    name = dataset_name or Path(filename).stem
+    name = dataset_name or Path(raw_name).stem
     dataset = db.scalar(select(Dataset).where(Dataset.project_id == project.id, Dataset.name == name, Dataset.deleted_at.is_(None)))
     if dataset is None:
         dataset = Dataset(workspace_id=project.workspace_id, project_id=project.id, name=name, source_type="upload", created_by=user.id)
@@ -79,10 +83,10 @@ async def upload_dataset(
         existing = [v.version_number or 0 for v in dataset.versions]
         next_version_number = (max(existing) if existing else 0) + 1
     relative_path = str(upload_path.relative_to(settings.data_path))
-    version = DatasetVersion(dataset_id=dataset.id, version_number=next_version_number, storage_path=relative_path, file_name=filename, file_size_bytes=len(content), row_count=0, column_count=0, schema_json={"columns": []}, status="processing", fingerprint=hashlib.sha256(content).hexdigest())
+    version = DatasetVersion(dataset_id=dataset.id, version_number=next_version_number, storage_path=relative_path, file_name=raw_name, file_size_bytes=len(content), row_count=0, column_count=0, schema_json={"columns": []}, status="processing", fingerprint=hashlib.sha256(content).hexdigest())
     db.add(version)
     db.flush()
-    job = _job(db, project.workspace_id, "dataset_parse", {"dataset_id": dataset.id, "dataset_version_id": version.id, "file_name": filename, "worksheet_name": worksheet_name, "_storage_path": relative_path, "_actor_id": user.id}, result_type="dataset_version", result_id=version.id)
+    job = _job(db, project.workspace_id, "dataset_parse", {"dataset_id": dataset.id, "dataset_version_id": version.id, "file_name": raw_name, "worksheet_name": worksheet_name, "_storage_path": relative_path, "_actor_id": user.id}, result_type="dataset_version", result_id=version.id)
     audit(db, project.workspace_id, user.id, "dataset.parse_queued", "dataset", dataset.id, {"version_id": version.id, "job_id": job.id})
     db.commit()
     job_executor.schedule(background_tasks, job.id)
@@ -116,27 +120,29 @@ async def upload_dataset_batch(
         raise error("VALIDATION_ERROR", f"At most {BATCH_UPLOAD_LIMIT} files per batch", 400)
 
     max_bytes = settings.max_upload_size_mb * 1024 * 1024
-    accepted: list[tuple[UploadFile, bytes, str, Path]] = []
+    accepted: list[tuple[bytes, str, str, Path]] = []
     failures: list[dict[str, Any]] = []
     for item in files:
-        filename = _safe_name(item.filename or "upload.csv")
+        # 批 32：同单文件端点 —— raw_name 入库展示，safe 名只用于磁盘路径。
+        raw_name = item.filename or "upload.csv"
+        filename = _safe_name(raw_name)
         try:
-            _reject_unsupported_upload(filename)
+            _reject_unsupported_upload(raw_name)
             content = await item.read()
             if len(content) > max_bytes:
-                raise error("FILE_TOO_LARGE", f"{filename} exceeds {settings.max_upload_size_mb} MB", 413)
+                raise error("FILE_TOO_LARGE", f"{raw_name} exceeds {settings.max_upload_size_mb} MB", 413)
             if not content:
-                raise error("VALIDATION_ERROR", f"{filename} is empty", 400)
+                raise error("VALIDATION_ERROR", f"{raw_name} is empty", 400)
             upload_path = settings.data_path / "uploads" / f"{uuid4().hex}_{filename}"
-            accepted.append((item, content, filename, upload_path))
+            accepted.append((content, raw_name, filename, upload_path))
         except HTTPException as exc:
             detail = exc.detail if isinstance(exc.detail, dict) else {"code": "HTTP_ERROR", "message": str(exc.detail)}
-            failures.append({"file_name": filename, "code": detail.get("code"), "message": detail.get("message")})
+            failures.append({"file_name": raw_name, "code": detail.get("code"), "message": detail.get("message")})
 
     results: list[dict[str, Any]] = []
-    for _item, content, filename, upload_path in accepted:
+    for content, raw_name, _storage_name, upload_path in accepted:
         upload_path.write_bytes(content)
-        name = Path(filename).stem
+        name = Path(raw_name).stem
         dataset = db.scalar(select(Dataset).where(Dataset.project_id == project.id, Dataset.name == name, Dataset.deleted_at.is_(None)))
         if dataset is None:
             dataset = Dataset(workspace_id=project.workspace_id, project_id=project.id, name=name, source_type="upload", created_by=user.id)
@@ -151,14 +157,14 @@ async def upload_dataset_batch(
             db.scalar(select(func.max(DatasetVersion.version_number)).where(DatasetVersion.dataset_id == dataset.id)) or 0
         ) + 1
         relative_path = str(upload_path.relative_to(settings.data_path))
-        version = DatasetVersion(dataset_id=dataset.id, version_number=next_version_number, storage_path=relative_path, file_name=filename, file_size_bytes=len(content), row_count=0, column_count=0, schema_json={"columns": []}, status="processing", fingerprint=hashlib.sha256(content).hexdigest())
+        version = DatasetVersion(dataset_id=dataset.id, version_number=next_version_number, storage_path=relative_path, file_name=raw_name, file_size_bytes=len(content), row_count=0, column_count=0, schema_json={"columns": []}, status="processing", fingerprint=hashlib.sha256(content).hexdigest())
         db.add(version)
         db.flush()
-        job = _job(db, project.workspace_id, "dataset_parse", {"dataset_id": dataset.id, "dataset_version_id": version.id, "file_name": filename, "_storage_path": relative_path, "_actor_id": user.id}, result_type="dataset_version", result_id=version.id)
+        job = _job(db, project.workspace_id, "dataset_parse", {"dataset_id": dataset.id, "dataset_version_id": version.id, "file_name": raw_name, "_storage_path": relative_path, "_actor_id": user.id}, result_type="dataset_version", result_id=version.id)
         # Flush so job.id is assigned before the payload below serializes it;
         # the single-file endpoint reads it after commit instead.
         db.flush()
-        results.append({"file_name": filename, "dataset": model_dict(dataset), "version": _version_payload(version, {"columns": [], "quality_report": None}), "job": _job_payload(job)})
+        results.append({"file_name": raw_name, "dataset": model_dict(dataset), "version": _version_payload(version, {"columns": [], "quality_report": None}), "job": _job_payload(job)})
 
     audit(db, project.workspace_id, user.id, "dataset.batch_upload_queued", "project", project.id, {"accepted": len(results), "rejected": len(failures), "file_names": [row["file_name"] for row in results]})
     db.commit()

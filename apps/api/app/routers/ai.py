@@ -411,6 +411,17 @@ async def _compute_auto_report(project: Project, user: User, db: Session) -> Aut
         quality = version.quality_report
         quality_summary = quality.summary_json if quality is not None and isinstance(quality.summary_json, dict) else {}
         schema_json = version.schema_json if isinstance(version.schema_json, dict) else {}
+        # 批 32：解析凭证的标量摘要随快照进入聚合与报告概况；明细只存
+        # schema_json 不出站。旧版本没有 manifest 时为 None，键缺席。
+        manifest = schema_json.get("parse_manifest")
+        manifest_summary: dict[str, Any] | None = None
+        if isinstance(manifest, dict):
+            warnings = manifest.get("warnings")
+            manifest_summary = {
+                "parse_encoding": str(manifest.get("encoding") or ""),
+                "parse_rows": int(manifest.get("rows") or 0),
+                "parse_warnings_count": len(warnings) if isinstance(warnings, list) else 0,
+            }
         snapshots.append(
             {
                 "version_id": version.id,
@@ -436,6 +447,7 @@ async def _compute_auto_report(project: Project, user: User, db: Session) -> Aut
                 "quality_status": quality.status if quality is not None else None,
                 "missing_values": quality_summary.get("missing_values"),
                 "anomalies": quality_summary.get("anomalies"),
+                "parse_manifest_summary": manifest_summary,
             }
         )
     compute_results = await asyncio.to_thread(_compute_report_aggregates_batch, snapshots)
@@ -455,8 +467,13 @@ async def _compute_auto_report(project: Project, user: User, db: Session) -> Aut
     # (flushed for its id below) and every predecessor is deleted afterwards,
     # so the project always holds at least one report inside the transaction.
     # Confirmation history survives in audit_logs only.
+    coverage = {
+        "included": len(aggregates),
+        "total": len(snapshots),
+        "omitted": [str(item.get("name") or "") for item in read_failures],
+    }
     default_title, deterministic_summary, deterministic_sections, deterministic_findings = _deterministic_report_parts(
-        project.name, aggregates, findings_digest
+        project.name, aggregates, findings_digest, coverage
     )
     deterministic_limitations = ["分析维度由系统按列类型自动选择；相关性不代表因果。"]
     report = AutoAnalysisReport(
@@ -474,6 +491,7 @@ async def _compute_auto_report(project: Project, user: User, db: Session) -> Aut
             "datasets": aggregates,
             "read_failures": read_failures,
             "findings": findings_digest,
+            "coverage": coverage,
         },
         content_markdown=_report_markdown(default_title, deterministic_summary, deterministic_sections, deterministic_findings, [], deterministic_limitations),
         generated_by=user.id,

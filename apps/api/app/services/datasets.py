@@ -36,26 +36,45 @@ def _reject_unsupported_upload(filename: str) -> None:
         raise error("VALIDATION_ERROR", UPLOAD_SUFFIX_MESSAGE, 400)
 
 
-def _read_dataframe(path: str | Path, file_name: str, worksheet_name: str | None = None) -> pd.DataFrame:
+def _read_dataframe_with_meta(
+    path: str | Path, file_name: str, worksheet_name: str | None = None
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Read like ``_read_dataframe`` and report how the bytes were decoded.
+
+    Returns ``(frame, meta)`` with ``meta = {"encoding": <成功编码>, "bom": bool}``.
+    A UTF-8 BOM is detected from the leading bytes and, when present, the
+    ``utf-8-sig`` trial runs first — decoding a BOM file as plain ``utf-8``
+    would succeed but leave ``\\ufeff`` glued to the first column name.
+    """
     pd = _require_pandas()
-    _require_pandas()
     suffix = Path(file_name).suffix.lower()
     if suffix == ".csv":
         # Uploaded CSVs commonly arrive from spreadsheet tools with a BOM or a
         # Chinese locale encoding. Try the documented encodings in a deterministic
         # order and only fail after each decoder has been attempted.
+        try:
+            with Path(path).open("rb") as handle:
+                has_bom = handle.read(3) == b"\xef\xbb\xbf"
+        except OSError:
+            has_bom = False
+        order = ("utf-8-sig", "utf-8", "gb18030", "gbk") if has_bom else ("utf-8", "utf-8-sig", "gb18030", "gbk")
         last_error: Exception | None = None
-        for encoding in ("utf-8", "utf-8-sig", "gb18030", "gbk"):
+        for encoding in order:
             try:
-                return pd.read_csv(path, encoding=encoding)
+                return pd.read_csv(path, encoding=encoding), {"encoding": encoding, "bom": has_bom}
             except UnicodeDecodeError as exc:
                 last_error = exc
         if last_error is not None:
             raise last_error
-        return pd.read_csv(path)
+        return pd.read_csv(path), {"encoding": "utf-8", "bom": has_bom}
     if suffix == ".xlsx":
-        return pd.read_excel(path, sheet_name=worksheet_name or 0)
+        return pd.read_excel(path, sheet_name=worksheet_name or 0), {"encoding": "xlsx", "bom": False}
     raise error("VALIDATION_ERROR", UPLOAD_SUFFIX_MESSAGE, 400)
+
+
+def _read_dataframe(path: str | Path, file_name: str, worksheet_name: str | None = None) -> pd.DataFrame:
+    frame, _meta = _read_dataframe_with_meta(path, file_name, worksheet_name)
+    return frame
 
 
 def _type_name(series: pd.Series) -> str:

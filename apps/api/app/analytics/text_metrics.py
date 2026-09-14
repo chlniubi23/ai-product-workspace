@@ -45,6 +45,50 @@ _COMBINED_RE = re.compile(
 )
 
 _MIN_LABEL_COVERAGE = 0.3
+#: 物化失败样本的出样上限（整张表）。物化是"尽力而为"的（parse_rate ≥ 0.8 才整列
+#: 物化），失败单元格会静默变 None —— 这里留下少量可审计的证据，而不是吞掉。
+UNPARSED_SAMPLE_LIMIT = 5
+
+
+def materialize_string_columns(frame: pd.DataFrame) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
+    """Materialise v2 numeric/datetime/boolean STRING columns into parsed values.
+
+    "¥12,000" -> 12000.0, "2026年3月30日" -> datetime, "是" -> True.  A column
+    is materialised only when at least 80% of its non-empty cells parse, so a
+    single dirty cell silently becomes ``None`` — ``unparsed_samples`` records
+    those refusals (``{"column", "row", "value"}``, at most
+    ``UNPARSED_SAMPLE_LIMIT`` entries table-wide) instead of losing them.
+
+    Returns ``(materialised_frame, unparsed_samples)``; the input frame is
+    never touched.  ``extract_text_metrics`` delegates here, so the behaviour
+    is identical to the inline block it replaced.
+    """
+    working = frame.copy()
+    unparsed: list[dict[str, Any]] = []
+    parsers = {"numeric": parse_numeric, "datetime": parse_datetime_value, "boolean": parse_boolean}
+    for column in frame.columns:
+        series = working[column]
+        if not ((series.dtype == object) or (str(series.dtype) in {"string", "str"})):
+            continue
+        info = infer_column_type_v2(series)
+        parser = parsers.get(info["semantic_type"])
+        if parser is None or info["parse_rate"] < 0.8:
+            continue
+        parsed = series.map(parser)
+        working[column] = parsed
+        for index, original in series.items():
+            if len(unparsed) >= UNPARSED_SAMPLE_LIMIT:
+                break
+            try:
+                if pd.isna(original):
+                    continue  # 空单元格是缺失，不是未解析
+            except (TypeError, ValueError):
+                pass
+            value = parsed.at[index]
+            if value is None or (not isinstance(value, str) and pd.isna(value)):
+                row = int(index) if isinstance(index, (int,)) and not isinstance(index, bool) else str(index)
+                unparsed.append({"column": str(column), "row": row, "value": str(original)})
+    return working, unparsed
 
 
 def _normalise_label(label: str) -> str:
@@ -84,7 +128,6 @@ def extract_text_metrics(
     become columns.
     """
 
-    working = frame.copy()
     if text_columns is None:
         text_columns = [str(name) for name in frame.columns if _is_textlike(frame[name])]
     report: list[dict[str, Any]] = []
@@ -93,16 +136,10 @@ def extract_text_metrics(
     # into parsed values on the extended copy ("¥12,000" -> 12000.0,
     # "2026年3月30日" -> datetime, "是" -> True).  Without this the schema
     # says float while the cells are still text and every downstream numeric
-    # computation crashes.  The original frame is never touched.
-    parsers = {"numeric": parse_numeric, "datetime": parse_datetime_value, "boolean": parse_boolean}
-    for column in frame.columns:
-        series = working[column]
-        if not ((series.dtype == object) or (str(series.dtype) in {"string", "str"})):
-            continue
-        info = infer_column_type_v2(series)
-        parser = parsers.get(info["semantic_type"])
-        if parser is not None and info["parse_rate"] >= 0.8:
-            working[column] = series.map(parser)
+    # computation crashes.  The original frame is never touched.  Batch 32:
+    # the block lives in ``materialize_string_columns`` so the parse job can
+    # also collect the refusals; behaviour is unchanged.
+    working, _unparsed_samples = materialize_string_columns(frame)
 
     for column in text_columns or []:
         if column not in working.columns or not _is_textlike(working[column]):
