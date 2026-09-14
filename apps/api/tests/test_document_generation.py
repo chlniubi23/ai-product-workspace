@@ -301,13 +301,16 @@ def test_document_system_prompt_mentions_sections_and_audience(client, owner, pr
     assert "2000 tokens" in outline_system
     section_system = fake.calls[1]["system"]
     assert "第 1/2 节" in section_system
-    assert "|目标|衡量指标|目标值|" in section_system
-    assert "|编号|验收点|预期结果|" in section_system
+    # 批 35：分节提示词重写 —— 三要素（数字锚点/设计决策/badcase）+ 新表格口径。
+    assert "|目标|指标|目标值|" in section_system
+    assert "|编号|验收点|预期|" in section_system
     assert "badcase" in section_system
-    assert "禁止编造数据" in section_system
-    # batch 17 hotfix: a hard per-section length budget (no truncation retries)
-    assert "800–1500 字" in section_system
-    assert "表格 cell 保持简洁" in section_system
+    assert "[finding-N]" in section_system
+    assert "禁止编造数字" in section_system
+    # 批 35：硬性篇幅预算保留（700-1200 字），「写深写透」与「表格 cell」空话已删。
+    assert "700-1200 字" in section_system
+    assert "写深写透" not in section_system
+    assert "表格 cell 保持简洁" not in section_system
 
 
 def test_content_markdown_columns_use_mediumtext_on_mysql():

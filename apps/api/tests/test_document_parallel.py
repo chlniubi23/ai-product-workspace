@@ -191,9 +191,10 @@ def test_wave1_narrative_sections_are_sequential(client, owner, project, monkeyp
     wave2 = [call for call in fake.calls if call.get("heading") in {"第3节", "第4节"}]
     assert wave2
     assert all("不得与其他章节重复" in call["system"] and "大纲全文" in call["system"] for call in wave2)
+    # 批 35：wave-1 摘要行的措辞改为「前文摘要（不要重复）」，且截断到 300 字。
     assert all("已写前文摘要" not in call["system"] for call in wave2)
     # The rolling summary still feeds wave-1's second section.
-    assert "已写前文摘要" in by_heading["第2节"]["system"]
+    assert "前文摘要（不要重复）" in by_heading["第2节"]["system"]
 
 
 # ---------------------------------------------------------------------------
@@ -312,7 +313,8 @@ def test_outline_call_uses_summary_layer_not_full_aggregates(client, owner, proj
 
     outline_call = next(call for call in fake.calls if "文档架构师" in call["system"])
     payload = json.loads(outline_call["user"])
-    assert set(payload) <= {"goal", "question", "findings", "solution", "decision", "field_labels"}
+    # 批 35：新增 finding_refs —— finding-N → 材料标题的序号映射，key_refs 依据。
+    assert set(payload) <= {"goal", "question", "findings", "finding_refs", "solution", "decision", "field_labels"}
     assert "artifacts" not in payload
 
 

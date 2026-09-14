@@ -778,7 +778,13 @@ DOCUMENT_OUTLINE_SCHEMA: dict[str, Any] = {
                 "type": "object",
                 "additionalProperties": False,
                 "required": ["heading", "purpose"],
-                "properties": {"heading": {"type": "string"}, "purpose": {"type": "string"}},
+                "properties": {
+                    "heading": {"type": "string"},
+                    "purpose": {"type": "string"},
+                    # 批 35：本章依赖的 finding 编号（2-4 个），驱动分节上下文裁剪。
+                    # 可选字段：旧模型输出缺失时校验器容忍，分节侧回退全量上下文。
+                    "key_refs": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 4},
+                },
             },
         },
         "root_cause": {"type": "string"},
@@ -820,7 +826,20 @@ def validate_document_outline(value: Any) -> dict[str, Any]:
         heading = str(item.get("heading") or "").strip()
         if not heading:
             continue
-        sections.append({"heading": heading[:200], "purpose": str(item.get("purpose") or "").strip()[:500]})
+        section: dict[str, Any] = {"heading": heading[:200], "purpose": str(item.get("purpose") or "").strip()[:500]}
+        # 批 35：key_refs 清洗而非拒绝 —— 非法元素静默剔除，剩不足 2 个时视为
+        # 缺失（分节侧回退全量上下文）；坏引用绝不让整份大纲校验失败。
+        raw_refs = item.get("key_refs")
+        if isinstance(raw_refs, list):
+            refs: list[str] = []
+            for ref in raw_refs:
+                if isinstance(ref, str) and ref.strip():
+                    refs.append(ref.strip()[:120])
+                if len(refs) == 4:
+                    break
+            if len(refs) >= 2:
+                section["key_refs"] = refs
+        sections.append(section)
     if not sections:
         raise AIOutputValidationError("document outline requires at least one section")
     return {

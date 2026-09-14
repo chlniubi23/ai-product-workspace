@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..ai_context import build_ai_context
+from ..ai_context import assert_safe_ai_context, build_ai_context
 from ..common import error, model_dict, serialize
 from ..models import (
     AnalysisArtifact,
@@ -64,18 +65,19 @@ _DOCUMENT_TYPE_SECTIONS: dict[str, list[str]] = {
 }
 
 
-def _outline_system_prompt(document_type: str, audience: str) -> str:
-    """Pass-1 prompt: findings, section plan and root cause (batch 17)."""
+def _outline_system_prompt(document_type: str, title: str, audience: str) -> str:
+    """批 35 重写：大纲产出 findings + 每章 key_refs（分节裁剪的依据）。"""
 
     plan = "、".join(_DOCUMENT_TYPE_SECTIONS.get(document_type, _DOCUMENT_TYPE_SECTIONS["prd"]))
     return (
-        "你是资深产品文档架构师。基于给定的证据材料（洞察、采访回答、已批准决策、数据集聚合、数据侧重点发现）"
-        "为一份产品文档产出大纲：findings 列出最多 6 条关键数据发现（id 用 finding-1 这样的序号，title 一句话并包含具体数字，"
-        "severity 只能从 高/中/低 中选，evidence_hint 指明数据来源如 分析产物/采访/洞察）；"
-        f"sections 按顺序给出本文档的章节计划（heading 与 purpose），{document_type} 文档必须依次覆盖：{plan}；"
-        "root_cause 用 3-5 句话概括数据背后的根因判断，必须引用具体数字。"
-        "篇幅约束：大纲输出整体保持在 2000 tokens 以内——findings 每条一句话，purpose 每节不超过 40 字，不要展开正文。"
-        "所有内容必须来自给定上下文，禁止编造数据。输出面向读者：" f"{audience}。"
+        "你是产品文档架构师。基于证据材料（数据发现、决策链、字段口径）为"
+        f"《{title}》（类型 {document_type}，读者 {audience}）产出大纲。"
+        "1) findings：≤6 条，每条 id 形如 finding-N，一句话含具体数字，severity ∈ 高/中/低；"
+        f"2) sections：按顺序覆盖固定章节计划：{plan}；"
+        "每章给 heading（与计划一致）、purpose（≤40 字）、"
+        "key_refs（本章依赖的 finding 编号列表，2-4 个，不得为空）；"
+        "3) root_cause：3-5 句，含数字。"
+        "全文 ≤2000 tokens。禁止编造数字。"
     )
 
 
@@ -100,14 +102,91 @@ def _outline_context(doc_context: dict[str, Any]) -> dict[str, Any]:
         text = str(item).strip()
         if text and text not in labels:
             labels.append(text)
+    findings = [str(item) for item in (doc_context.get("findings_summary") or [])[:_DOC_OUTLINE_FINDING_LIMIT]]
+    # 批 35：findings 编号说明 —— 让模型知道 finding-N 对应哪条材料，key_refs
+    # 才能引用得准（一行序号映射，来自 findings_summary 的顺序）。
+    finding_refs = "；".join(f"finding-{index}: {title}" for index, title in enumerate(findings, start=1))
     return {
         "goal": safe.get("goal") or "",
         "question": safe.get("question") or "",
-        "findings": [str(item) for item in (doc_context.get("findings_summary") or [])[:_DOC_OUTLINE_FINDING_LIMIT]],
+        "findings": findings,
+        "finding_refs": finding_refs,
         "solution": doc_context.get("solution"),
         "decision": doc_context.get("decision"),
         "field_labels": labels[:_DOC_OUTLINE_FIELD_LABEL_LIMIT],
     }
+
+
+def _section_context(
+    doc_context: dict[str, Any],
+    key_refs: list[str] | None,
+    outline_findings: list[dict[str, Any]],
+    written_summary: str,
+    outline_plan: str,
+) -> dict[str, Any]:
+    """批 35：章节专属上下文 —— 大块材料按本章 key_refs 裁剪。
+
+    保留 goal/question 与全部非数据集聚合产物（findings/洞察/采访答案：体积小、
+    是叙事证据）；``dataset_summary`` 只保留 key_refs 命中的切片。解析规则：
+    ① ref 直接等于任一材料 id；② ``finding-N`` → 第 N 条 finding 产物（与
+    findings_summary 同序）→ 其 ``payload.dataset`` 指向的数据集聚合。
+    key_refs 缺失、全部解析不到、或命中了 finding 却定位不到任何数据集时，
+    回退注入全量（坏引用绝不挂掉整节，也不让章节被饿死）。
+
+    裁剪只发生在已过防火墙的 ``safe_context`` 上；裁剪后的白名单键再次通过
+    ``assert_safe_ai_context`` 复核（防止切片过程引入任何越界字段），
+    ``_AGGREGATE_LIST_KEYS`` 等防火墙键一律不动。
+    """
+
+    safe = doc_context.get("safe_context") or {}
+    artifacts = safe.get("artifacts") or []
+    finding_artifacts = [item for item in artifacts if item.get("artifact_type") == "finding"]
+    dataset_artifacts = [item for item in artifacts if item.get("artifact_type") == "dataset_summary"]
+
+    refs = [str(ref).strip() for ref in (key_refs or []) if str(ref).strip()]
+    matched_ids: set[str] = set()
+    for ref in refs:
+        for item in artifacts:
+            if str(item.get("id")) == ref:
+                matched_ids.add(str(item.get("id")))
+        match = re.fullmatch(r"finding-(\d+)", ref)
+        if match:
+            index = int(match.group(1)) - 1
+            if 0 <= index < len(finding_artifacts):
+                finding = finding_artifacts[index]
+                matched_ids.add(str(finding.get("id")))
+                dataset_name = str((finding.get("payload") or {}).get("dataset") or "")
+                if dataset_name:
+                    for dataset in dataset_artifacts:
+                        if dataset_name in str(dataset.get("title") or ""):
+                            matched_ids.add(str(dataset.get("id")))
+
+    if refs and matched_ids:
+        matched_datasets = matched_ids & {str(item.get("id")) for item in dataset_artifacts}
+        if dataset_artifacts and not matched_datasets:
+            # findings 命中但定位不到数据集：回退全量，避免章节被饿死。
+            sliced = artifacts
+        else:
+            sliced = [
+                item
+                for item in artifacts
+                if item.get("artifact_type") != "dataset_summary" or str(item.get("id")) in matched_ids
+            ]
+    else:
+        sliced = artifacts
+
+    allowed = assert_safe_ai_context({**safe, "artifacts": sliced})
+    section_context: dict[str, Any] = {
+        **allowed,
+        "outline_findings": outline_findings,
+        "solution": doc_context.get("solution"),
+        "decision": doc_context.get("decision"),
+    }
+    if written_summary:
+        section_context["written_summary"] = written_summary
+    if outline_plan:
+        section_context["outline_plan"] = outline_plan
+    return section_context
 
 
 # Batch 25: the harmonize output must rewrite sections verbatim (tables and
@@ -134,7 +213,8 @@ def _harmonize_system_prompt() -> str:
         "（如「详见「X」一节」）；2) 平滑章节衔接——过渡自然、指代一致、语气统一。"
         "铁律：表格、数字、证据引用（证据标题或 id）必须逐字保留，不得改写数值或改述表格内容；"
         "不得新增任何论断、数据、建议或结论；不得合并、拆分、增加或删除章节，"
-        "heading 与章节顺序必须与输入完全一致；每节只输出该节改写后的正文。"
+        "heading 与章节顺序必须与输入完全一致；改写后各节字数不得超过原文的 105%，"
+        "不得新增任何数字或论断；每节只输出该节改写后的正文。"
         '只输出 JSON：{"sections": [{"heading", "content"}, ...]}，节数与顺序与输入相同。'
     )
 
@@ -151,68 +231,46 @@ def _section_system_prompt(
     solution: dict[str, Any] | None,
     decision: dict[str, Any] | None,
     outline_plan: str = "",
+    materials_summary: str = "",
 ) -> str:
-    """Pass-2 prompt for one section (batch 17).
+    """批 35 重写：可操作三要素（数字锚点/设计决策/badcase）+ 本章专属材料。
 
-    The decision chain is the main narrative axis for a PRD: the approved
-    decision and the selected solution are quoted directly so the section
-    writes the product design around them instead of generic analysis.
-    Batch 25: parallel sections get ``outline_plan`` (the full section plan)
-    instead of ``written_summary`` -- their anti-duplication contract is "stay
-    inside your outline slot", because the previously-written summary does not
-    exist while siblings are still being written.
+    ``materials_summary`` 来自裁剪后的本章切片标题，是本节唯一取数来源。
+    wave-1（顺序撰写）带 ``written_summary``；wave-2（并行撰写）没有前文，
+    反重复契约由 ``outline_plan`` 承担（结构不变，第五批两波/信号量断言不受影响）。
     """
 
     axis = ""
     if decision:
         axis += (
-            f"已批准决策（本文档的主叙事轴）：问题=「{decision.get('problem_statement') or ''}」，"
+            f"主叙事轴：问题=「{decision.get('problem_statement') or ''}」，"
             f"行动=「{decision.get('proposed_action') or ''}」，验证=「{decision.get('validation_plan') or ''}」。"
         )
     if solution:
-        axis += (
-            f"选定方案：{solution.get('title') or ''}——{solution.get('approach') or ''}"
-            f"（工作量 {solution.get('effort') or 'M'}）。"
-        )
-    if document_type == "prd":
-        axis += "本文档是围绕已批准决策与选定方案的产品设计文档，数据发现是论据，功能设计是主体；禁止输出与决策无关的泛泛分析。"
-    format_rules = (
-        "格式要求：涉及发现清单用 Markdown 表格（|编号|发现|数据证据|严重程度|）；"
-        "涉及目标用 Markdown 表格（|目标|衡量指标|目标值|）且每个目标必须量化；"
-        "涉及验收标准用 Markdown 表格（|编号|验收点|预期结果|）；"
-        "功能设计必须包含边界情况与异常兜底（badcase）小节；用户流程用「场景一/场景二…」编号叙述。"
-        if document_type == "prd"
-        else "格式要求：使用 Markdown 小标题与列表，涉及数据必须引用具体数字。"
+        axis += f"选定方案=「{solution.get('title') or ''}」（工作量 {solution.get('effort') or 'M'}）。"
+    materials = (
+        f"本章专属材料（只能从这里取数）：{materials_summary}。" if materials_summary else "本章材料见上下文 artifacts。"
     )
-    depth = (
-        # Batch 17 hotfix: a hard per-section budget keeps every first attempt
-        # under the output ceiling (no truncation-retry) and lands the whole
-        # document at ~10-15k chars -- the quality benchmark.
-        "本节正文 800–1500 字；表格 cell 保持简洁；不要重复其他章节内容。写深写透但严格遵守篇幅上限。"
-        if document_type == "prd"
-        else "本节正文 400–800 字；不要重复其他章节内容。"
+    head = f"你撰写《{title}》第 {index}/{total} 节「{heading}」（目的：{purpose or '按标题展开'}；读者 {audience}）。"
+    if document_type == "prd":
+        requirements = (
+            "要求：1) 正文 700-1200 字，必须包含：≥1 个数字锚点（来自本章材料，句尾标 [finding-N]）、"
+            "1 个明确的设计决策、1 个边界情况（badcase）及其兜底；"
+            "2) 目标用表格（|目标|指标|目标值|），验收用表格（|编号|验收点|预期|），每格 ≤20 字；"
+            "用户流程用「场景一/场景二」编号叙述；"
+            "3) 禁止复述其他章节、禁止编造数字、禁止输出与本章无关的分析。"
+        )
+    else:
+        requirements = "本节正文 400–800 字；涉及数据必须引用具体数字；不要重复其他章节内容。"
+    summary_line = f"前文摘要（不要重复）：{written_summary[:300]}。" if written_summary else ""
+    plan_line = (
+        f"各节范围以大纲为准，不得与其他章节重复；大纲全文（你的节是第 {index} 项）：{outline_plan}"
+        if outline_plan
+        else ""
     )
     return (
-        f"你负责撰写《{title}》的第 {index}/{total} 节「{heading}」。本节目的：{purpose or '按标题展开'}。"
-        f"{axis}{format_rules}"
-        "写作依据：给定的证据材料与 outline_findings；引用证据时标注来源（引用证据标题或 id）；禁止编造数据；"
-        "全文使用简体中文，语气面向指定读者：" f"{audience}。"
-        f"{depth}"
-        + (
-            f"已写前文摘要（保证连贯，不要重复）：{'；'.join(written_summary.splitlines())}"
-            if written_summary
-            else ""
-        )
-        + (
-            # Batch 25 wave-2 contract: no written summary exists while sibling
-            # sections are being written in parallel; scope discipline comes
-            # from the outline plan instead.
-            f"各节范围以大纲为准，不得与其他章节重复（其他章节由并行撰写，重复内容会在终稿校对中被删除）。"
-            f"大纲全文（你的节是第 {index} 项）：{outline_plan}"
-            if outline_plan
-            else ""
-        )
-        + ' 只输出 JSON：{"heading": 节标题, "content": Markdown 正文}。'
+        f"{head}{axis}{materials}{summary_line}{plan_line}{requirements}"
+        + ' 只输出 JSON：{"heading", "content"}，content 为 Markdown。'
     )
 
 
@@ -585,8 +643,8 @@ def _document_system_prompt(document_type: str, audience: str) -> str:
         "artifact_type 为 finding 的条目是规则从数据中提炼的重点，正文应覆盖这些要点。"
         f"{brief}。"
         f"{format_rules}"
-        "所有论断必须来自给定上下文，并在内容中自然标注依据（引用证据标题或 id）；禁止编造数据；"
-        "禁止出现英文模板句或占位文案；全文使用简体中文，语气面向指定读者。"
+        "所有论断必须来自给定上下文，并在内容中自然标注依据（引用证据标题或 id）；"
+        "禁止出现英文模板句或占位文案，语气面向指定读者。"
         f"输出面向读者：{audience}。"
     )
 

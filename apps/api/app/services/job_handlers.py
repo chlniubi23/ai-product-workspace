@@ -73,6 +73,7 @@ from .documents import (
     _outline_system_prompt,
     _render_ai_document_markdown,
     _render_document_markdown,
+    _section_context,
     _section_system_prompt,
 )
 from .field_semantics import interpret_fields
@@ -434,7 +435,7 @@ def _handle_document_generation(context: JobContext) -> JobResult:
                 user=user,
                 workspace=workspace,
                 feature_name="document_outline",
-                system_prompt=_outline_system_prompt(body.document_type, audience),
+                system_prompt=_outline_system_prompt(body.document_type, body.title, audience),
                 # Batch 25: the outline sees the summary layer (goal / findings
                 # / decision chain / field labels) instead of the full
                 # aggregates -- the production profile showed a 71s outline
@@ -483,15 +484,22 @@ def _handle_document_generation(context: JobContext) -> JobResult:
             pre-call valve) exactly as before -- only the scheduling changed."""
             nonlocal ai_error_code
             heading = str(section.get("heading")).strip()
-            # Wave-2 sections have no written summary (siblings are still in
-            # flight); their anti-duplication contract is the outline plan.
-            section_context = {
-                **doc_context["safe_context"],
-                "outline_findings": outline.get("findings") or [],
-                "root_cause": str(outline.get("root_cause") or ""),
-                "solution": doc_context.get("solution"),
-                "decision": doc_context.get("decision"),
-            }
+            # 批 35：章节专属上下文 —— 大块数据集聚合按本章 key_refs 裁剪
+            # （解析不到的引用回退全量）；每节仍是独立 _run_ai_stage、独立
+            # AIRun、独立阀门，min_output_tokens 不变。
+            section_context = _section_context(
+                doc_context,
+                section.get("key_refs"),
+                outline.get("findings") or [],
+                written_summary,
+                outline_plan,
+            )
+            section_context["root_cause"] = str(outline.get("root_cause") or "")
+            materials_summary = "；".join(
+                str(item.get("title") or "")[:80]
+                for item in section_context.get("artifacts") or []
+                if item.get("artifact_type") in {"dataset_summary", "finding"} and item.get("title")
+            )
             if written_summary:
                 section_context["written_summary"] = written_summary
             else:
@@ -514,6 +522,7 @@ def _handle_document_generation(context: JobContext) -> JobResult:
                         doc_context.get("solution"),
                         doc_context.get("decision"),
                         outline_plan="" if written_summary else outline_plan,
+                        materials_summary=materials_summary,
                     ),
                     context=section_context,
                     flag_name="document_generation_enabled",
