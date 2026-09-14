@@ -209,7 +209,7 @@ async def generate_next_question(
                 "仅当用户的回答已覆盖关键开放问题、或明确表示无更多补充时才可置 true；不确定时默认继续提问；"
                 "置 true 时 completion_note 必须逐条说明依据了哪些回答。"
                 "否则只提出一个问题（优先围绕数据发现中最重要的未澄清点，并根据已有回答追问），输出 topic、question_text、rationale（引用哪条结论）。"
-                "新问题不得与已有问题重复（含语义重复）。" + extra + " 输出默认是 draft。"
+                "新问题不得与已有问题重复（含语义重复）。" + extra
             ),
             context=context,
             flag_name="insight_suggestions_enabled",
@@ -341,7 +341,7 @@ async def complete_interview(
             "你是产品分析师。基于给定的报告聚合、数据发现与采访问答对，生成本次采访的收尾小结，"
             "全部使用简体中文：collected 列出围绕哪些数据发现收集到了哪些判断（每条一句话，可引用数字）；"
             "gaps 列出未覆盖、只能依赖数据本身回答的部分；ready_for 用 2-3 句话给出对下一步洞察蒸馏的建议"
-            "（哪些结论可以直接蒸馏、哪些还需要数据验证）。输出默认是 draft。"
+            "（哪些结论可以直接蒸馏、哪些还需要数据验证）。"
         ),
         context=context,
         flag_name="insight_suggestions_enabled",
@@ -460,7 +460,7 @@ async def distill_interview(
             "洞察条数由证据决定，通常 5-10 条，证据不足时宁少勿凑；每条 text 不超过 80 字；"
             "每条的 evidence 只引 1 个最相关的 id；limitations 最多 3 条。"
             "每条必须带 evidence 数组，每项必须是 {\"type\": \"...\", \"id\": \"...\"} 对象，type 取 interview_question（采访问答）或 analysis_artifact（分析产物）。"
-            "不要臆测未提供的信息。输出默认是 draft。"
+            "不要臆测未提供的信息。"
         ),
         context=context,
         flag_name="insight_suggestions_enabled",

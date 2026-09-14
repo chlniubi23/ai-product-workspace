@@ -674,10 +674,13 @@ async def _run_ai_stage(
     adapter = DeepSeekAdapter(DeepSeekSettings.from_app_settings(settings))
     if adapter.configured:
         try:
+            # 批 34：共享 JSON 尾缀 —— 语言/禁编造/evidence id 溯源三规则统一在此
+            # 声明（id 原样取自上下文是幻觉 id 的第一道闸）；应用层的 draft 状态
+            # 短语对 LLM 无意义，已从全部提示词中删除。Schema 附加与截断重试句不动。
             json_instruction = (
-                " 返回 JSON，必须包含 facts、hypotheses、recommendations、limitations；每条都必须有 evidence 数组。输出默认是 draft。Schema: "
+                " 用简体中文输出一个严格符合 Schema 的 JSON 对象，包含 facts、hypotheses、recommendations、limitations 四节，每条陈述不超过 80 字、宁少勿凑。规则：1) 只使用上下文中给出的信息，禁止编造数字、结论或 id；2) 每条 evidence 的 id 必须原样取自上下文中出现的资源 id。Schema: "
                 if response_schema is None
-                else " 返回 JSON，输出默认是 draft。Schema: "
+                else " 用简体中文输出一个严格符合 Schema 的 JSON 对象。规则：1) 只使用上下文中给出的信息，禁止编造数字、结论或 id；2) 每条 evidence 的 id 必须原样取自上下文中出现的资源 id。Schema: "
             )
             system_message = system_prompt + json_instruction + json.dumps(schema, ensure_ascii=True, separators=(",", ":"))
             user_message = json.dumps(context, ensure_ascii=False, separators=(",", ":"), default=str)

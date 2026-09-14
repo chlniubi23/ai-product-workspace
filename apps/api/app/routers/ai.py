@@ -142,7 +142,7 @@ async def ai_interpret(body: AIInterpretRequest, user: User = Depends(get_curren
                 messages=[
                     ChatMessage(
                         "system",
-                        "你是产品分析助手。只根据给定的聚合证据回答，不要猜测原始数据。返回 JSON，必须包含 facts、hypotheses、recommendations、limitations；每条事实、假设和建议都必须有 evidence 数组。输出默认是 draft。Schema: "
+                        "你是产品分析助手。只根据给定的聚合证据回答，不要猜测原始数据。返回 JSON，必须包含 facts、hypotheses、recommendations、limitations；每条事实、假设和建议都必须有 evidence 数组。Schema: "
                         + json.dumps(AI_OUTPUT_SCHEMA, ensure_ascii=True, separators=(",", ":")),
                     ),
                     ChatMessage("user", json.dumps(context, ensure_ascii=False, separators=(",", ":"), default=str)),
