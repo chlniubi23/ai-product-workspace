@@ -81,7 +81,8 @@ def infer_column_type(series: pd.Series) -> ColumnTypeInfo:
     
     # 策略 2: 检查是否是序数量表（基于列名模式和唯一值范围）
     name_lower = str(name).lower()
-    ordinal_indicators = ['满意', '评分', '等级', 'rank', 'rating']
+    # 批 33：nps 是典型的 0-10/1-7 序数量表，中文列名「周NPS」「NPS」此前漏判。
+    ordinal_indicators = ['满意', '评分', '等级', 'rank', 'rating', 'nps']
     
     has_ordinal_indicator = any(ind in name_lower for ind in ordinal_indicators)
     # 序数量表：整型或浮点量表值（如 4.4），取值范围小且唯一值有限

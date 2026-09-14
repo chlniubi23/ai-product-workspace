@@ -17,7 +17,9 @@ from ..analytics.dag import build_lineage_map
 from ..analytics.digest import column_display, dataset_display
 from ..analytics.engine import AnalysisEngine, choose_trend_frequency
 from ..analytics.outliers import compute_column_outliers
+from ..analytics.rounding import round_stat
 from ..analytics.text_metrics import extract_text_metrics
+from ..analytics.types import compute_ordinal_statistics, infer_column_type
 from ..common import _require_pandas, model_dict
 from ..config import settings
 from ..models import AutoAnalysisReport, Dataset, DatasetVersion, Project, User, Workspace
@@ -31,6 +33,8 @@ from .datasets import _read_dataframe
 
 _REPORT_DATASET_LIMIT = 5
 _REPORT_TREND_POINT_LIMIT = 80
+#: 批 33：低于该行数的数据集跳过跨行相关与分组比较（小样本汇总表 6/10 行）。
+SMALL_SAMPLE_THRESHOLD = 10
 
 
 def _latest_project_versions(db: Session, project: Project) -> list[DatasetVersion]:
@@ -110,26 +114,44 @@ def _compute_report_aggregates(snapshot: dict[str, Any]) -> dict[str, Any]:
             entry["label"] = schema_label
         stats = item.get("statistics")
         if isinstance(stats, dict) and stats:
+            # 批 33：展示层有效数字舍入 —— count 保持整数，其余按 4 位有效数字。
             entry["statistics"] = {
-                key: stats.get(key)
+                key: (int(stats.get(key)) if key == "count" else round_stat(stats.get(key)))
                 for key in ("count", "mean", "median", "std", "min", "max")
                 if stats.get(key) is not None
             }
-            # Batch 14 distribution depth: outlier count, skewness and a
-            # binned histogram for every numeric column (derived included).
-            # The count comes from the single outlier definition in
-            # ``analytics.outliers`` so the digest's outlier rate and the
-            # quality report agree instead of using IQR-only here and
-            # IQR-union-Z there.
-            numeric_series = pd.to_numeric(frame[entry_name], errors="coerce").dropna() if entry_name in frame.columns else pd.Series(dtype="float64")
-            if len(numeric_series) >= 3:
-                outlier_stats = compute_column_outliers(frame, entry_name)
-                entry["outliers"] = int(outlier_stats.count) if outlier_stats is not None else 0
-                entry["skewness"] = round(float(numeric_series.skew()), 4)
-                bin_count = min(10, max(3, int(numeric_series.nunique())))
-                binned = pd.cut(numeric_series, bins=bin_count).value_counts().sort_index()
-                entry["bins"] = [str(interval) for interval in binned.index]
-                entry["counts"] = [int(count) for count in binned.values]
+        # Batch 14 distribution depth: outlier count, skewness and a
+        # binned histogram for every numeric column (derived included).
+        # The count comes from the single outlier definition in
+        # ``analytics.outliers`` so the digest's outlier rate and the
+        # quality report agree instead of using IQR-only here and
+        # IQR-union-Z there.
+        numeric_series = pd.to_numeric(frame[entry_name], errors="coerce").dropna() if entry_name in frame.columns else pd.Series(dtype="float64")
+        if len(numeric_series) >= 3:
+            outlier_stats = compute_column_outliers(frame, entry_name)
+            entry["outliers"] = int(outlier_stats.count) if outlier_stats is not None else 0
+            # 批 33：偏度按有效数字呈现（round(x,4) 会把 0.00278 显示成 0.0028）。
+            entry["skewness"] = round_stat(float(numeric_series.skew()))
+            bin_count = min(10, max(3, int(numeric_series.nunique())))
+            binned = pd.cut(numeric_series, bins=bin_count).value_counts().sort_index()
+            entry["bins"] = [str(interval) for interval in binned.index]
+            entry["counts"] = [int(count) for count in binned.values]
+        # 批 33：类型口径下沉 —— 序数列主推分布与众数，比率列标注均值口径局限。
+        # 只对数值列生效；distribution 是"值 -> 计数"的标量 dict，出站无需白名单变更。
+        if entry_name in frame.columns and pd.api.types.is_numeric_dtype(frame[entry_name]):
+            column_type = infer_column_type(frame[entry_name])
+            scale = str(column_type.inferred_type.value)
+            entry["scale"] = scale
+            if scale == "ordinal":
+                ordinal_stats = compute_ordinal_statistics(frame, frame[entry_name])
+                entry["distribution"] = ordinal_stats.distribution
+                entry["mode"] = ordinal_stats.mode
+                entry["mode_percentage"] = (
+                    round(float(ordinal_stats.mode_percentage), 4) if ordinal_stats.mode_percentage is not None else None
+                )
+                entry["stat_note"] = "序数量表：重点关注分布与众数，均值仅供参考"
+            elif scale in {"ratio", "percentage"}:
+                entry["stat_note"] = "比率/百分比指标：优先关注中位数与分位数，跨行平均需谨慎"
         # Batch 13: a near-unique column (report_id, 20 rows / 20 unique) only
         # produces "top value: 1 row (5%)" noise in per-value distributions and
         # in the digest's concentration rule. Keep its missing statistics, drop
@@ -155,6 +177,15 @@ def _compute_report_aggregates(snapshot: dict[str, Any]) -> dict[str, Any]:
         "duplicate_rows": int(eda_payload.get("duplicate_rows") or 0),
         "metrics": columns,
     }
+    # 批 33：小样本防护 —— 行数 < 10 的汇总表（用户实测 6/10 行）跨行相关与分组
+    # 比较没有统计意义，直接跳过并落结构化说明；trend 仍生成（时序本身对小样本
+    # 有意义）。行级 NaN 保护保留（双保险）。
+    small_sample = 0 < aggregates["row_count"] < SMALL_SAMPLE_THRESHOLD
+    aggregates["small_sample"] = small_sample
+    if small_sample:
+        aggregates["dataset_note"] = (
+            f"样本量仅 {aggregates['row_count']} 行，跨行相关与分组比较不适用，结果以分布画像为主"
+        )
     # Batch 21: dataset-level business label from the field-semantics pass.
     dataset_label = str(snapshot.get("dataset_label") or "").strip()
     if dataset_label:
@@ -176,20 +207,25 @@ def _compute_report_aggregates(snapshot: dict[str, Any]) -> dict[str, Any]:
         aggregates["anomalies"] = snapshot["anomalies"]
 
     correlations: dict[str, float] = {}
-    for pair in list(eda_payload.get("correlations") or [])[:12]:
-        if isinstance(pair, Mapping) and pair.get("correlation") is not None:
-            correlations[f"{pair.get('left')} ~ {pair.get('right')}"] = round(float(pair["correlation"]), 4)
+    if not small_sample:
+        for pair in list(eda_payload.get("correlations") or [])[:12]:
+            if isinstance(pair, Mapping) and pair.get("correlation") is not None:
+                correlations[f"{pair.get('left')} ~ {pair.get('right')}"] = round(float(pair["correlation"]), 4)
     if correlations:
         aggregates["correlation_pairs"] = correlations
-    correlation_details = [
-        {
-            key: pair.get(key)
-            for key in ("var1", "var2", "pearson_r", "pearson_p", "robust_pearson", "robust_spearman", "is_significant", "correlation_strength", "robustness_note")
-            if pair.get(key) is not None
-        }
-        for pair in list(eda_payload.get("correlation_pairs_detail") or [])[:12]
-        if isinstance(pair, Mapping)
-    ]
+    correlation_details = (
+        [
+            {
+                key: pair.get(key)
+                for key in ("var1", "var2", "pearson_r", "pearson_p", "robust_pearson", "robust_spearman", "is_significant", "correlation_strength", "robustness_note")
+                if pair.get(key) is not None
+            }
+            for pair in list(eda_payload.get("correlation_pairs_detail") or [])[:12]
+            if isinstance(pair, Mapping)
+        ]
+        if not small_sample
+        else []
+    )
     if correlation_details:
         # ``pairs`` is a firewall-approved aggregate carrier; all fields here
         # are scalar pair statistics, with no row-level references.
@@ -273,12 +309,16 @@ def _compute_report_aggregates(snapshot: dict[str, Any]) -> dict[str, Any]:
         ),
         None,
     )
-    if group_column and value_column:
+    if group_column and value_column and not small_sample:
         try:
             comparison = engine.run_group_comparison(
                 frame, group_column=str(group_column), value_column=str(value_column), aggregation="mean", top_n=10
             )
             breakdown = [row for row in comparison.payload.get("categories") or [] if isinstance(row, dict)]
+            # 批 33：分组均值/合计按有效数字呈现。
+            for row in breakdown:
+                row["mean"] = round_stat(row.get("mean"))
+                row["sum"] = round_stat(row.get("sum"))
             if breakdown:
                 aggregates["breakdown"] = breakdown
                 aggregates["breakdown_column"] = f"{group_column} ~ {value_column}"
@@ -354,6 +394,9 @@ def _deterministic_report_parts(
             line += f"，解析编码 {item.get('parse_encoding')}"
         if item.get("parse_warnings_count"):
             line += f"，{item.get('parse_warnings_count')} 条解析警告"
+        # 批 33：小样本说明。
+        if item.get("dataset_note"):
+            line += f"；{item.get('dataset_note')}"
         overview_lines.append(line)
     if overview_lines:
         sections.append({"heading": "一、数据概况", "content": "\n".join(overview_lines)})
@@ -374,14 +417,25 @@ def _deterministic_report_parts(
                     line += f"，其次 {runners}"
                 distribution_lines.append(line)
                 findings.append(f"{label} 中「{top.get('value')}」占比最高（{top.get('count')} 条，{round(float(top.get('rate') or 0) * 100, 1)}%）")
+            # 批 33：序数列主推分布与众数 —— 众数单列一行。
+            if column.get("distribution") and column.get("mode") is not None:
+                mode_pct = column.get("mode_percentage")
+                mode_line = f"- {label}：众数 {column.get('mode')}"
+                if mode_pct is not None:
+                    mode_line += f"（占比 {round(float(mode_pct), 1)}%）"
+                distribution_lines.append(mode_line)
             stats = column.get("statistics")
             if isinstance(stats, dict) and stats.get("mean") is not None:
                 median = stats.get("median")
-                statistic_lines.append(
-                    f"- {label}：均值 {round(float(stats['mean']), 4)}"
-                    + (f"，中位数 {round(float(median), 4)}" if median is not None else "")
-                    + (f"，范围 [{round(float(stats['min']), 4)}, {round(float(stats['max']), 4)}]" if stats.get("min") is not None and stats.get("max") is not None else "")
+                line = (
+                    f"- {label}：均值 {round_stat(stats['mean'])}"
+                    + (f"，中位数 {round_stat(median)}" if median is not None else "")
+                    + (f"，范围 [{round_stat(stats['min'])}, {round_stat(stats['max'])}]" if stats.get("min") is not None and stats.get("max") is not None else "")
                 )
+                # 批 33：类型口径注释随行展示。
+                if column.get("stat_note"):
+                    line += f"（{column.get('stat_note')}）"
+                statistic_lines.append(line)
                 if column.get("missing_rate"):
                     findings.append(f"{label} 缺失率 {round(float(column['missing_rate']) * 100, 1)}%")
     if distribution_lines:

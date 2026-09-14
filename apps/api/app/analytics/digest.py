@@ -36,6 +36,7 @@ _KIND_ORDER = {
     "outlier": 5,
     "constant": 6,
     "calendar_gap": 7,
+    "small_sample": 8,
 }
 
 
@@ -322,6 +323,23 @@ def _calendar_gap_findings(dataset: dict[str, Any], findings: list[dict[str, Any
     )
 
 
+def _small_sample_findings(dataset: dict[str, Any], findings: list[dict[str, Any]]) -> None:
+    """批 33：小样本数据集的结构化说明（聚合层已停用跨行统计）。"""
+
+    if not dataset.get("small_sample"):
+        return
+    row_count = int(dataset.get("row_count") or 0)
+    findings.append(
+        {
+            "kind": "small_sample",
+            "dataset": str(dataset.get("name") or ""),
+            "statement": f"「{dataset_display(dataset)}」仅 {row_count} 行，跨行统计已停用，避免小样本误判。",
+            "severity": 1,
+            "value": float(row_count),
+        }
+    )
+
+
 def build_findings_digest(aggregates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Distill a severity-ordered findings list from report aggregates.
 
@@ -345,6 +363,7 @@ def build_findings_digest(aggregates: list[dict[str, Any]]) -> list[dict[str, An
         _constant_findings(dataset, findings)
         _outlier_findings(dataset, findings)
         _calendar_gap_findings(dataset, findings)
+        _small_sample_findings(dataset, findings)
     findings.sort(
         key=lambda item: (
             -int(item.get("severity") or 0),

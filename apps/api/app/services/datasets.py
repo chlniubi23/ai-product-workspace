@@ -105,6 +105,27 @@ def _type_name(series: pd.Series) -> str:
 _IDENTIFIER_NAME = re.compile(r"(?:^|[_-])(id|uuid|guid)$", re.IGNORECASE)
 
 
+def _semantic_role_match(column_name: str, inferred_type: str) -> str | None:
+    """批 33：保守的语义匹配 —— 精确匹配未命中时按列名模式推断角色。
+
+    命中即写 ``mapping_role``（解锁中文列名事件表的自动留存/漏斗分析）。
+    两条硬约束：
+    * 类型不符绝不命中 —— ``event_time`` 必须是 datetime，``user_id`` 只接受
+      string/integer，``event_name`` 只接受 string；
+    * 指标名不是 ID —— 「新增用户」「活跃用户」不含 "用户id"/"userid" 字样，
+      天然不会命中 ``user_id``。
+    """
+
+    lowered = column_name.lower()
+    if inferred_type in {"string", "integer"} and ("用户id" in lowered or "userid" in lowered or "user_id" in lowered):
+        return "user_id"
+    if inferred_type == "datetime" and any(indicator in lowered for indicator in ("日期", "时间", "date", "time")):
+        return "event_time"
+    if inferred_type == "string" and any(indicator in lowered for indicator in ("事件名称", "事件", "event_name")):
+        return "event_name"
+    return None
+
+
 def _column_schema(df: pd.DataFrame) -> list[dict[str, Any]]:
     pd = _require_pandas()
     _require_pandas()
@@ -119,6 +140,7 @@ def _column_schema(df: pd.DataFrame) -> list[dict[str, Any]]:
         "feedback_text": "feedback_text",
         "rating": "rating",
     }
+    _assigned_roles: set[str] = set()
     for ordinal, name in enumerate(df.columns):
         col = str(name)
         series = df[name]
@@ -131,7 +153,16 @@ def _column_schema(df: pd.DataFrame) -> list[dict[str, Any]]:
         # happens to parse as numbers must still be treated as a string key.
         if inferred in {"integer", "float"} and _IDENTIFIER_NAME.search(col):
             inferred = "string"
-        result.append({"name": col, "display_name": col, "inferred_type": inferred, "confirmed_type": None, "nullable": nullable, "unique_ratio": unique_ratio, "mapping_role": role_names.get(col.lower()), "ordinal": ordinal})
+        # 批 33：先精确匹配，未命中再走保守语义匹配；同一角色只命中列序第一个
+        # （同表多个 datetime 列时，"日期/时间" 类列名取第一个）。
+        role = role_names.get(col.lower())
+        if role is None:
+            role = _semantic_role_match(col, inferred)
+        if role is not None and role in _assigned_roles:
+            role = None
+        if role is not None:
+            _assigned_roles.add(role)
+        result.append({"name": col, "display_name": col, "inferred_type": inferred, "confirmed_type": None, "nullable": nullable, "unique_ratio": unique_ratio, "mapping_role": role, "ordinal": ordinal})
     return result
 
 

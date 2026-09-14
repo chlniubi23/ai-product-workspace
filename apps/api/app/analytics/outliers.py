@@ -240,7 +240,11 @@ def compute_column_outliers(
     if column not in df.columns or not pd.api.types.is_numeric_dtype(df[column]):
         return None
 
-    series = pd.to_numeric(df[column], errors="coerce")
+    # 批 33（golden 回归暴露）：bool 列是 is_numeric_dtype 但 quantile 会触发
+    # numpy 布尔减法错误 —— 统一按 0/1 参与离群值统计，与 engine 的布尔列
+    # 处理保持一致。
+    source = df[column].astype("int64") if pd.api.types.is_bool_dtype(df[column]) else df[column]
+    series = pd.to_numeric(source, errors="coerce")
     present = series.dropna()
     sample_count = int(len(present))
     if sample_count == 0:

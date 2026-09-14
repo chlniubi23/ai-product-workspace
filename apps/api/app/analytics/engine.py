@@ -270,7 +270,12 @@ class AnalysisEngine:
                 "sample_values": _jsonable(series.dropna().head(5).tolist()),
             }
             if pd.api.types.is_numeric_dtype(series):
-                values = pd.to_numeric(series, errors="coerce").dropna()
+                # 批 33（golden 回归暴露）：布尔列（True/False）会被 read_csv
+                # 解析为 bool dtype，直接 quantile 会触发 numpy 的布尔减法错误。
+                # 按 0/1 参与统计 —— 布尔列的"均值"即 True 占比，语义保守且
+                # 确定性；此前这类列会让整个 EDA 崩溃。
+                numeric_series = series.astype("int64") if pd.api.types.is_bool_dtype(series) else series
+                values = pd.to_numeric(numeric_series, errors="coerce").dropna()
                 item["statistics"] = {
                     "count": int(values.count()),
                     "mean": float(values.mean()) if not values.empty else None,

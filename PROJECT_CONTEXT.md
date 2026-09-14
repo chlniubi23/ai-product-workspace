@@ -119,8 +119,9 @@ AI_Product_Workspace/
 | `digest.py` | 355 | 已提交 | 规则化 findings digest（纯函数，阈值模块常量）；outlier 文案为「离群值」（IQR∪Z 并集口径） |
 | `dag.py` | 340 | 已提交 | 派生列血缘识别与伪相关排除；`_match_builtin_rules` 只认 `rule.name`，排除理由从派生列一侧陈述 |
 | `corelation.py` | 255 | 已提交 | 显著性检验（p 值）+ 稳健相关 + 多方法（**依赖 scipy**）；血缘排除返回 `[{'var1','var2','reason'}]` 明细，`EXCLUDED_PAIRS_DETAIL_LIMIT=20` |
-| `outliers.py` | 389 | 已提交 | 对象级离群值（IQR/Z-score 并集统一口径 `compute_column_outliers`） |
-| `types.py` | 306 | 已提交 | 类型感知统计（序数/占比/二元）；0 值用 `is not None` 判定，不再被当缺失 |
+| `outliers.py` | 393 | 已提交 | 对象级离群值（IQR/Z-score 并集统一口径 `compute_column_outliers`）；bool 列按 0/1 参与统计（golden 回归暴露的 quantile 崩溃修复） |
+| `types.py` | 306 | 已提交 | 类型感知统计（序数/占比/二元）；0 值用 `is not None` 判定；**序数指标含 nps**（批 33） |
+| `rounding.py` | 51 | 已提交 | **批 33 新增**：`round_stat(value, digits=4)` 按**有效数字**舍入（`decimal.ROUND_HALF_EVEN`；0.00278→0.00278、45.678→45.68、739451.61→739500）；None/非有限/非数值一律返回 None。只用于报告行文与聚合展示（engine 内部计算不经此） |
 
 ---
 
@@ -352,6 +353,7 @@ AI_Product_Workspace/
 - **列类型判据联动**：`parsing.infer_column_type_v2` 的 `identifier` 判据被 `text_metrics._is_textlike` 直接消费（只有 `text` / `category` 会被文本指标抽取扫描）。改动 identifier 判据前先确认这条链路：放宽会把自由文本判成 identifier 而**静默丢掉**列内指标。
 - **测试运行时只能放在 `%TEMP%` 之下**（`tests/conftest.py:_resolve_test_root`，可被 `APW_TEST_ROOT` 覆盖）：本机在 `%TEMP%` 以外删除任何文件都会被系统级代理转成回收站条目（见 §11.15），且测试库必须保持 `journal_mode=MEMORY` + `synchronous=OFF`（由 `tests/test_test_environment.py` 锁定）。给测试新增落盘文件时也要放进这个目录，不要写进仓库树。
 - **文件名双轨 + parse_manifest 对账（批 32）**：`Dataset.name` / `DatasetVersion.file_name` 一律存**客户端原始文件名**（可含中文），`_safe_name` 生成的安全名**只**用于磁盘路径（`storage_path`）——两者不可再混用。每次解析在 `version.schema_json["parse_manifest"]` 落机器可验凭证（encoding/bom/rows/cols/逐列 semantic_type+parse_rate/未解析样本/警告，全为标量与小列表，**不出站**进 AI 上下文）；job 收尾前用 `_read_dataframe_with_meta` **独立二次读取**核对行列数，不一致抛 `PARSE_INTEGRITY_FAILED`（retryable=True → 版本置 failed），绝不带病通过。修改读取/对账逻辑时两条不变量都不能破坏（`tests/test_parse_manifest.py` 锁定）。
+- **计算层精度口径（批 33）**：报告聚合展示层的 magnitude 依赖型统计量一律走 `analytics/rounding.py:round_stat`（4 位**有效数字**；`round(x,4)` 只保留给 r/p、占比与 trend 原始数据点）；序数/比率列带 `scale`+`stat_note`，序数列主推分布与众数；行数 < `SMALL_SAMPLE_THRESHOLD(10)` 的数据集跳过跨行相关与分组并落 `small_sample`/`dataset_note`；`_column_schema` 的 role 匹配 = 精确名 + 保守语义匹配（类型不符绝不命中，同一角色只取列序第一个）。**golden 约束**：`tests/fixtures/golden/` 下 9 份用户真实 CSV 由 `tests/test_golden_profiles.py` 锁定结构/数值/口径/角色——任何计算层改动跑一遍即知偏差，改口径必须连同 golden 期望值一起复核更新（期望值来源：实跑探针→人工复核→固化，不得反向凑）。
 - **AI 上下文防火墙**：新产物若含列表，必须放在 `_AGGREGATE_LIST_KEYS` 允许键下，或先在 `services/ai_stages.py` 写适配映射；**行级数据禁止出站**（`_ROW_LIST_KEYS`）；产物形状优先 `[{name, ...}]` 列表而非「以列名为键的 dict」（避免撞 `_FEEDBACK_CONTENT_KEYS`）。
 - **前端新页面惯例**：`app/(workspace)/` 下建目录，用 `WorkflowFrame` 的 `WorkflowHeader/WorkflowGate` 包裹，门控逻辑改 `lib/workflow.ts` 的 `stepCompletion()`，导航加 `lib/navigation.ts`。
 - **归档语义**：归档只能走 `POST /projects/{id}/archive|unarchive`（`ProjectPatch` 不含 status）；归档项目的 editor+ 写路径全部 409 `PROJECT_ARCHIVED`；前端「当前项目」持久化键 `apw_active_project`。
@@ -475,7 +477,9 @@ AI_Product_Workspace/
 
 **全站文案专业化（batch 31，2026-09-14，已提交）**：纯文案改动——统一陈述式语气与术语（确定性计算引擎 / 质量评估 / 洞察蒸馏 / 草稿-确认-采用 / 落选理由）、导航与页头命名统一（决策副驾→洞察蒸馏、PRD→交付文档、问题定义→产品问题、接数据→数据管理）、移除用户可见 emoji（📊🎤📈🔒）与登录页"忘记密码"死链、门控提示不再出现「第 N 步」。涉及 14 个文件（`lib/navigation.ts` 只改 label、href 不动）；验收 grep（emoji 与旧术语）为零；`typecheck`/`lint` 0 错误。
 
-**解析完整性加固 P0（batch 32，2026-09-14，**未提交**）**：①文件名保真——`Dataset.name`/`DatasetVersion.file_name` 存客户端原始名（中文不再被 `_safe_name` 清洗），安全名只用于磁盘路径（`routers/datasets.py` 单传/批传两端点 + `services/datasets.py`）；②`_read_dataframe_with_meta` 返回实际编码与 BOM 标记（BOM 文件优先 `utf-8-sig`，避免 `\ufeff` 粘在首列名上），`_read_dataframe` 改为其薄封装（全部既有调用点零改动）；③`text_metrics.materialize_string_columns` 抽出（行为逐字节等价）+ `UNPARSED_SAMPLE_LIMIT=5` 留痕物化拒绝样本；④解析 job 落 `schema_json["parse_manifest"]`（encoding/bom/rows/cols/逐列语义与 parse_rate/未解析样本/U+FFFD 警告，不出站）并用独立二次读取对账行列数，不一致抛 `PARSE_INTEGRITY_FAILED`；⑤报告概况首行加数据集覆盖说明，`deterministic_json["coverage"]` 落 `{included,total,omitted}`，聚合并入 `parse_encoding`/`parse_rows`/`parse_warnings_count` 标量。新增 `tests/test_parse_manifest.py`（7 用例）；全量 **385 passed, 1 xfailed**（386 收集），既有统计断言零变化。
+**解析完整性加固 P0（batch 32，2026-09-14，已提交 `c498ce0`）**：①文件名保真——`Dataset.name`/`DatasetVersion.file_name` 存客户端原始名（中文不再被 `_safe_name` 清洗），安全名只用于磁盘路径（`routers/datasets.py` 单传/批传两端点 + `services/datasets.py`）；②`_read_dataframe_with_meta` 返回实际编码与 BOM 标记（BOM 文件优先 `utf-8-sig`，避免 `\ufeff` 粘在首列名上），`_read_dataframe` 改为其薄封装（全部既有调用点零改动）；③`text_metrics.materialize_string_columns` 抽出（行为逐字节等价）+ `UNPARSED_SAMPLE_LIMIT=5` 留痕物化拒绝样本；④解析 job 落 `schema_json["parse_manifest"]`（encoding/bom/rows/cols/逐列语义与 parse_rate/未解析样本/U+FFFD 警告，不出站）并用独立二次读取对账行列数，不一致抛 `PARSE_INTEGRITY_FAILED`；⑤报告概况首行加数据集覆盖说明，`deterministic_json["coverage"]` 落 `{included,total,omitted}`，聚合并入 `parse_encoding`/`parse_rows`/`parse_warnings_count` 标量。新增 `tests/test_parse_manifest.py`（7 用例）。
+
+**计算层精度加固 P1（batch 33，2026-09-14，**未提交**）**：①类型口径下沉——`_compute_report_aggregates` 对数值列落 `scale`（ordinal/ratio/percentage/numeric，来自 `types.infer_column_type`），序数列加 `distribution`/`mode`/`stat_note`，比率列加 `stat_note`；报告统计行尾随注、序数列单列众数行；`types.py` 序数指标扩展 `nps`。②`analytics/rounding.py` 新增 `round_stat`（4 位有效数字，ROUND_HALF_EVEN）——**注意 `1234.5678→1235`（标准舍入），任务稿示例"→1234"与自身"739451.61→7.395e5"矛盾，按标准实现并已锁值**；应用于统计行/skewness/statistics/breakdown 展示，r/p 与占比保持 `round(x,4)`。③小样本防护——`SMALL_SAMPLE_THRESHOLD=10`，行数<10 跳过相关/分组层，落 `small_sample`+`dataset_note`，digest 新增 `small_sample` finding（severity 1）。④role 语义匹配——`_column_schema` 精确未命中时保守匹配（用户ID/userid→user_id；日期/时间/date/time+datetime→event_time；事件名称+string→event_name；同一角色只取列序第一个），中文事件表（04 形态）解锁自动留存分析。⑤golden 回归——9 份用户真实 CSV 入 `tests/fixtures/golden/`（含 BOM），`test_golden_profiles.py`（25 用例）+ `test_rounding.py`（6 用例）锁结构/独立复算/排除对/口径/角色/有效数字。**附带修复**：引擎布尔列 quantile 崩溃（numpy 布尔减法错误）——bool 按 0/1 参与统计（engine.py + outliers.py），golden 数据暴露。**已知限制（golden 固化）**：08 的 ARPPU 排除不触发——内置规则名 "ARPPU" 与真实列名 "ARPPU(元/日)" 不匹配（批 1 精确名约定）；若放宽需同步更新 golden 断言。
 
 **本批实测**（**2026-09-14 复核更正**：原文误写 377 passed/378 收集/76.81s，与 §10、§13.3 及独立复验不符）：`ruff check app tests` 0 错；`pytest tests -q` → **374 passed, 1 xfailed（375 收集）**，耗时随机器波动、以最近一次实跑为准（约 78–105s；基线 366/1 → +9 计算层用例 + 2 环境守护用例，**零回归**）。**回收站增量实测为 0**（改造前每轮约 +1 万条）。
 
