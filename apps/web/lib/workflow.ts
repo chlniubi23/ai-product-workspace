@@ -315,6 +315,17 @@ export function setActiveProjectId(id: string | null): void {
   window.dispatchEvent(new CustomEvent("apw-project-changed"));
 }
 
+/**
+ * 任何会影响 11 项门控数据的变更（上传/解析完成/确认/删除等）之后调用。
+ *
+ * 侧边栏（AppShell）监听 `apw-workflow-changed` 即时重载快照，让进展圆环与
+ * 各页状态字幕不等 10 秒轮询就更新。阶段页漏发通知也不会造成永久不一致——
+ * 轮询是兜底的最终一致手段。
+ */
+export function notifyWorkflowChanged(): void {
+  window.dispatchEvent(new CustomEvent("apw-workflow-changed"));
+}
+
 async function requestList<T>(path: string): Promise<T[]> {
   // The backend page_params caps page_size at 100. Without this, the default
   // page of 20 hides older rows once records accumulate and the stage 6-12

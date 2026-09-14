@@ -31,7 +31,6 @@ import {
   pipelineNavItems,
   pipelinePhases,
   utilityNavItems,
-  workflowSteps,
   workbenchNavItem,
   type NavItem,
 } from "@/lib/navigation";
@@ -70,6 +69,10 @@ export function Icon({ name, size = 16 }: { name: IconName; size?: number }) {
 /** Live sidebar status of one pipeline entry (batch 23). */
 type FlowStatus = "done" | "current" | "pending";
 
+/** Batch 30: the ring is an SVG circle with r=20; 2πr is the dash length that
+ * maps 0-100% onto the visible arc. */
+const FLOW_RING_CIRCUMFERENCE = 2 * Math.PI * 20;
+
 export function AppShell({ children }: Readonly<{ children: React.ReactNode }>) {
   const pathname = usePathname();
   const router = useRouter();
@@ -83,10 +86,16 @@ export function AppShell({ children }: Readonly<{ children: React.ReactNode }>) 
   });
   const [workflow, setWorkflow] = useState<WorkflowSnapshot>();
 
-  // Batch 27: the sidebar progress figure rolls to its new value.  Computed
-  // BEFORE the authReady early return -- hooks must run on every render.
-  const doneCountEarly = workflow ? stepCompletion(workflow).filter(Boolean).length : 0;
-  const doneCountDisplay = useCountUp(doneCountEarly);
+  // Batch 30: the sidebar ring rolls to its new percentage.  Computed BEFORE
+  // the authReady early return -- hooks must run on every render.
+  const progressEarly = workflow
+    ? Math.round((stepCompletion(workflow).filter(Boolean).length / STAGE_COUNT) * 100)
+    : 0;
+  const progressDisplay = useCountUp(progressEarly);
+
+  // Batch 30: a reload that is still in flight must not start a second
+  // concurrent one (event storms during uploads would otherwise pile up).
+  const reloadInFlightRef = useRef(false);
 
   // Batch 26 user center: a small popover over the sidebar user block.
   const [userMenu, setUserMenu] = useState<"closed" | "menu" | "name" | "password">("closed");
@@ -198,19 +207,38 @@ export function AppShell({ children }: Readonly<{ children: React.ReactNode }>) 
       });
   }, [router]);
 
-  // The shell stays mounted while the user moves through the pipeline. Keep
-  // its progress in sync after uploads, reports, and confirmations instead of
-  // showing the snapshot from the initial page load.
+  // The shell stays mounted while the user moves through the pipeline, so its
+  // progress must follow the data rather than the initial page load.  Three
+  // triggers share one reload: navigation, the project/workflow change events
+  // (uploads, confirmations, deletes), and a slow poll as the safety net for
+  // pages that forget to notify -- skipped entirely while the tab is hidden.
   useEffect(() => {
     if (!authReady) return;
     let active = true;
-    void loadWorkflowSnapshot()
-      .then((next) => {
+    const reload = async () => {
+      if (reloadInFlightRef.current) return;
+      reloadInFlightRef.current = true;
+      try {
+        const next = await loadWorkflowSnapshot();
         if (active) setWorkflow(next);
-      })
-      .catch(() => undefined);
+      } catch {
+        /* keep showing the previous snapshot on a transient failure */
+      } finally {
+        reloadInFlightRef.current = false;
+      }
+    };
+    void reload();
+    window.addEventListener("apw-project-changed", reload);
+    window.addEventListener("apw-workflow-changed", reload);
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      void reload();
+    }, 10_000);
     return () => {
       active = false;
+      window.removeEventListener("apw-project-changed", reload);
+      window.removeEventListener("apw-workflow-changed", reload);
+      window.clearInterval(timer);
     };
   }, [authReady, pathname]);
 
@@ -234,40 +262,36 @@ export function AppShell({ children }: Readonly<{ children: React.ReactNode }>) 
   const isActiveNav = (href: string) =>
     href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(`${href}/`);
 
-  // Batch 23: pure display derivation over the unchanged stepCompletion array.
-  // The first incomplete stage is the pipeline frontier ("进行中"); everything
-  // before it is done, everything after is pending.
-  const firstIncomplete = completion.findIndex((value) => !value);
-  const flowStatus = (step: number): FlowStatus => {
-    const index = step - 1;
-    return completion[index] ? "done" : index === firstIncomplete ? "current" : "pending";
+  // Batch 30: per-page status, independent of the pipeline frontier.  "done"
+  // still comes from the gate; "current" means the user is ON that page (the
+  // old derivation claimed the next incomplete stage was "进行中" even while
+  // the user was still working on the stage-5.5 report inside the workbench).
+  // Priority is done > current > pending: a finished page that the user is
+  // looking at reads as 已完成, since "you are here" is already expressed by
+  // the active highlight.
+  const entryStatus = (done: boolean, href: string): FlowStatus => {
+    if (done) return "done";
+    return isActiveNav(href) ? "current" : "pending";
   };
-  // The workbench hosts stages 1-5 (batch 4 IA): per the design spec it shows
-  // no status subtitle, but it still drives the workbench -> interview
-  // connector, which turns brand once ALL of stages 1-5 are complete.
-  const workbenchDone = firstIncomplete < 0 || firstIncomplete >= 5;
+  // The workbench hosts stages 1-5 (batch 4 IA): it reads as done only when
+  // ALL of them are, and it still drives the workbench -> interview connector.
+  const workbenchDone = completion.slice(0, 5).every(Boolean);
   // `phase` is lifted onto the entry so the group-label logic below needs no
   // `in`-narrowing over the const-union nav item types.
   const flowEntries: Array<{ item: NavItem; status: FlowStatus; phase?: string }> = [
-    { item: workbenchNavItem, status: workbenchDone ? "done" : "current" },
-    ...pipelineNavItems.map((item) => ({ item, status: flowStatus(item.step), phase: item.phase })),
+    { item: workbenchNavItem, status: entryStatus(workbenchDone, workbenchNavItem.href) },
+    ...pipelineNavItems.map((item) => ({
+      item,
+      status: entryStatus(completion[item.step - 1] ?? false, item.href),
+      phase: item.phase,
+    })),
   ];
 
-  // Batch 24: progress card derivation -- all of it display-only over the
-  // same completion array. `next` is the first incomplete stage AFTER the
-  // frontier (out-of-order completion is possible since gates are advisory).
+  // Batch 30: the progress card is a ring over the same completion array --
+  // the "x/11" figure, the frontier step line and the next-step link are gone.
   const doneCount = completion.filter(Boolean).length;
   const progressPct = Math.round((doneCount / STAGE_COUNT) * 100);
-  const currentStep = firstIncomplete >= 0 ? workflowSteps[firstIncomplete] : null;
-  let nextIndex = -1;
-  if (firstIncomplete >= 0) {
-    for (let index = firstIncomplete + 1; index < completion.length; index += 1) {
-      if (!completion[index]) {
-        nextIndex = index;
-        break;
-      }
-    }
-  }
+  const pipelineComplete = doneCount >= STAGE_COUNT;
   const noActiveProject = workflow !== undefined && !workflow.activeProject;
 
   // Utility entries keep the plain batch-22 treatment: no subtitle, no icon.
@@ -375,7 +399,9 @@ export function AppShell({ children }: Readonly<{ children: React.ReactNode }>) 
           </ol>
         </nav>
         {/* Batch 24: the live progress card absorbs the leftover vertical space
-            on tall screens (wrapper flex:1, card top-aligned). */}
+            on tall screens (wrapper flex:1, card top-aligned).  Batch 30: the
+            ring replaces the linear bar and the x/11 narrative; the copy next
+            to it names the page the user is actually on. */}
         <div className="flow-progress-wrap">
           {noActiveProject ? (
             <div className="flow-progress flow-progress-empty">
@@ -385,40 +411,40 @@ export function AppShell({ children }: Readonly<{ children: React.ReactNode }>) 
             </div>
           ) : (
             <div className="flow-progress">
-              <div className="flow-progress-head">
-                <span>流水线进度</span>
-                <strong className="num">
-                  {Math.round(doneCountDisplay)}/{STAGE_COUNT}
-                </strong>
+              <div className="flow-progress-body">
+                <div className="flow-progress-ring-wrap">
+                  <svg
+                    className="flow-progress-ring"
+                    viewBox="0 0 48 48"
+                    role="progressbar"
+                    aria-valuenow={doneCount}
+                    aria-valuemin={0}
+                    aria-valuemax={STAGE_COUNT}
+                    aria-label={`流水线进度 ${progressPct}%`}
+                  >
+                    <circle className="flow-progress-ring-track" cx="24" cy="24" r="20" />
+                    <circle
+                      className="flow-progress-ring-arc"
+                      cx="24"
+                      cy="24"
+                      r="20"
+                      strokeDasharray={FLOW_RING_CIRCUMFERENCE}
+                      strokeDashoffset={
+                        FLOW_RING_CIRCUMFERENCE * (1 - Math.min(Math.max(progressDisplay, 0), 100) / 100)
+                      }
+                    />
+                  </svg>
+                  <strong className="flow-progress-pct num">{Math.round(progressDisplay)}%</strong>
+                </div>
+                <div className="flow-progress-copy">
+                  <div className="flow-progress-page">当前页面 · {pageTitle}</div>
+                  {pipelineComplete && (
+                    <Link className="flow-progress-next" href="/history" onClick={() => setSidebarOpen(false)}>
+                      完成并归档 →
+                    </Link>
+                  )}
+                </div>
               </div>
-              <div
-                className="flow-progress-bar"
-                role="progressbar"
-                aria-valuenow={doneCount}
-                aria-valuemin={0}
-                aria-valuemax={STAGE_COUNT}
-              >
-                <span style={{ width: `${progressPct}%` }} />
-              </div>
-              {currentStep ? (
-                <div className="flow-progress-row">当前 · {currentStep.label}</div>
-              ) : (
-                <div className="flow-progress-row">当前 · 已全部完成</div>
-              )}
-              {currentStep && nextIndex >= 0 && (
-                <Link
-                  className="flow-progress-next"
-                  href={workflowSteps[nextIndex].href}
-                  onClick={() => setSidebarOpen(false)}
-                >
-                  下一步 · {workflowSteps[nextIndex].label} →
-                </Link>
-              )}
-              {!currentStep && (
-                <Link className="flow-progress-next" href="/history" onClick={() => setSidebarOpen(false)}>
-                  完成并归档 →
-                </Link>
-              )}
             </div>
           )}
         </div>

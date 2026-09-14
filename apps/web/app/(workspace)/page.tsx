@@ -21,7 +21,7 @@ import { ChartRenderer } from "@/components/analysis/ChartRenderer";
 import { ReportMarkdown } from "@/components/analysis/ReportMarkdown";
 import { JobProgress } from "@/components/common/JobProgress";
 import { toChartOption } from "@/lib/chartOption";
-import { getActiveProjectId, setActiveProjectId } from "@/lib/workflow";
+import { getActiveProjectId, notifyWorkflowChanged, setActiveProjectId } from "@/lib/workflow";
 import { formatDateTime, formatFileSize } from "@/lib/format";
 import { UPLOAD_ACCEPT_ATTR, UPLOAD_FORMAT_HINT, UPLOAD_MAX_MB } from "@/lib/upload";
 
@@ -236,6 +236,9 @@ export default function WorkbenchPage() {
       setProjects((current) => [...current, project]);
       setProjectId(project.id);
       setActiveProjectId(project.id);
+      // Batch 30: the sidebar ring refreshes right away (it listens for this
+      // event; the slow poll is only the safety net).
+      notifyWorkflowChanged();
       setNotice(`已创建项目「${project.name || name}」`);
     } catch (cause) {
       setFailure(cause instanceof Error ? cause.message : "创建项目失败");
@@ -260,6 +263,10 @@ export default function WorkbenchPage() {
       const nextId = remaining[0]?.id || "";
       setProjectId(nextId);
       setActiveProjectId(nextId || null);
+      // Batch 30: unconditional on purpose -- setActiveProjectId only fires its
+      // event on a real change, so deleting the stored id (nextId === stored)
+      // would leave the sidebar showing the deleted project's progress.
+      notifyWorkflowChanged();
       setReport(null);
       setHistory([]);
       setCharts([]);
@@ -357,6 +364,9 @@ export default function WorkbenchPage() {
         : "failed";
       if (!mountedRef.current) return;
       const fresh = await refreshReport(targetReportId);
+      // Batch 30: the narration finished (either way) -- nudge the sidebar so
+      // its progress reflects the current state without waiting for the poll.
+      notifyWorkflowChanged();
       if (!fresh || fresh.status !== "succeeded") {
         setNarrationNotice(narrationFailureNotice(fresh?.error_code, outcome));
         setNarrationNoticeTone("error");
@@ -456,6 +466,10 @@ export default function WorkbenchPage() {
         return;
       }
 
+      // Batch 30: stages 1-5 just landed in the database -- refresh the
+      // sidebar ring immediately instead of waiting for the poll.
+      notifyWorkflowChanged();
+
       setProgressNote("分析完成，正在计算数据概况…");
       const computed = await computeReport(projectId);
       setPhase("idle");
@@ -520,7 +534,7 @@ export default function WorkbenchPage() {
       {/* 无活跃项目时的引导（batch 9：一个项目 = 一次工作流） */}
       {!projectId && (
         <section className="card empty-state" style={{ marginBottom: 16 }}>
-          <h1 style={{ fontSize: 20, margin: 0 }}>新建项目，开始一次完整的数据分析工作流</h1>
+            <h1 style={{ fontSize: 20, margin: 0 }}>新建项目，开始一次完整的数据分析工作流</h1>
           <p style={{ color: "var(--muted)" }}>
             上传 → 自动分析 → AI 采访 → 洞察裁决 → 问题 → 方案 → 决策 → 交付，全程围绕一个项目沉淀。
           </p>

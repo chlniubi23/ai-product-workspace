@@ -451,6 +451,61 @@ button {
   background: var(--brand);
   transition: width 0.4s ease-out;
 }
+/* 批 30：侧边栏进度圆环（替代线性条与 x/11 文案）。
+   底环走 --line 淡令牌，进度弧走 --brand；rotate(-90deg) 让弧从 12 点起笔，
+   stroke-dashoffset 由 AppShell 按百分比写入。 */
+.flow-progress-body {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.flow-progress-ring-wrap {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  flex: none;
+}
+.flow-progress-ring {
+  display: block;
+  width: 48px;
+  height: 48px;
+  transform: rotate(-90deg);
+}
+.flow-progress-ring circle {
+  fill: none;
+  stroke-width: 5;
+}
+.flow-progress-ring-track {
+  stroke: var(--line);
+}
+.flow-progress-ring-arc {
+  stroke: var(--brand);
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.4s ease-out;
+}
+.flow-progress-pct {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--brand);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.flow-progress-copy {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+.flow-progress-page {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .flow-progress-row {
   color: var(--ink);
   font-size: 12px;
