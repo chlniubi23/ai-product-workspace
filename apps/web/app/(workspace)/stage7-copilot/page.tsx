@@ -50,7 +50,7 @@ export default function Stage7CopilotPage() {
         const count = result.created?.length || 0;
         setNotice(
           count > 0
-            ? `AI 已按证据生成 ${count} 条草稿：弃用不行的，必要时修改，其余一键确认。`
+            ? `AI 已基于证据生成 ${count} 条草稿；请逐条裁决——确认、修改或弃用。`
             : "AI 未能产出有证据支撑的结论，可补充采访回答后重试，或手写结论。",
         );
       } else if (result?.error_code === "LLM_TRUNCATED") {
@@ -119,7 +119,7 @@ export default function Stage7CopilotPage() {
     try {
       // The insight carries its own evidence; confirming keeps it as-is.
       await apiRequest(`/insights/${id}`, { method: "PATCH", body: JSON.stringify({ status }) });
-      setNotice(status === "confirmed" ? "已确认。" : "已弃用，保留在审计记录中。");
+      setNotice(status === "confirmed" ? "已确认。" : "已弃用；该操作已记录审计日志。");
       await refresh();
     } catch (patchError) {
       setNotice(patchError instanceof Error ? patchError.message : "操作失败");
@@ -237,8 +237,8 @@ export default function Stage7CopilotPage() {
     <div className="page">
       <WorkflowHeader
         step={7}
-        title="决策副驾"
-        description="AI 已按证据生成草稿：弃用不行的，必要时修改，其余一键确认；采纳需要证据引用。"
+        title="洞察蒸馏"
+        description="AI 基于证据生成洞察草稿；逐条裁决——确认、修改或弃用。确认须引用至少一条证据。"
         completion={completion}
         loading={loading || distilling}
       />
@@ -259,7 +259,7 @@ export default function Stage7CopilotPage() {
             </div>
             <button className="btn btn-primary" disabled={distilling} onClick={() => void distill()}>
               <Sparkles size={14} />
-              {distilling ? "蒸馏中…" : draftInsights.length ? "重新蒸馏（刷新草稿）" : "从采访生成洞察草稿"}
+              {distilling ? "蒸馏中…" : draftInsights.length ? "重新蒸馏" : "从采访生成洞察草稿"}
             </button>
             {distilling && distillStartedAt && (
               <JobProgress indeterminate currentStep="正在蒸馏洞察…" startedAt={distillStartedAt} />

@@ -74,7 +74,7 @@ export default function Stage9ProblemPage() {
         // The server already intersected the model's citations with the
         // validated insight ids (falling back to all of them when empty).
         setUsed(result.used_insight_ids || result.output.used_insight_ids || []);
-        setNotice("AI 起草完成，证据已自动关联；这是草稿，请改成自己的说法再保存。");
+        setNotice("AI 草稿已生成并自动关联证据；请复核后保存。");
       } else {
         setUsed(confirmedInsights.map((item) => item.id));
         setNotice("AI 起草不可用，可手写；已确认洞察仍会作为证据。");
@@ -137,8 +137,8 @@ export default function Stage9ProblemPage() {
     <div className="page">
       <WorkflowHeader
         step={8}
-        title="问题定义"
-        description="把讨论收敛成一句能被验证的问题陈述。已采纳的洞察会自动作为证据来源，无需手动勾选。"
+        title="产品问题"
+        description="将已确认的洞察收敛为一句可验证的问题陈述；已确认洞察自动关联为证据。"
         completion={completion}
         loading={loading || busy}
       />
@@ -155,7 +155,7 @@ export default function Stage9ProblemPage() {
             <strong>还没有已采纳的洞察</strong>
             <p>问题定义必须建立在已采纳的洞察上。</p>
             <Link className="btn btn-primary btn-sm" href="/stage7-copilot">
-              前往第 7 步·决策副驾 <ChevronRight size={13} />
+              前往洞察蒸馏 <ChevronRight size={13} />
             </Link>
           </section>
         ) : (

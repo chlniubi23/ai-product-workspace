@@ -138,13 +138,11 @@ export function WorkflowGate({
           <Info size={17} />
         </div>
         <div className="workflow-advisory-copy">
-          <strong>
-            建议先完成第 {missingStep.number} 步 · {missingStep.label}
-          </strong>
-          <p>你可以继续在本步骤操作。跳过前置步骤时证据链可能不完整，提交时服务端仍会校验证据引用。</p>
+          <strong>建议先完成：{missingStep.label}</strong>
+          <p>当前页面仍可操作；缺少前置产出时证据链可能不完整，提交时服务端将校验证据引用。</p>
           <Link className="btn btn-subtle btn-sm" href={missingStep.href}>
             <ArrowLeft size={13} />
-            返回第 {missingStep.number} 步
+            前往 {missingStep.label}
           </Link>
         </div>
       </section>

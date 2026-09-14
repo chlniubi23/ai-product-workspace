@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useState } from "react";
 import { ArrowRight, Database, Eye, EyeOff, LockKeyhole } from "lucide-react";
 import { apiRequest, saveSession } from "@/lib/api";
@@ -46,7 +45,7 @@ export default function LoginPage() {
           </div>
           <div>
             <div className="brand-name">AI Product Workspace</div>
-            <div className="brand-caption">让证据连接到决策 · 数据驱动的产品决策工作台</div>
+            <div className="brand-caption">让证据连接到决策</div>
           </div>
         </div>
         <form className="login-form" onSubmit={submit}>
@@ -69,8 +68,8 @@ export default function LoginPage() {
           <h2>{mode === "login" ? "欢迎回来" : "创建 Owner 账号"}</h2>
           <p>
             {mode === "login"
-              ? "登录你的本地工作空间，继续今天的产品工作。"
-              : "注册会同时创建一个初始工作空间。"}
+              ? "登录以继续你的产品分析工作。"
+              : "注册后自动创建你的工作空间。"}
           </p>
           {mode === "register" && (
             <>
@@ -127,7 +126,6 @@ export default function LoginPage() {
               <input type="checkbox" defaultChecked style={{ accentColor: "var(--brand)" }} />
               记住我
             </label>
-            <Link href="#">忘记密码？</Link>
           </div>
           {error && (
             <div className="form-error" role="alert">
@@ -146,7 +144,7 @@ export default function LoginPage() {
           </button>
           <div className="form-hint">
             <LockKeyhole size={13} />
-            <span>这是本地账号登录。AI 请求只会由服务端安全转发，浏览器不会接触模型密钥。</span>
+            <span>本地账号体系；AI 请求均由服务端转发，密钥不会下发至浏览器。</span>
           </div>
           <p style={{ textAlign: "center", marginTop: 24, color: "var(--muted)", fontSize: 12 }}>
             {mode === "login" ? "还没有账号？" : "已有账号？"}{" "}

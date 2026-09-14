@@ -406,7 +406,7 @@ export function AppShell({ children }: Readonly<{ children: React.ReactNode }>) 
           {noActiveProject ? (
             <div className="flow-progress flow-progress-empty">
               <Link className="btn btn-primary btn-sm" href="/" onClick={() => setSidebarOpen(false)}>
-                新建项目，开始第一次分析
+                新建项目
               </Link>
             </div>
           ) : (

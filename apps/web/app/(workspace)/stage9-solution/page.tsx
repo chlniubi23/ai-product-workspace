@@ -175,7 +175,7 @@ export default function Stage10SolutionPage() {
       <WorkflowHeader
         step={9}
         title="方案讨论"
-        description="针对已确认的问题列出多个候选方案，比较取舍后选定一个。选定动作会把其他方案标记为未采纳，留下比较痕迹。"
+        description="基于已确认的问题生成多个候选方案，比较后选定其一；未选方案须记录落选理由，形成决策依据。"
         completion={completion}
         loading={loading || busy}
       />

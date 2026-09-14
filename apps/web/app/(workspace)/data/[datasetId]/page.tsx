@@ -223,7 +223,7 @@ export default function DatasetDetailPage({ params }: { params: { datasetId: str
           {rolesComplete && (
             <Link className="btn btn-primary" href="/data">
               <ArrowRight size={15} />
-              进入体检
+              进入质量评估
             </Link>
           )}
           <button className="btn" onClick={removeDataset} disabled={!remote}>
@@ -324,11 +324,11 @@ function Dictionary({
         <div className="form-hint" style={{ margin: "12px 17px 0", justifyContent: "space-between" }}>
           <span>
             <Check size={13} />
-            必需字段角色已确认，可以开始体检。
+            必需字段角色已确认，可以开始质量评估。
           </span>
           <Link className="btn btn-primary btn-sm" href="/data">
             <ArrowRight size={13} />
-            进入体检
+            进入质量评估
           </Link>
         </div>
       )}

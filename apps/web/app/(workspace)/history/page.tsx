@@ -60,7 +60,7 @@ export default function HistoryPage() {
             <span>历史</span>
           </div>
           <h1>历史工作流</h1>
-          <p>已完成并归档的项目在这里只读回看；恢复到活跃后可继续编辑。</p>
+          <p>已归档项目在此只读回看；恢复后可继续编辑。</p>
         </div>
       </header>
       <SnapshotMeta snapshot={snapshot} />
@@ -87,8 +87,8 @@ export default function HistoryPage() {
       ) : archived.length === 0 ? (
         <section className="card empty-state" style={{ marginTop: 16 }}>
           <History size={20} />
-          <strong>还没有归档的工作流</strong>
-          <p>在第 11 步生成文档后点「完成并归档」，完成的工作流会出现在这里。</p>
+          <strong>暂无归档项目</strong>
+          <p>在交付页生成文档并完成归档后，项目将显示在此处。</p>
         </section>
       ) : (
         <div className="grid grid-2" style={{ marginTop: 16 }}>

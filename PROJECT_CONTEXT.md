@@ -104,7 +104,7 @@ AI_Product_Workspace/
         │       └── history/page.tsx、history/[projectId]/page.tsx
         │       └── stage6-interview .. stage11-prd/   #   六个有序阶段页
         │       └── （settings 页已随第二十六批删除，目录不存在）
-        ├── components/          #   layout/AppShell.tsx(638) · workflow/WorkflowFrame.tsx(180) · common/JobProgress.tsx · analysis/{ChartRenderer,ReportMarkdown} · hooks/useCountUp.ts
+        ├── components/          #   layout/AppShell.tsx(664) · workflow/WorkflowFrame.tsx(180) · common/JobProgress.tsx · analysis/{ChartRenderer,ReportMarkdown} · hooks/useCountUp.ts
         └── lib/                 #   api.ts · workflow.ts(490) · navigation.ts · chartOption.ts(295) · format.ts · upload.ts
 ```
 
@@ -261,6 +261,7 @@ AI_Product_Workspace/
 - **工作台上传流**：选文件 → `upload-batch` → 轮询 job（`POLL_LIMIT=150`）→ `POST auto-report/compute` **秒级渲染数据概况** → 显示中性提示「数据概况已生成，请先查看数据，再点击『开始 AI 解读』」→ 用户点「开始 AI 解读」才走 `POST auto-reports/{id}/narrate` + 轮询（`JobProgress` 组件）。叙述失败按错误码分类显示中文原因 + 重试。**【实测】**
 - **各阶段页**均为「门控包裹 + API 薄封装」模式（`WorkflowFrame` 的 `WorkflowHeader`/`WorkflowGate`）。
 - **导航**：`lib/navigation.ts`（74 行）含 `pipelineNavItems`（`ai` 标记驱动 `isAiStage`）与 `legacyRouteAliases`（middleware 308 重定向，含 `/settings` → `/`）。**【实测】**
+- **侧边栏进展同步（batch 30）**：`AppShell` 的快照重载有三路触发——`[authReady, pathname]`、监听 `apw-project-changed` 与 `apw-workflow-changed`（后者由 `lib/workflow.ts:notifyWorkflowChanged()` 派发，工作台的创建/删除/解析完成/叙述完成都会调用）、外加 10 秒可见性轮询兜底；带 ref 防重入。侧边栏状态为**逐页语义**（done=门控完成 / current=用户所在页 / pending），底部卡片是 SVG 进度圆环（中心百分比 + 「当前页面 · {pageTitle}」），不再有 x/11 与「前沿步骤」叙事。
 
 ### 9.1 ⚠️ 未提交的前端视觉大改（**【新发现】**，详见 §13.2）
 
@@ -280,7 +281,7 @@ AI_Product_Workspace/
 ## 10. 当前完成度（**【实测】** 2026-09-13）
 
 **已实现且验证**：
-- 后端测试套件 **374 passed, 1 xfailed**（375 收集，**78.74s**，实测运行；= 计算层修复批的 375 − 删除的 9 个 `test_enhanced_engine` 用例 + 本批新增 6）。速度从 ~210s 降到 ~78s，来自测试库 `journal_mode=MEMORY` + `synchronous=OFF`。覆盖：RBAC 与 workspace 隔离、数据管线（上传/版本/质量）、分析引擎全类型、增强相关性/类型感知/离群摘要与 AI 防火墙契约、**计算层 4 项正确性缺陷（血缘方向 / 离群单一口径 / 类型合规 / 中文长句 identifier 误判）**、**双维度质量与排除明细可审计**、**测试运行时位置与日志模式守护**、AI 降级边界（无 key 绝不 500、输出契约、上下文白名单、反馈原文不外泄）、决策链规则、项目级联删除、报告叙述消毒、采访/蒸馏、文档并行生成、字段语义、用户资料。
+- 后端测试套件 **378 passed, 1 xfailed**（379 收集，78.67s，实测运行；= 计算层修复批的 375 − 删除的 9 个 `test_enhanced_engine` 用例 + 双维度质量批 6 + 标签边界批 4）。速度从 ~210s 降到 ~78s，来自测试库 `journal_mode=MEMORY` + `synchronous=OFF`。覆盖：RBAC 与 workspace 隔离、数据管线（上传/版本/质量）、分析引擎全类型、增强相关性/类型感知/离群摘要与 AI 防火墙契约、**计算层 5 项正确性缺陷（血缘方向 / 离群单一口径 / 类型合规 / 中文长句 identifier 误判 / 文本指标标签吞数字）**、**双维度质量与排除明细可审计**、**测试运行时位置与日志模式守护**、AI 降级边界（无 key 绝不 500、输出契约、上下文白名单、反馈原文不外泄）、决策链规则、项目级联删除、报告叙述消毒、采访/蒸馏、文档并行生成、字段语义、用户资料。
 - 17 个 Alembic 迁移可从零建库；`.env` 已配置 DeepSeek；前后端均可本地跑通。
 - 前端 11 阶段页面、工作台、数据管理、历史回看齐全（**设置页已随第二十六批删除**）。
 - **全链路已真实手动冒烟走通**（11 阶段版 2026-09-01）。
@@ -418,16 +419,17 @@ AI_Product_Workspace/
 
 ### 13.3 可验证指标（**【实测】** 2026-09-13）
 
-| 指标 | 整理批提交前 | 计算层修复批 | 计算层第二/三批 | 第四批·标签修复（当前，已提交） |
-|---|---|---|---|---|
-| `ruff check app tests` | **0 错** | **0 错** | **0 错** | **0 错** |
-| `pytest tests -q` | **366 passed, 1 xfailed**（236.79s） | **375 passed, 1 xfailed**（210.02s） | **374 passed, 1 xfailed**（210.02s / 103.49s 复跑） | **378 passed, 1 xfailed**（78.67s） |
-| `pytest --collect-only -q` | 367 collected | 376 collected | 375 collected | **379 collected** |
-| 首次复跑异常 | `test_report_narration.py` 1 failed（`seen >= 3` 期望过期）→ 修正为 `>= 2` | 无失败 | 无失败 | 无失败 |
-| 回收站增量（跑一轮全量） | **约 1 万条** `api-test.db-journal` | 未测（测试运行时仍在仓库树内） | **0 条**（实测 155 → 155） | 0（同机制） |
-| `git status --porcelain -uall` | 空（除被忽略项） | 18 改 1 新 | 18 改 3 新 2 删 | **干净**（四批已全部入库） |
-| 路由数 | 137（14 router） | 137（未改动） | 137（**未改动**） | 137（**未改动**） |
-| Alembic 迁移 | 17（0001..0017） | 17（未改动） | 17（**未改动**） | 17（**未改动**） |
+| 指标 | 整理批提交前 | 计算层修复批 | 计算层第二/三批 | 第四批·标签修复 | 侧边栏批 + 文案批（已提交） |
+|---|---|---|---|---|---|
+| `ruff check app tests` | **0 错** | **0 错** | **0 错** | **0 错** | 0 错（未改动后端） |
+| `pytest tests -q` | **366 passed, 1 xfailed**（236.79s） | **375 passed, 1 xfailed**（210.02s） | **374 passed, 1 xfailed**（210.02s / 103.49s 复跑） | **378 passed, 1 xfailed**（78.67s） | 378/1xf（未改动后端） |
+| `pytest --collect-only -q` | 367 collected | 376 collected | 375 collected | **379 collected** | 379（未改动） |
+| 首次复跑异常 | `test_report_narration.py` 1 failed（`seen >= 3` 期望过期）→ 修正为 `>= 2` | 无失败 | 无失败 | 无失败 | 无失败 |
+| 回收站增量（跑一轮全量） | **约 1 万条** `api-test.db-journal` | 未测（测试运行时仍在仓库树内） | **0 条**（实测 155 → 155） | 0（同机制） | 0（同机制） |
+| `git status --porcelain -uall` | 空（除被忽略项） | 18 改 1 新 | 18 改 3 新 2 删 | **干净**（计算层四批已入库） | **干净**（侧边栏批 + 文案批已入库） |
+| 前端门禁 | — | — | — | — | `typecheck`/`lint` 0 错误 |
+| 路由数 | 137（14 router） | 137（未改动） | 137（**未改动**） | 137（**未改动**） | 137（**未改动**） |
+| Alembic 迁移 | 17（0001..0017） | 17（未改动） | 17（**未改动**） | 17（**未改动**） | 17（**未改动**） |
 
 ### 13.4 计算层修复批 + 测试环境批（**已修改未提交**，2026-09-13 第二/三批）
 
@@ -459,6 +461,19 @@ AI_Product_Workspace/
 | `apps/api/app/analytics/text_metrics.py`（标签正则） | +17 / -8 | **第四批（2026-09-14）**：标签末字符必须是字母/汉字 + 标签内层数字不得紧跟单位字符，修复「标签吞数字」P0（详见 §11.5） |
 | `apps/api/tests/test_parsing.py` | +45 / 0 | **第四批**：新增 4 个抽取用例（无分隔符 / 无单位 / 内层数字标签 / 长句双指标） |
 | `apps/api/tests/test_dual_quality_audit.py` | +1 / -1 | **第四批**：同名覆盖用例的期望值随标签修复由 45.0 更正为 110000.0（**因预期口径变化而更新的断言**） |
+
+**前端侧边栏进展指示重构（batch 30，2026-09-14，已提交 `5a83193`）**
+
+| 文件 | 性质 |
+|---|---|
+| `apps/web/components/layout/AppShell.tsx` | 状态改为逐页语义（done=门控 / current=用户所在页 / pending，优先级 done > current > pending），删除 `firstIncomplete`/`flowStatus`/`currentStep`/`nextIndex` 与 `workflowSteps` 导入；底部卡片改 SVG 圆环（中心百分比走 `useCountUp`，`role="progressbar"`），圆环旁显示「当前页面 · {pageTitle}」；移除 x/11、「当前/下一步 · 前沿步骤」；快照重载三路触发（导航 + 两个事件 + 10s 可见性轮询，ref 防重入） |
+| `apps/web/lib/workflow.ts` | 新增导出 `notifyWorkflowChanged()`（派发 `apw-workflow-changed`）；`stepCompletion()` 门控定义零改动 |
+| `apps/web/app/(workspace)/page.tsx` | 项目创建/删除（删除**无条件**通知，覆盖 `nextId === 已存 id` 的边缘情况）、解析完成、AI 叙述完成后调用 `notifyWorkflowChanged()` |
+| `apps/web/app/globals.css` | 新增 `.flow-progress-body/-ring/-ring-track/-ring-arc/-pct/-copy/-page`（底环 `--line`、弧 `--brand`、`rotate(-90deg)`、0.4s 过渡），置于现有 `.flow-progress*` 区域 |
+
+门禁：`npm run typecheck` 与 `npm run lint` 均 0 错误；未引入新依赖（圆环为内联 SVG/CSS）。
+
+**全站文案专业化（batch 31，2026-09-14，已提交）**：纯文案改动——统一陈述式语气与术语（确定性计算引擎 / 质量评估 / 洞察蒸馏 / 草稿-确认-采用 / 落选理由）、导航与页头命名统一（决策副驾→洞察蒸馏、PRD→交付文档、问题定义→产品问题、接数据→数据管理）、移除用户可见 emoji（📊🎤📈🔒）与登录页"忘记密码"死链、门控提示不再出现「第 N 步」。涉及 14 个文件（`lib/navigation.ts` 只改 label、href 不动）；验收 grep（emoji 与旧术语）为零；`typecheck`/`lint` 0 错误。
 
 **本批实测**（**2026-09-14 复核更正**：原文误写 377 passed/378 收集/76.81s，与 §10、§13.3 及独立复验不符）：`ruff check app tests` 0 错；`pytest tests -q` → **374 passed, 1 xfailed（375 收集）**，耗时随机器波动、以最近一次实跑为准（约 78–105s；基线 366/1 → +9 计算层用例 + 2 环境守护用例，**零回归**）。**回收站增量实测为 0**（改造前每轮约 +1 万条）。
 

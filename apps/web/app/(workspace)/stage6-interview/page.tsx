@@ -32,7 +32,7 @@ export default function Stage6InterviewPage() {
   const [manualText, setManualText] = useState("");
   const [manualInfo, setManualInfo] = useState("");
   // Batch 20: askNext needs a visible loading state (one LLM call, 5-15s).
-  // The question card shows "AI 正在构思下一个问题…" while this is set.
+  // The question card shows "AI 正在生成下一个问题…" while this is set.
   const [askingNext, setAskingNext] = useState(false);
   const [lastFailed, setLastFailed] = useState(false);
   const askNextInFlight = useRef(false);
@@ -200,7 +200,7 @@ export default function Stage6InterviewPage() {
       <WorkflowHeader
         step={6}
         title="AI 采访"
-        description="一次一问、围绕数据发现、最多 10 问、可随时结束；结束时生成信息小结，带着明确依据进入下一步。"
+        description="基于数据发现逐题访谈：每轮一问，最多 10 问，可随时结束。结束后生成信息小结，作为洞察蒸馏的输入。"
         completion={completion}
         loading={loading || busy}
       />
@@ -214,8 +214,8 @@ export default function Stage6InterviewPage() {
         {!projectId ? (
           <section className="card empty-state">
             <MessageSquare size={20} />
-            <strong>还没有项目</strong>
-            <p>先在工作台上传数据并创建项目。</p>
+            <strong>暂无项目</strong>
+            <p>请先在工作台创建项目并上传数据。</p>
             <Link className="btn btn-primary btn-sm" href="/">
               返回工作台 <ChevronRight size={13} />
             </Link>
@@ -230,7 +230,7 @@ export default function Stage6InterviewPage() {
                 <div className="card-head">
                   <div>
                     <h2 className="card-title">采访小结</h2>
-                    <div className="card-kicker">带着这些依据进入第 7 步洞察蒸馏。</div>
+                    <div className="card-kicker">以下结论将作为洞察蒸馏的输入。</div>
                   </div>
                   <span className="tag tag-green">采访完成</span>
                 </div>
@@ -262,7 +262,7 @@ export default function Stage6InterviewPage() {
                 </div>
                 <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
                   <Link className="btn btn-primary btn-sm" href="/stage7-copilot">
-                    前往决策副驾 <ChevronRight size={13} />
+                    前往洞察蒸馏 <ChevronRight size={13} />
                   </Link>
                 </div>
               </section>
@@ -283,7 +283,7 @@ export default function Stage6InterviewPage() {
                 {askingNext ? (
                   <div className="empty-state" style={{ minHeight: 120 }} role="status">
                     <Sparkles size={14} className="animate-spin" />
-                    <strong>AI 正在构思下一个问题…</strong>
+                    <strong>AI 正在生成下一个问题…</strong>
                     <p>回答已记录；新问题基于报告发现与你的回答生成。</p>
                   </div>
                 ) : current ? (
@@ -304,7 +304,7 @@ export default function Stage6InterviewPage() {
                     <label className="field" style={{ marginTop: 10 }}>
                       <textarea
                         rows={3}
-                        placeholder="写下你的回答…"
+                        placeholder="输入你的回答…"
                         value={answerDraft}
                         onChange={(event) => setAnswerDraft(event.target.value)}
                       />
@@ -330,7 +330,7 @@ export default function Stage6InterviewPage() {
                   <div className="empty-state" style={{ minHeight: 120 }}>
                     <MessageSquare size={18} />
                     <strong>采访已结束</strong>
-                    <p>{completeNote || "可手动补充要点，或前往第 7 步生成洞察草稿。"}</p>
+                    <p>{completeNote || "可手动补充要点，或前往洞察蒸馏生成草稿。"}</p>
                     {lastFailed && (
                       <button
                         className="btn btn-subtle btn-sm"
@@ -419,7 +419,7 @@ export default function Stage6InterviewPage() {
               <div className="card-head">
                 <div>
                   <h2 className="card-title">手动补充</h2>
-                  <div className="card-kicker">随时补充要点或信息，与采访回答同样进入第 7 步蒸馏。</div>
+                  <div className="card-kicker">补充要点与采访回答一并进入洞察蒸馏。</div>
                 </div>
               </div>
               <label className="field">
@@ -443,7 +443,7 @@ export default function Stage6InterviewPage() {
                 <textarea
                   rows={2}
                   value={manualInfo}
-                  placeholder="把你知道的信息写在这里"
+                  placeholder="填写你所掌握的信息"
                   onChange={(event) => setManualInfo(event.target.value)}
                 />
               </label>
@@ -460,7 +460,7 @@ export default function Stage6InterviewPage() {
 
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
               <Link className="btn btn-primary btn-sm" href="/stage7-copilot">
-                下一步·决策副驾 <ChevronRight size={13} />
+                下一步 · 洞察蒸馏 <ChevronRight size={13} />
               </Link>
             </div>
           </>

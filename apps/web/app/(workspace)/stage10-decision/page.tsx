@@ -232,7 +232,7 @@ export default function Stage11DecisionPage() {
       <WorkflowHeader
         step={10}
         title="产品决策"
-        description="提交后进入待审批，批准或驳回（驳回必须写明理由）。同一账号可先提交再审批；用两个账号登录即可演示双人治理。"
+        description="决策提案提交后进入独立审批：批准或驳回，驳回须附理由。支持单人演示，亦可用双账号模拟双人审批。"
         completion={completion}
         loading={loading || busy}
       />

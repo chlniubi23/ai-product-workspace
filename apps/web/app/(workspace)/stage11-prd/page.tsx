@@ -269,8 +269,8 @@ export default function Stage11PrdPage() {
     <div className="page">
       <WorkflowHeader
         step={11}
-        title="交付"
-        description="AI 依据已确认洞察、采访回答、已批准决策与数据聚合撰写文档，生成后可编辑并导出。"
+        title="交付文档"
+        description="基于已确认洞察、采访回答与已批准决策生成交付文档；支持编辑并导出 Markdown。"
         completion={completion}
         loading={loading || busy}
       />

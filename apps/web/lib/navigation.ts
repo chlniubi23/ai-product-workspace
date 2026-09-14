@@ -11,11 +11,11 @@
  */
 export const pipelineNavItems = [
   { href: "/stage6-interview", label: "AI 采访", step: 6, icon: "message", ai: true, phase: "insight" },
-  { href: "/stage7-copilot", label: "决策副驾", step: 7, icon: "sparkles", ai: true, phase: "insight" },
+  { href: "/stage7-copilot", label: "洞察蒸馏", step: 7, icon: "sparkles", ai: true, phase: "insight" },
   { href: "/stage8-problem", label: "产品问题", step: 8, icon: "target", ai: true, phase: "decision" },
   { href: "/stage9-solution", label: "方案讨论", step: 9, icon: "route", ai: true, phase: "decision" },
   { href: "/stage10-decision", label: "产品决策", step: 10, icon: "gavel", ai: false, phase: "decision" },
-  { href: "/stage11-prd", label: "PRD", step: 11, icon: "file", ai: true, phase: "decision" },
+  { href: "/stage11-prd", label: "交付文档", step: 11, icon: "file", ai: true, phase: "decision" },
 ] as const;
 
 /** The two bands shown as on-line badges in the sidebar stepper (batch 24:

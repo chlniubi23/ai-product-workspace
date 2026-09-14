@@ -477,7 +477,7 @@ export default function WorkbenchPage() {
       if (computed) {
         // Batch 21: narration waits for the user -- show the numbers, let
         // them read, then click 开始 AI 解读.  No automatic narrate call.
-        setNarrationNotice("数据概况已生成，请先查看数据，再点击「开始 AI 解读」。");
+        setNarrationNotice("数据概况已生成，请先查看数据，再点击「生成 AI 解读」。");
         setNarrationNoticeTone("hint");
         window.setTimeout(() => reportAnchor.current?.scrollIntoView({ behavior: "smooth" }), 120);
       } else {
@@ -497,7 +497,7 @@ export default function WorkbenchPage() {
       const computed = await computeReport(projectId);
       if (computed) {
         // Batch 21: same manual narration contract as the upload flow.
-        setNarrationNotice("数据概况已生成，请先查看数据，再点击「开始 AI 解读」。");
+        setNarrationNotice("数据概况已生成，请先查看数据，再点击「生成 AI 解读」。");
         setNarrationNoticeTone("hint");
         window.setTimeout(() => reportAnchor.current?.scrollIntoView({ behavior: "smooth" }), 120);
       }
@@ -534,9 +534,9 @@ export default function WorkbenchPage() {
       {/* 无活跃项目时的引导（batch 9：一个项目 = 一次工作流） */}
       {!projectId && (
         <section className="card empty-state" style={{ marginBottom: 16 }}>
-            <h1 style={{ fontSize: 20, margin: 0 }}>新建项目，开始一次完整的数据分析工作流</h1>
+            <h1 style={{ fontSize: 20, margin: 0 }}>创建项目，开启一次完整的数据分析工作流</h1>
           <p style={{ color: "var(--muted)" }}>
-            上传 → 自动分析 → AI 采访 → 洞察裁决 → 问题 → 方案 → 决策 → 交付，全程围绕一个项目沉淀。
+            上传 → 自动分析 → AI 采访 → 洞察裁决 → 问题 → 方案 → 决策 → 交付。
           </p>
           <Link className="btn btn-primary btn-sm" href="/history">
             查看历史工作流
@@ -547,13 +547,13 @@ export default function WorkbenchPage() {
       <section className="card card-pad" style={{ marginTop: 16 }}>
         <div className="card-head">
           <div>
-            <h1 style={{ fontSize: 22, margin: 0 }}>📊 上传数据，直接得到分析报告</h1>
+            <h1 style={{ fontSize: 22, margin: 0 }}>上传数据，自动生成分析报告</h1>
             <p className="card-kicker" style={{ marginTop: 6 }}>
-              一次可传多个文件。解析、体检、挑分析维度、写报告全部自动完成——
-              <strong>数字由 Pandas 计算，报告由 AI 撰写</strong>，每一句都可追溯到统计结果。
+              支持批量上传：解析、质量评估、分析维度选择与报告撰写自动完成。
+              <strong>统计由确定性计算引擎生成，AI 仅负责叙述，结论均可追溯。</strong>
             </p>
           </div>
-          <span className="tag tag-blue">智能分析 + AI 报告</span>
+          <span className="tag tag-blue">自动分析 · AI 报告</span>
         </div>
 
         <div style={{ display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap", marginTop: 8 }}>
@@ -570,7 +570,7 @@ export default function WorkbenchPage() {
                 disabled={!projects.length || phase === "running"}
                 style={{ flex: 1 }}
               >
-                <option value="">{projects.length ? "选择现有项目" : "暂无项目 - 请先创建或新建"}</option>
+                <option value="">{projects.length ? "选择现有项目" : "暂无项目，请先创建"}</option>
                 {projects.map((project) => (
                   <option value={project.id} key={project.id}>
                     {project.name || `项目 ${projectId}`}
@@ -679,7 +679,7 @@ export default function WorkbenchPage() {
                 支持 CSV / XLSX · 最多 50MB/ 文件 · 可同时上传多个文件
               </p>
               <p style={{ color: "var(--faint)", fontSize: 11, marginTop: 10 }}>
-                🔒 自动识别 UTF-8 / UTF-8-SIG / GBK 编码
+                自动识别 UTF-8 / UTF-8-SIG / GBK 编码
               </p>
             </div>
           </div>
@@ -733,7 +733,7 @@ export default function WorkbenchPage() {
               style={{ minWidth: 180 }}
             >
               <UploadCloud size={14} />
-              {files.length > 1 ? `上传${files.length}个文件并自动分析` : "上传并开始智能分析"}
+              {files.length > 1 ? `上传 ${files.length} 个文件并开始分析` : "上传并开始分析"}
             </button>
           </div>
         </section>
@@ -744,7 +744,7 @@ export default function WorkbenchPage() {
         <section className="card workflow-loading-card" style={{ marginTop: 16 }} aria-live="polite">
           <div className="workflow-loading-dot" />
           <strong>{progressNote || "正在处理…"}</strong>
-          <p>这一步不需要你点任何按钮。完成后报告会直接出现在下方。</p>
+          <p>解析与分析自动进行，完成后报告将显示在下方。</p>
         </section>
       )}
 
@@ -773,10 +773,10 @@ export default function WorkbenchPage() {
                   <button
                     className="btn btn-primary btn-sm"
                     onClick={() => void narrateReport(report.id)}
-                    title="对当前确定性报告做一次 AI 解读"
+                    title="基于当前确定性报告生成 AI 解读（异步执行）"
                   >
                     <Sparkles size={13} />
-                    开始 AI 解读
+                    生成 AI 解读
                   </button>
                 )}
               {report.status !== "confirmed" && (
@@ -829,7 +829,7 @@ export default function WorkbenchPage() {
           </div>
           <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
             <Link className="btn btn-primary btn-sm" href="/stage6-interview">
-              🎤 进入 AI 采访 →
+              进入 AI 采访 →
             </Link>
           </div>
         </section>
@@ -840,12 +840,12 @@ export default function WorkbenchPage() {
         <section className="card card-pad" style={{ marginTop: 16 }}>
           <div className="card-head">
             <div>
-              <h2 className="card-title">📈 报告背后的计算图表</h2>
+              <h2 className="card-title">分析图表</h2>
               <div className="card-kicker">
-                共 {charts.length} 张 — 全部由<strong>Pandas</strong>计算，可直接复现。
+                共 {charts.length} 张图表，全部由<strong>确定性计算引擎</strong>生成，可复现。
               </div>
             </div>
-            <span className="tag tag-green">确定性计算 · 无 AI</span>
+            <span className="tag tag-green">确定性计算</span>
           </div>
           <div style={{ display: "grid", gap: 16 }}>
             {charts.map((chart) => (
@@ -865,7 +865,7 @@ export default function WorkbenchPage() {
         <div className="card-head">
           <div>
             <h2 className="card-title">报告历史</h2>
-            <div className="card-kicker">当前项目的分析报告（重新生成会替换旧报告）。</div>
+            <div className="card-kicker">当前项目的分析报告；重新生成将替换现有报告。</div>
           </div>
           <History size={16} />
         </div>
@@ -874,8 +874,8 @@ export default function WorkbenchPage() {
         ) : history.length === 0 ? (
           <div className="empty-state">
             <BarChart3 size={18} />
-            <strong>还没有报告</strong>
-            <p>上传数据后，报告会出现在这里。</p>
+            <strong>暂无报告</strong>
+            <p>上传数据后，分析报告将显示在此处。</p>
           </div>
         ) : (
           <div style={{ display: "grid", gap: 8 }}>

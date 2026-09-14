@@ -191,8 +191,8 @@ export default function DataPage() {
     <div className="page">
       <div className="page-heading">
         <div>
-          <h1>接数据</h1>
-          <p>先确定要回答的问题，再上传 CSV/XLSX——字段类型由解析引擎自动推断。</p>
+          <h1>数据管理</h1>
+          <p>上传 CSV / XLSX，系统自动推断字段类型并生成数据档案。</p>
         </div>
         <button className="btn btn-primary" onClick={() => setShowUpload(true)}>
           <UploadCloud size={15} />
@@ -202,7 +202,7 @@ export default function DataPage() {
       <section className="card card-pad" style={{ marginBottom: 17, borderColor: "var(--brand-border)" }}>
         <div className="card-head">
           <div>
-            <h2 className="card-title">项目上下文</h2>
+            <h2 className="card-title">项目概览</h2>
             <div className="card-kicker">
               数据、分析和后续解读都会沿用这个目标问题；切换或新建项目请到工作台。
             </div>
