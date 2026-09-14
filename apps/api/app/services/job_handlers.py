@@ -49,6 +49,7 @@ from .ai_stages import HARD_OUTPUT_CAP, _run_ai_stage
 from .analysis_pipeline import (
     _analysis_artifacts,
     _analysis_result_summary,
+    _refresh_dual_quality,
     _replace_quality_report,
     _replace_version_columns,
     _run_auto_analyses,
@@ -129,6 +130,9 @@ def _handle_dataset_parse(context: JobContext) -> JobResult:
 
     context.progress(85, "自动分析")
     auto = _run_auto_analyses(db, version, schema, frame_ext, str(payload.get("_actor_id") or ""))
+    # 分析质量回写：自动分析已产出真实产物，此时才能算出第二个质量维度。
+    # 必须在 commit 之前，且只覆盖 summary_json["dual_quality"] 这一个键。
+    _refresh_dual_quality(db, version, frame_ext, auto.get("artifacts") or [])
 
     # Batch 21: the parse result is durable before the optional AI pass starts,
     # so a rollback in the isolation branch below can never discard it.

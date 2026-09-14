@@ -131,19 +131,38 @@ def extract_text_metrics(
             coverage = entry["count"] / total_rows
             if coverage < min_label_coverage:
                 continue
-            column_name = f"{column}__{entry['display']}"
+            base_name = f"{column}__{entry['display']}"
+            column_name = base_name
+            suffix = 1
+            # 不得静默覆盖既有列：抽取列与原列（或另一个抽取列）同名时追加确定性
+            # 后缀，并把它记进 report 供人工发现。
+            while column_name in working.columns:
+                column_name = f"{base_name}__dup{suffix}"
+                suffix += 1
             working[column_name] = pd.Series(entry["rows"], dtype="float64")
             unit_note = max(entry["units"].items(), key=lambda item: item[1])[0]
-            report.append(
-                {
-                    "source_column": str(column),
-                    "metric": entry["display"],
-                    "normalized": norm,
-                    "derived_column": column_name,
-                    "coverage": round(float(coverage), 4),
-                    "unit_note": unit_note,
-                    "parsed_rows": int(entry["count"]),
-                }
-            )
+            report_entry: dict[str, Any] = {
+                "source_column": str(column),
+                "metric": entry["display"],
+                "normalized": norm,
+                "derived_column": column_name,
+                "coverage": round(float(coverage), 4),
+                "unit_note": unit_note,
+                "parsed_rows": int(entry["count"]),
+            }
+            if column_name != base_name:
+                report_entry["renamed_from"] = base_name
+            report.append(report_entry)
+
+    # 同一 normalized 指标在不同源列里可能写出不同的显示名（DAU / dau / Dau），
+    # 于是派生出多个"其实是同一个指标"的列。把显示变体记进 report 便于人工发现
+    # 指标碎片化；刻意不合并 —— 合并会改变既有派生列名契约。
+    variants: dict[str, set[str]] = {}
+    for entry in report:
+        variants.setdefault(entry["normalized"], set()).add(entry["metric"])
+    for entry in report:
+        distinct = sorted(variants.get(entry["normalized"], ()))
+        if len(distinct) > 1:
+            entry["display_variants"] = distinct
 
     return working, report

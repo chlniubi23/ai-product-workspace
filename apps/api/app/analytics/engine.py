@@ -19,7 +19,7 @@ from uuid import uuid4
 import numpy as np
 import pandas as pd
 
-from .corelation import compute_full_correlation_matrix
+from .corelation import EXCLUDED_PAIRS_DETAIL_LIMIT, compute_full_correlation_matrix
 from .dag import ColumnLineage
 from .outliers import build_raw_outliers_map
 
@@ -290,6 +290,7 @@ class AnalysisEngine:
         correlations: list[dict[str, Any]] = []
         correlation_pairs_detail: list[dict[str, Any]] = []
         excluded_correlation_pairs = 0
+        excluded_correlation_pairs_detail: list[dict[str, Any]] = []
         if len(numeric_columns) >= 2:
             # Phase 1: the EDA correlation block is backed by the enhanced
             # correlation analysis (significance tests, robust estimates and
@@ -300,13 +301,16 @@ class AnalysisEngine:
             # ``digest._correlation_findings`` read it; the richer statistics are
             # appended alongside it instead of replacing it.
             outliers_map = build_raw_outliers_map(frame, numeric_columns)
-            matrix, results, mechanical_excluded, excluded_derived_pairs = compute_full_correlation_matrix(
+            matrix, results, mechanical_excluded, excluded_derived_detail = compute_full_correlation_matrix(
                 frame,
                 numeric_columns,
                 lineage_map,
                 outliers_map=outliers_map,
             )
-            excluded_correlation_pairs = excluded_derived_pairs + len(mechanical_excluded)
+            excluded_correlation_pairs = len(excluded_derived_detail) + len(mechanical_excluded)
+            # 人工可审计明细：为什么这对被排除。键不在防火墙白名单里，出站会被
+            # 丢弃 —— 刻意如此，不要为了让它进 AI 而放宽 ``_AGGREGATE_LIST_KEYS``。
+            excluded_correlation_pairs_detail = [*excluded_derived_detail, *mechanical_excluded]
             for result in results:
                 value = result.pearson_r
                 correlations.append({
@@ -323,6 +327,9 @@ class AnalysisEngine:
             "correlations": correlations,
             "correlation_pairs_detail": _jsonable(correlation_pairs_detail),
             "excluded_correlation_pairs": int(excluded_correlation_pairs),
+            "excluded_correlation_pairs_detail": _jsonable(
+                excluded_correlation_pairs_detail[:EXCLUDED_PAIRS_DETAIL_LIMIT]
+            ),
             "preview": _jsonable(frame.head(10).replace({np.nan: None}).to_dict(orient="records")),
         }
         config = {"analysis_type": "eda", "top_n": top_n}

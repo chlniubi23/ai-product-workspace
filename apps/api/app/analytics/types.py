@@ -160,9 +160,11 @@ class OrdinalStatistics:
             'distribution': self.distribution,
             'percentages': self.percentages,
             'mode': self.mode,
-            'mode_percentage': round(self.mode_percentage, 4) if self.mode_percentage else None,
-            'mean': round(self.mean, 2) if self.mean else None,
-            'median': round(self.median, 2) if self.median else None,
+            'mode_percentage': round(self.mode_percentage, 4) if self.mode_percentage is not None else None,
+            # ``is not None`` 而非真值判断：序数列的均值/中位数完全可能是 0（例如
+            # 以 0 为主的满意度量表），用 ``if self.mean`` 会把合法的 0 当成缺失。
+            'mean': round(self.mean, 2) if self.mean is not None else None,
+            'median': round(self.median, 2) if self.median is not None else None,
             'note': '推荐重点关注众数和分布形态，而非均值'
         }
 
@@ -208,9 +210,9 @@ def compute_ordinal_statistics(df: pd.DataFrame, series: pd.Series) -> OrdinalSt
     value_counts = valid_data.value_counts().to_dict()
     percentages = {k: v / len(valid_data) * 100 for k, v in value_counts.items()}
     
-    # 众数
+    # 众数（``is not None``：数值 0 也可能是众数，真值判断会把它当缺失）
     mode_val = valid_data.mode().iloc[0] if len(valid_data) > 0 else None
-    mode_pct = value_counts.get(mode_val, 0) / len(valid_data) * 100 if mode_val else None
+    mode_pct = value_counts.get(mode_val, 0) / len(valid_data) * 100 if mode_val is not None else None
     
     # 均值和中位数（仅供参考）
     mean_val = valid_data.mean() if len(valid_data) > 0 else None

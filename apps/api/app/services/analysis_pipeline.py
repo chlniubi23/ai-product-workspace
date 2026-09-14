@@ -5,12 +5,14 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..analytics.corelation import compute_full_correlation_matrix
+from ..analytics.corelation import EXCLUDED_PAIRS_DETAIL_LIMIT, compute_full_correlation_matrix
 from ..analytics.dag import build_lineage_map
 from ..analytics.engine import AnalysisEngine, choose_trend_frequency
 from ..analytics.outliers import build_outlier_aggregates, build_raw_outliers_map
+from ..analytics.quality import generate_quality_report
 from ..analytics.types import TYPE_LABELS, compute_type_aware_stats
 from ..common import _require_pandas, error, pd, serialize
 from ..models import AnalysisArtifact, AnalysisRun, DataColumn, DataQualityReport, DatasetVersion, Project, now
@@ -84,12 +86,13 @@ def _correlation_analysis_artifact(frame: pd.DataFrame, version: DatasetVersion,
     lineage_map = _lineage_for_version(frame, version)
     outliers_map = build_raw_outliers_map(frame, numeric_columns) if numeric_columns else {}
 
-    matrix, results, mechanical_excluded, excluded_derived_pairs = compute_full_correlation_matrix(
+    matrix, results, mechanical_excluded, excluded_derived_detail = compute_full_correlation_matrix(
         frame,
         numeric_columns,
         lineage_map,
         outliers_map=outliers_map,
     )
+    excluded_detail = [*excluded_derived_detail, *mechanical_excluded]
     labels = [str(column) for column in numeric_columns]
     heatmap: list[list[Any]] = []
     for row_index, row_name in enumerate(labels):
@@ -111,7 +114,8 @@ def _correlation_analysis_artifact(frame: pd.DataFrame, version: DatasetVersion,
         "chartType": "correlation_heatmap",
         "title": "Correlation analysis",
         "pairs": [result.to_dict() for result in results],
-        "excluded_correlation_pairs": excluded_derived_pairs + len(mechanical_excluded),
+        "excluded_correlation_pairs": len(excluded_detail),
+        "excluded_correlation_pairs_detail": excluded_detail[:EXCLUDED_PAIRS_DETAIL_LIMIT],
         "chart": {"type": "correlation_heatmap", "labels": labels, "data": heatmap},
         "option": option,
     }
@@ -426,6 +430,56 @@ def _replace_quality_report(db: Session, version: DatasetVersion, score: float, 
     db.add(DataQualityReport(dataset_version_id=version.id, overall_score=score, status=quality_status, summary_json=summary))
 
 
+def _analysis_quality_payload(frame: pd.DataFrame, artifacts: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """把本次自动分析的产物折算成双维度质量报告（``generate_quality_report``）。
+
+    * ``corr_results`` 取 EDA 产物的 ``correlation_pairs_detail``（元素含
+      ``robustness_note`` / ``is_significant``，兼容属性与字典两种访问方式）；
+    * ``outstats_output`` 由 anomaly 产物的 ``anomaly_count`` 构造，没有 anomaly
+      产物时传 ``{}``（``compute_analysis_quality_metrics`` 会据此判
+      ``has_outlier_detection=False``）；
+    * ``type_stats_info`` 来自 ``types.compute_type_aware_stats``。
+
+    ``artifacts`` 为空说明自动分析没有真正跑过（最常见是 ``recover_pending``
+    重放时 ``schema_auto_accepted_at`` 已置位）——此时返回 ``None``，调用方保持
+    ``_quality_summary`` 写入的解析时点基线不动，避免用空输入把真实值覆盖回去。
+    """
+
+    if not artifacts:
+        return None
+
+    eda_payload: dict[str, Any] = {}
+    anomaly_count = 0
+    for artifact in artifacts:
+        payload = artifact.get("payload_json") or {}
+        if isinstance(payload, Mapping) and "correlation_pairs_detail" in payload:
+            eda_payload = payload
+        anomaly_count += int(payload.get("anomaly_count") or 0) if isinstance(payload, Mapping) else 0
+
+    corr_results = eda_payload.get("correlation_pairs_detail") or []
+    outstats_output = {"has_outliers": anomaly_count > 0, "total_count": anomaly_count} if anomaly_count else {}
+    return generate_quality_report(frame, outstats_output, corr_results, compute_type_aware_stats(frame)).to_dict()
+
+
+def _refresh_dual_quality(db: Session, version: DatasetVersion, frame: pd.DataFrame, artifacts: list[dict[str, Any]]) -> None:
+    """解析 job 收尾：把「分析质量」真实值写进 ``summary_json["dual_quality"]``。
+
+    只覆盖这一个键 —— ``overall_score`` / ``status`` / 其它键（含
+    ``_quality_summary`` 写入的解析时点基线）一律不动，它们才是阶段 3 与
+    analysis-run 门控的唯一来源。覆盖式而非追加式，因此 ``recover_pending`` 重放
+    是幂等的。
+    """
+
+    payload = _analysis_quality_payload(frame, artifacts)
+    if payload is None:
+        return
+    report = db.scalar(select(DataQualityReport).where(DataQualityReport.dataset_version_id == version.id))
+    if report is None:
+        return
+    report.summary_json = {**(report.summary_json or {}), "dual_quality": payload}
+    db.flush()
+
+
 def _run_auto_analyses(
     db: Session,
     version: DatasetVersion,
@@ -446,11 +500,11 @@ def _run_auto_analyses(
     """
 
     if version.schema_auto_accepted_at is not None:
-        return {"run_ids": [], "plan": [], "skipped": [{"reason": "already_auto_accepted"}]}
+        return {"run_ids": [], "plan": [], "skipped": [{"reason": "already_auto_accepted"}], "artifacts": []}
     if not actor_id:
         # ``AnalysisRun.requested_by`` is NOT NULL and FK-bound to users.id
         # (app/models.py:287); without a real actor there is no run to create.
-        return {"run_ids": [], "plan": [], "skipped": [{"reason": "no_actor"}]}
+        return {"run_ids": [], "plan": [], "skipped": [{"reason": "no_actor"}], "artifacts": []}
 
     project = version.dataset.project
     stamp = now()
@@ -459,6 +513,7 @@ def _run_auto_analyses(
     plan = _auto_analysis_plan(schema)
     run_ids: list[str] = []
     skipped: list[dict[str, Any]] = []
+    all_artifacts: list[dict[str, Any]] = []
     for entry in plan:
         kind = str(entry["analysis_type"])
         try:
@@ -502,6 +557,8 @@ def _run_auto_analyses(
             run.result_summary = _analysis_result_summary(artifacts)
             db.flush()
             run_ids.append(run.id)
+            # 分析质量维度需要这些产物（correlation_pairs_detail / anomaly_count）。
+            all_artifacts.extend(artifacts)
         except Exception as exc:  # noqa: BLE001 - an optional analysis must not sink a good parse
             skipped.append({"analysis_type": kind, "reason": "error", "detail": type(exc).__name__})
             continue
@@ -519,7 +576,7 @@ def _run_auto_analyses(
             "skipped": skipped,
         },
     )
-    return {"run_ids": run_ids, "plan": plan, "skipped": skipped}
+    return {"run_ids": run_ids, "plan": plan, "skipped": skipped, "artifacts": all_artifacts}
 
 
 SUPPORTED_ANALYSIS_TYPES = {

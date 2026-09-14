@@ -17,6 +17,10 @@ from scipy import stats
 
 from .dag import ColumnLineage, should_exclude_from_correlation
 
+#: ``excluded_correlation_pairs_detail`` 的出站上限。明细是给**人工审计**用的
+#: （键不在防火墙白名单里，出站即被丢弃），因此只留一个可读的有界样本。
+EXCLUDED_PAIRS_DETAIL_LIMIT = 20
+
 
 @dataclass
 class CorrelationResult:
@@ -180,33 +184,37 @@ def compute_full_correlation_matrix(
     lineage_map: dict[str, ColumnLineage] | None = None,
     outliers_map: dict[str, list] | None = None,
     mechanical_r_threshold: float = 0.98,
-) -> tuple[pd.DataFrame, list[CorrelationResult], list[dict], int]:
+) -> tuple[pd.DataFrame, list[CorrelationResult], list[dict], list[dict]]:
     """
     计算完整的相关矩阵（排除伪相关对）.
-    
+
     Args:
         df: DataFrame
         numeric_columns: 需要分析的数值列列表
         lineage_map: 列血缘映射（用于排除派生列）
         outliers_map: 离群值映射（用于稳健相关估计）
         mechanical_r_threshold: 机械相关反向推导阈值（|r|>=该值视为派生）
-        
+
     Returns:
         (相关矩阵 DataFrame, CorrelationResult 列表, 被排除的机械相关对列表,
-         被血缘判定排除的列对数量)
+         被血缘判定排除的列对明细 ``[{'var1','var2','reason'}]``)
+
+    排除总数 = ``len(机械相关对) + len(血缘排除对)``。两类明细同形，调用方可直接
+    拼接成 ``excluded_correlation_pairs_detail`` 供人工审计（出站时会被防火墙按
+    未白名单列表丢弃 —— 这是刻意为之，见 :mod:`app.ai_context`）。
     """
     # 如果没有指定列，自动选择数值列
     if numeric_columns is None:
         numeric_columns = [
-            col for col in df.columns 
+            col for col in df.columns
             if pd.api.types.is_numeric_dtype(df[col])
         ]
-    
+
     results = []
     valid_pairs = []
     mechanical_excluded: list[dict] = []
-    excluded_derived_pairs = 0
-    
+    excluded_derived_pairs: list[dict] = []
+
     # 获取所有可能的列对
     for i, col1 in enumerate(numeric_columns):
         for col2 in numeric_columns[i+1:]:
@@ -216,11 +224,15 @@ def compute_full_correlation_matrix(
                     col1, col2, lineage_map
                 )
                 if should_exclude:
-                    excluded_derived_pairs += 1
+                    excluded_derived_pairs.append({
+                        'var1': col1,
+                        'var2': col2,
+                        'reason': explanation or '存在派生/血缘关系，已从相关性中排除',
+                    })
                     continue  # 跳过这对
-            
+
             result = compute_correlation_with_tests(df, col1, col2, outliers_map or {})
-            
+
             # 统计反向推导（命名推断的兑底）：近乎完美的线性相关 |r|>=0.98
             # 多半是机械派生（如 C=A+B、B=A+10、渗透率=周活/总量），无业务意义，
             # 从发现列表中排除并记录，避免 LLM 把数学必然当成业务洞察。
@@ -233,11 +245,11 @@ def compute_full_correlation_matrix(
                     'reason': f'|r|={abs(r_val):.3f} 接近 1，疑似派生/机械相关，已排除',
                 })
                 continue
-            
+
             results.append(result)
             valid_pairs.append((col1, col2))
-    
+
     # 构建相关矩阵
     matrix_df = df[numeric_columns].corr(method='pearson')
-    
+
     return matrix_df, results, mechanical_excluded, excluded_derived_pairs
