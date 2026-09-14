@@ -145,7 +145,7 @@ def test_digest_statements_without_labels_unchanged():
     assert by_kind["trend_shift"] == "「events」dau 最近一期（2026-09）环比下降 50.0%（上期 100 → 本期 50）。"
     assert by_kind["concentration"] == "「events」channel 高度集中于「organic」（90 条，占 90.0%）。"
     assert by_kind["constant"] == "「events」1 个字段内容完全固化（dau），不构成区分维度。"
-    assert by_kind["outlier"] == "「events」dau 有 20 个 IQR 离群值（占 20.0%），均值类结论可能被拉偏。"
+    assert by_kind["outlier"] == "「events」dau 有 20 个离群值（占 20.0%），均值类结论可能被拉偏。"
 
 
 def _labelled_aggregates() -> list[dict]:

@@ -33,6 +33,35 @@ _CN_DATE_RE = re.compile(
 )
 SAMPLE_LIMIT = 2000
 
+#: 「标识符」形状的三条边界。近唯一只是必要条件：无空格的中文长句同样"近唯一"，
+#: 但它是自由文本，必须落到 ``text`` 才能被 ``text_metrics.extract_text_metrics``
+#: 扫描。``id-0`` / ``KA001`` 这类短标识仍在边界内，判据不变。
+IDENTIFIER_MAX_LENGTH = 40
+IDENTIFIER_SENTENCE_PUNCTUATION = "。！？，、；："
+
+
+def _looks_like_identifier(values: list[Any]) -> bool:
+    """近唯一的字符串列是否具备「标识符」形状。
+
+    三条**同时**满足才算标识符：样本不含任何空白字符、长度不超过
+    :data:`IDENTIFIER_MAX_LENGTH`、且不含句读标点
+    (:data:`IDENTIFIER_SENTENCE_PUNCTUATION`)。无空格的中文长句会被后两条挡下，
+    因而归为 ``text``；短标识（``id-0``、``KA001``）不受影响。
+    """
+
+    sample = values[:20]
+    if not sample:
+        return False
+    for item in sample:
+        text = str(item)
+        if any(character.isspace() for character in text):
+            return False
+        if len(text) > IDENTIFIER_MAX_LENGTH:
+            return False
+        if any(character in IDENTIFIER_SENTENCE_PUNCTUATION for character in text):
+            return False
+    return True
+
 
 def parse_numeric(value: Any) -> float | None:
     """Parse a spreadsheet-style numeric cell into a float.
@@ -132,8 +161,11 @@ def infer_column_type_v2(series: pd.Series) -> dict[str, Any]:
     "identifier"}``.  ``semantic_type`` is one of ``numeric | datetime |
     boolean | category | text | identifier``; string columns are sampled
     through the parsers and a type wins when ≥ 80% of non-empty cells parse.
-    ``identifier`` marks near-unique string columns, ``constant`` marks
-    single-value columns (orthogonal to the main type).
+    ``identifier`` marks near-unique string columns **that also look like an
+    identifier** (compact, whitespace-free, no sentence punctuation -- see
+    :func:`_looks_like_identifier`), so prose without spaces falls through to
+    ``text``.  ``constant`` marks single-value columns (orthogonal to the main
+    type).
     """
 
     non_empty = series.dropna()
@@ -164,9 +196,9 @@ def infer_column_type_v2(series: pd.Series) -> dict[str, Any]:
         semantic, parse_rate = "datetime", datetime_rate
     elif boolean_rate >= 0.8:
         semantic, parse_rate = "boolean", boolean_rate
-    elif unique_ratio >= 0.9 and all(" " not in str(item) for item in values[:20]):
-        # Near-unique AND compact/no-space: the identifier shape.  Long
-        # prose with spaces is text even when every row differs.
+    elif unique_ratio >= 0.9 and _looks_like_identifier(values):
+        # 近唯一 **且** 具备标识符形状（紧凑、无空白、无句读）：长句与带标点的
+        # 自由文本即使无空格也不会被误判成 identifier。
         semantic, parse_rate = "identifier", 0.0
     elif unique_ratio <= 0.4:
         semantic, parse_rate = "category", 0.0

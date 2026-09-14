@@ -268,7 +268,14 @@ def _constant_findings(dataset: dict[str, Any], findings: list[dict[str, Any]]) 
 
 
 def _outlier_findings(dataset: dict[str, Any], findings: list[dict[str, Any]]) -> None:
-    """Batch 14: numeric columns whose IQR outlier share clears the threshold."""
+    """Numeric columns whose outlier share clears the threshold.
+
+    ``column["outliers"]`` is produced by ``auto_report`` from the single outlier
+    definition in ``analytics.outliers`` (IQR bounds **union** extreme z values,
+    de-duplicated per row), and ``statistics["count"]`` is the non-null sample
+    size -- the same denominator the quality report uses.  The statement says
+    "离群值" rather than "IQR 离群值" so the wording matches that definition.
+    """
 
     for column in dataset.get("metrics") or []:
         if not isinstance(column, dict):
@@ -286,7 +293,7 @@ def _outlier_findings(dataset: dict[str, Any], findings: list[dict[str, Any]]) -
             {
                 "kind": "outlier",
                 "dataset": str(dataset.get("name") or ""),
-                "statement": f"「{dataset_display(dataset)}」{display_name(column.get('name'), column.get('label'))} 有 {outliers} 个 IQR 离群值（占 {_pct(rate)}），均值类结论可能被拉偏。",
+                "statement": f"「{dataset_display(dataset)}」{display_name(column.get('name'), column.get('label'))} 有 {outliers} 个离群值（占 {_pct(rate)}），均值类结论可能被拉偏。",
                 "severity": severity,
                 "columns": [str(column.get("name"))],
                 "value": round(rate, 4),

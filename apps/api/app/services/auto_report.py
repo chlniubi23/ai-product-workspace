@@ -16,6 +16,7 @@ from ..ai_context import (
 from ..analytics.dag import build_lineage_map
 from ..analytics.digest import column_display, dataset_display
 from ..analytics.engine import AnalysisEngine, choose_trend_frequency
+from ..analytics.outliers import compute_column_outliers
 from ..analytics.text_metrics import extract_text_metrics
 from ..common import _require_pandas, model_dict
 from ..config import settings
@@ -114,15 +115,16 @@ def _compute_report_aggregates(snapshot: dict[str, Any]) -> dict[str, Any]:
                 for key in ("count", "mean", "median", "std", "min", "max")
                 if stats.get(key) is not None
             }
-            # Batch 14 distribution depth: IQR outlier count, skewness and a
+            # Batch 14 distribution depth: outlier count, skewness and a
             # binned histogram for every numeric column (derived included).
+            # The count comes from the single outlier definition in
+            # ``analytics.outliers`` so the digest's outlier rate and the
+            # quality report agree instead of using IQR-only here and
+            # IQR-union-Z there.
             numeric_series = pd.to_numeric(frame[entry_name], errors="coerce").dropna() if entry_name in frame.columns else pd.Series(dtype="float64")
             if len(numeric_series) >= 3:
-                q1, q3 = float(numeric_series.quantile(0.25)), float(numeric_series.quantile(0.75))
-                spread = q3 - q1
-                entry["outliers"] = int(
-                    ((numeric_series < q1 - 1.5 * spread) | (numeric_series > q3 + 1.5 * spread)).sum()
-                ) if spread > 0 else 0
+                outlier_stats = compute_column_outliers(frame, entry_name)
+                entry["outliers"] = int(outlier_stats.count) if outlier_stats is not None else 0
                 entry["skewness"] = round(float(numeric_series.skew()), 4)
                 bin_count = min(10, max(3, int(numeric_series.nunique())))
                 binned = pd.cut(numeric_series, bins=bin_count).value_counts().sort_index()

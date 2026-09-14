@@ -171,106 +171,162 @@ def detect_outliers_zscore(
     return outliers_map
 
 
-def detect_outliers_lof(
-    df: pd.DataFrame,
-    columns: list[str],
-    n_neighbors: int = 20,
-    contamination: float = 0.1
-) -> dict[str, list[OutlierInfo]]:
-    """
-    基于局部离群因子（Local Outlier Factor）的检测.
-    
-    Args:
-        df: DataFrame
-        columns: 需要检测的数值列
-        n_neighbors: LOF 邻域大小
-        contamination: 预估污染比例
-    """
-    # scikit-learn 是可选依赖（pyproject 的 `ml` extra），不进必需依赖：
-    # 未安装时按空结果降级，与下方 except Exception 的语义保持一致。
-    try:
-        from sklearn.neighbors import LocalOutlierFactor
-    except ImportError:
-        return {col: [] for col in columns}
-
-    outliers_map = {}
-    
-    # 只使用数值列进行 LOF 计算
-    numeric_cols = [c for c in columns if pd.api.types.is_numeric_dtype(df[c])]
-    
-    if len(numeric_cols) < 2:
-        return {col: [] for col in columns}
-    
-    X = df[numeric_cols].dropna()
-    
-    if len(X) < n_neighbors + 1:
-        return {col: [] for col in columns}
-    
-    try:
-        lof = LocalOutlierFactor(
-            n_neighbors=n_neighbors,
-            contamination=contamination
-        )
-        pred = lof.fit_predict(X)
-        scores = -lof.negative_outlier_factor_  # 越大越异常
-        
-        for col in columns:
-            if col not in numeric_cols:
-                outliers_map[col] = []
-                continue
-                
-            out_list = []
-            # X.index 与 scores 均由同一次 fit_predict(X) 派生，长度必然一致。
-            for idx, score in zip(X.index, scores, strict=True):
-                if pred[int(idx)] == -1:  # 离群点
-                    out_list.append(OutlierInfo(
-                        column_name=col,
-                        row_index=int(idx),
-                        value=float(df.loc[idx, col]),
-                        outlier_type='lof',
-                        threshold=float(score),
-                        is_upper=True
-                    ))
-            
-            outliers_map[col] = out_list
-            
-    except Exception:
-        # LOF 失败则回退到空列表
-        outliers_map = {col: [] for col in columns}
-        
-    return outliers_map
-
-
-def aggregate_outliers_info(all_outliers: dict) -> dict[str, any]:
-    """
-    聚合所有离群值信息用于报告.
-    
-    Returns:
-        {
-            "total_count": int,
-            "by_column": {col: [OutlierInfo.to_dict()]}
-        }
-    """
-    total = sum(len(v) for v in all_outliers.values())
-    
-    by_column = {}
-    for col, outliers in all_outliers.items():
-        if outliers:
-            by_column[col] = [o.to_dict() for o in outliers]
-    
-    return {
-        "total_count": total,
-        "by_column": by_column,
-        "has_outliers": total > 0
-    }
-
-
 #: 每列最多出站的极值个数。离群值摘要只带**有界**的数值样本，绝不带行身份。
 OUTLIER_VALUE_SAMPLE_LIMIT = 5
 
+#: IQR / Z-score 的默认阈值。``quality.assess_quality``、本模块的出站聚合与
+#: ``services.auto_report`` 共用同一组默认值——这是"同一列只应有一个离群值
+#: 个数"的前提。
+OUTLIER_IQR_MULTIPLIER = 1.5
+OUTLIER_Z_THRESHOLD = 3.0
+
+
+@dataclass(frozen=True)
+class ColumnOutlierStats:
+    """单列离群值的**统一口径**：``(IQR 越界) | (|z| > z_threshold)``，按行去重。
+
+    这是全仓库唯一的离群值定义。``quality.assess_quality`` 的 outlier 段、
+    :func:`build_outlier_aggregates`、:func:`build_raw_outliers_map` 与
+    ``services.auto_report`` 都经 :func:`compute_column_outliers` 取值，因此同一列
+    同一数据只会有一个 ``count`` / ``rate``，也不再出现"同一行被 IQR 与 Z 各计一次"。
+
+    ``rows`` 携带行索引，属**行级**信息，仅供进程内使用；出站请用
+    :func:`build_outlier_aggregates`。
+    """
+
+    column: str
+    sample_count: int
+    rows: list[OutlierInfo]
+    direction: str
+    min_value: float | None
+    max_value: float | None
+    values: list[float]
+    bounds: dict[str, float | None]
+
+    @property
+    def count(self) -> int:
+        """去重后的离群行数。"""
+
+        return len(self.rows)
+
+    @property
+    def rate(self) -> float:
+        """离群行数 / 该列**非空样本数**（不是总行数）。"""
+
+        return round(self.count / self.sample_count, 4) if self.sample_count else 0.0
+
+
+def compute_column_outliers(
+    df: pd.DataFrame,
+    column: str,
+    *,
+    iqr_multiplier: float = OUTLIER_IQR_MULTIPLIER,
+    z_threshold: float = OUTLIER_Z_THRESHOLD,
+) -> ColumnOutlierStats | None:
+    """计算单列的统一离群值口径。
+
+    定义（固定，不再有第二套）：
+
+    * 掩码 = IQR 越界 **并集** 极端 z 值，`count` 为掩码命中**行数**（按行去重）；
+    * `rate = count / 该列非空样本数`；
+    * 极值样本按 ``abs(value)`` 降序、**按值去重**后取前
+      ``OUTLIER_VALUE_SAMPLE_LIMIT`` 个（``series`` 里不会再出现重复值）；
+    * z 值使用总体标准差（``ddof=0``），与 ``analytics/engine.py`` 及原
+      ``quality.assess_quality`` 保持一致。
+
+    列不存在或不是数值列时返回 ``None``；非空样本为 0 时返回空统计（``count == 0``）。
+    """
+
+    if column not in df.columns or not pd.api.types.is_numeric_dtype(df[column]):
+        return None
+
+    series = pd.to_numeric(df[column], errors="coerce")
+    present = series.dropna()
+    sample_count = int(len(present))
+    if sample_count == 0:
+        return ColumnOutlierStats(
+            column=str(column),
+            sample_count=0,
+            rows=[],
+            direction="none",
+            min_value=None,
+            max_value=None,
+            values=[],
+            bounds={},
+        )
+
+    q1 = float(present.quantile(0.25))
+    q3 = float(present.quantile(0.75))
+    spread = q3 - q1
+    lower = q1 - iqr_multiplier * spread
+    upper = q3 + iqr_multiplier * spread
+    mean = float(present.mean())
+    std = float(present.std(ddof=0))
+
+    iqr_mask = (series < lower) | (series > upper)
+    # z 值用总体标准差（ddof=0），与 analytics/engine.py 及原 quality.assess_quality 一致。
+    z_mask = (series - mean).abs() > z_threshold * std if std > 0 else pd.Series(False, index=series.index)
+    # 并集掩码 + 按行去重：同一行即便同时越 IQR 界又超 z 阈值，也只计一次。
+    mask = (iqr_mask | z_mask).fillna(False)
+
+    rows: list[OutlierInfo] = []
+    sides: set[str] = set()
+    for position, index in enumerate(series.index[mask]):
+        value = float(series.loc[index])
+        # 判定类型时保持"IQR 优先"：能由 IQR 解释的行按 IQR 归因，其余才记 z。
+        if value > upper:
+            outlier_type, threshold, is_upper = "iqr_upper", upper, True
+        elif value < lower:
+            outlier_type, threshold, is_upper = "iqr_lower", lower, False
+        elif value > mean:
+            outlier_type, threshold, is_upper = "zscore_high", mean + z_threshold * std, True
+        else:
+            outlier_type, threshold, is_upper = "zscore_low", mean - z_threshold * std, False
+        sides.add("upper" if is_upper else "lower")
+        # ``OutlierInfo.row_index`` 声明为 int；非整数索引（如字符串索引的帧）
+        # 没有可靠的行身份，用序号占位——出站聚合本来就不带行号。
+        row_index = int(index) if isinstance(index, (int, np.integer)) else position
+        rows.append(
+            OutlierInfo(
+                column_name=str(column),
+                row_index=row_index,
+                value=value,
+                outlier_type=outlier_type,
+                threshold=float(threshold),
+                is_upper=is_upper,
+            )
+        )
+
+    if sides == {"upper"}:
+        direction = "upper"
+    elif sides == {"lower"}:
+        direction = "lower"
+    elif sides:
+        direction = "both"
+    else:
+        direction = "none"
+
+    raw_values = [item.value for item in rows]
+    # 极值样本：按 |value| 降序 + **按值去重**（先舍入再入集合，保证出站的
+    # ``series`` 里不会出现重复值），最后截断到有界长度。
+    distinct: dict[float, None] = {}
+    for value in sorted(raw_values, key=abs, reverse=True):
+        distinct.setdefault(round(value, 4), None)
+
+    return ColumnOutlierStats(
+        column=str(column),
+        sample_count=sample_count,
+        rows=rows,
+        direction=direction,
+        min_value=round(min(raw_values), 4) if raw_values else None,
+        max_value=round(max(raw_values), 4) if raw_values else None,
+        values=list(distinct)[:OUTLIER_VALUE_SAMPLE_LIMIT],
+        bounds={"iqr_lower": lower, "iqr_upper": upper, "z_threshold": z_threshold},
+    )
+
 
 def build_raw_outliers_map(df: pd.DataFrame, columns: list[str] | None = None) -> dict[str, list[dict]]:
-    """IQR + Z-score 合并后的**行级**离群点映射（仅限进程内使用）。
+    """统一口径的**行级**离群点映射（仅限进程内使用）。
 
     形状刻意与 ``corelation.compute_correlation_with_tests`` 的读取方式对齐
     （它按下标 ``out['row_index']`` 取行号），用于计算剔除离群点后的稳健相关系数。
@@ -281,14 +337,13 @@ def build_raw_outliers_map(df: pd.DataFrame, columns: list[str] | None = None) -
     target = list(columns) if columns is not None else [
         str(col) for col in df.columns if pd.api.types.is_numeric_dtype(df[col])
     ]
-    by_iqr = detect_outliers_iqr(df, target)
-    by_zscore = detect_outliers_zscore(df, target)
 
     raw_map: dict[str, list[dict]] = {}
     for col in target:
-        merged = list(by_iqr.get(col) or []) + list(by_zscore.get(col) or [])
-        if merged:
-            raw_map[str(col)] = [item.to_dict() for item in merged]
+        stats = compute_column_outliers(df, str(col))
+        if stats is None or not stats.count:
+            continue
+        raw_map[str(col)] = [item.to_dict() for item in stats.rows]
     return raw_map
 
 
@@ -303,42 +358,32 @@ def build_outlier_aggregates(df: pd.DataFrame, columns: list[str] | None = None)
     ``_AGGREGATE_LIST_KEYS`` 里的键，其它键下的列表会被静默丢弃（``series`` 是其中
     语义最贴近的允许键）。
 
+    计数口径与 ``quality.assess_quality`` 完全一致（同一个
+    :func:`compute_column_outliers`），``series`` 按值去重后仍有界。
+
     Returns:
         ``[{name, method, count, rate, direction, min_value, max_value, series}, ...]``
     """
     target = list(columns) if columns is not None else [
         str(col) for col in df.columns if pd.api.types.is_numeric_dtype(df[col])
     ]
-    by_iqr = detect_outliers_iqr(df, target)
-    by_zscore = detect_outliers_zscore(df, target)
 
     aggregates: list[dict] = []
     for col in target:
-        merged = list(by_iqr.get(col) or []) + list(by_zscore.get(col) or [])
-        if not merged:
+        stats = compute_column_outliers(df, str(col))
+        if stats is None or not stats.count:
             continue
-
-        valid = df[col].dropna() if col in df.columns else pd.Series(dtype="float64")
-        sample_count = int(len(valid))
-        values = [float(item.value) for item in merged]
-        directions = {item.outlier_type for item in merged}
-        if directions <= {"iqr_upper", "zscore_high", "lof"}:
-            direction = "upper"
-        elif directions <= {"iqr_lower", "zscore_low"}:
-            direction = "lower"
-        else:
-            direction = "both"
 
         aggregates.append({
             "name": str(col),
             "method": "iqr_and_zscore",
-            "count": len(merged),
-            "rate": round(len(merged) / sample_count, 4) if sample_count else 0.0,
-            "sample_count": sample_count,
-            "direction": direction,
-            "min_value": round(min(values), 4),
-            "max_value": round(max(values), 4),
-            "series": [round(value, 4) for value in sorted(values, key=abs, reverse=True)[:OUTLIER_VALUE_SAMPLE_LIMIT]],
+            "count": stats.count,
+            "rate": stats.rate,
+            "sample_count": stats.sample_count,
+            "direction": stats.direction,
+            "min_value": stats.min_value,
+            "max_value": stats.max_value,
+            "series": stats.values,
         })
 
     return aggregates

@@ -129,6 +129,9 @@ def detect_derived_columns(df_columns: list[str]) -> dict[str, ColumnLineage]:
             lineage.derived_from = pattern_match['source_columns']
             lineage.derivation_type = pattern_match['operation']
             lineage.derivation_formula = pattern_match['formula']
+            # 策略 1 与"抽取列"分支都会写说明，唯独这里漏了 —— 结果是
+            # should_exclude_from_correlation 的排除理由显示成「（None）」。
+            lineage.derivation_description = pattern_match.get('description')
             lineage_map[col] = lineage
             continue
             
@@ -185,20 +188,31 @@ def build_lineage_map(
 
 
 def _match_builtin_rules(target_col: str, all_cols: list[str]) -> DerivedColumn | None:
-    """尝试匹配内置派生规则."""
-    target_lower = target_col.lower()
-    
+    """仅当**目标列自身就是规则名**时命中内置派生规则。
+
+    源列出现在规则的 ``source_columns`` 里**不**使它成为派生列。此前还允许
+    ``target_lower in rule.source_columns`` 命中，于是规则「渗透率 ← 周活跃用户,
+    总用户数」会把**源列** ``周活跃用户`` 标成派生列（``derived_from`` 还被填成
+    规则的两个源列），导致 :func:`should_exclude_from_correlation` 把源列对当成
+    "A 派生自 B"排除，方向完全说反；真正的派生列反而漏判。
+
+    现在只保留严格判据：目标列 == ``rule.name``、规则的每个源列都能在数据集中
+    找到、且源列不等于目标列。规则名不在数据集中时不返回任何匹配。
+    """
+
     for rule in DERIVED_COLUMN_RULES:
-        # 检查目标列是否匹配
-        if target_col == rule.name or target_lower in [c.lower() for c in rule.source_columns]:
-            # 验证源列是否都在数据集中
-            source_found = all(
-                any(rule_src.lower() in col.lower() for col in all_cols)
-                for rule_src in rule.source_columns
-            )
-            if source_found:
-                return rule
-                
+        if target_col != rule.name:
+            continue
+        # 源列就是目标列时不是"派生"，是自引用，跳过。
+        if any(str(source).lower() == target_col.lower() for source in rule.source_columns):
+            continue
+        source_found = all(
+            any(str(rule_src).lower() in str(col).lower() for col in all_cols)
+            for rule_src in rule.source_columns
+        )
+        if source_found:
+            return rule
+
     return None
 
 
@@ -278,7 +292,11 @@ def _infer_from_naming_pattern(target_col: str, all_cols: list[str]) -> dict | N
 def should_exclude_from_correlation(col1: str, col2: str, lineage_map: dict[str, ColumnLineage]) -> tuple[bool, str | None]:
     """
     判断一对列是否应该从相关性分析中排除（避免伪相关）.
-    
+
+    排除说明里的主语**必须**是 ``is_derived`` 的那一列：「X 是 Y 的派生列」中的 X
+    只能是派生列。方向由 :func:`_match_builtin_rules` 的严格判据保证——源列不会
+    被标成派生列，所以不会出现"源列是派生列"这种反向结论。
+
     Args:
         col1: 列 1
         col2: 列 2  
@@ -295,10 +313,11 @@ def should_exclude_from_correlation(col1: str, col2: str, lineage_map: dict[str,
         return False, None
         
     # 情况 2: 其中一个是由另一个派生的 -> 必须排除
-    if lin1.is_derived and lin2.column_name in (lin1.derived_from or []):
+    # 主语取派生列本身（lin1 -> col1 / lin2 -> col2），保证方向可读。
+    if lin1.is_derived and str(col2) in (lin1.derived_from or []):
         return True, f"{col1}是{col2}的派生列（{lin1.derivation_description}），存在必然相关性"
-    
-    if lin2.is_derived and lin1.column_name in (lin2.derived_from or []):
+
+    if lin2.is_derived and str(col1) in (lin2.derived_from or []):
         return True, f"{col2}是{col1}的派生列（{lin2.derivation_description}），存在必然相关性"
         
     # 情况 3: 两个都源自同一个源列 -> 可能产生机械相关，建议排除

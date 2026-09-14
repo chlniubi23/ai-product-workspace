@@ -16,7 +16,12 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from .outliers import OUTLIER_IQR_MULTIPLIER, OUTLIER_Z_THRESHOLD, compute_column_outliers
 from .parsing import infer_column_type_v2
+
+#: 自动派生期望类型时只校验这三类：它们有明确的"合法值"定义。
+#: category / text / identifier 没有非法值概念，跳过（否则会把正常文本记为类型错误）。
+_AUTO_EXPECTED_TYPES = frozenset({"numeric", "datetime", "boolean"})
 
 _TYPE_ALIASES = {
     "numeric": "numeric",
@@ -116,13 +121,26 @@ def _as_dataframe(data: pd.DataFrame | Sequence[Mapping[str, Any]]) -> pd.DataFr
     return pd.DataFrame(list(data))
 
 
+def _derived_expected_type(series: pd.Series) -> str | None:
+    """未显式给出 ``expected_types`` 时，为单列派生期望类型。
+
+    只返回 ``numeric`` / ``datetime`` / ``boolean``：``infer_column_type_v2`` 以
+    ≥80% 解析率判定这三类，所以"大多数单元能解析、少数是脏值"的列会被判为对应
+    类型，脏值随即成为 ``type_errors``——这正是类型合规维度要度量的东西。
+    ``category`` / ``text`` / ``identifier`` 没有"非法值"，返回 ``None`` 跳过。
+    """
+
+    semantic = infer_column_type_v2(series)["semantic_type"]
+    return semantic if semantic in _AUTO_EXPECTED_TYPES else None
+
+
 def assess_quality(
     data: pd.DataFrame | Sequence[Mapping[str, Any]],
     *,
     expected_types: Mapping[str, str] | None = None,
     key_columns: Sequence[str] | None = None,
-    iqr_multiplier: float = 1.5,
-    z_threshold: float = 3.0,
+    iqr_multiplier: float = OUTLIER_IQR_MULTIPLIER,
+    z_threshold: float = OUTLIER_Z_THRESHOLD,
     sample_size: int = 10,
 ) -> QualityReport:
     """Run deterministic missing, duplicate, type and outlier checks.
@@ -130,6 +148,14 @@ def assess_quality(
     The input is copied.  Empty strings and whitespace-only strings are counted as
     missing for quality metrics, but the original values are not changed.  Duplicate
     rows are reported only; no rows are removed automatically.
+
+    ``expected_types`` 显式传入时以传入为准；**未传**时为每列派生期望类型
+    （:func:`_derived_expected_type`），使 ``type_error_count`` 与
+    ``type_errors`` 真正生效。四项惩罚权重固定为
+    ``0.40 缺失 + 0.25 重复 + 0.20 类型 + 0.15 离群``（合计 1.0），惩罚上限 100。
+
+    离群值的 count / rate 由 :func:`analytics.outliers.compute_column_outliers`
+    统一提供，与出站聚合及 ``auto_report`` 口径一致。
     """
 
     if iqr_multiplier <= 0 or z_threshold <= 0:
@@ -142,7 +168,7 @@ def assess_quality(
     rows, columns = frame_for_checks.shape
     column_reports: list[dict[str, Any]] = []
     type_errors: list[dict[str, Any]] = []
-    expected_types = expected_types or {}
+    explicit_types: Mapping[str, str] = expected_types or {}
 
     for name in frame_for_checks.columns:
         series = frame_for_checks[name]
@@ -159,7 +185,7 @@ def assess_quality(
             "nullable": bool(missing),
         }
 
-        requested = expected_types.get(name)
+        requested = explicit_types.get(name) if explicit_types else _derived_expected_type(series)
         if requested:
             requested_normalized = _TYPE_ALIASES.get(str(requested).lower(), str(requested).lower())
             invalid = 0
@@ -196,33 +222,22 @@ def assess_quality(
     outlier_fraction = 0.0
     numeric_columns = frame_for_checks.select_dtypes(include=[np.number]).columns
     for name in numeric_columns:
-        values = pd.to_numeric(frame_for_checks[name], errors="coerce").dropna()
-        if values.empty:
-            outliers[str(name)] = {"method": "iqr_and_zscore", "count": 0, "indices": [], "bounds": {}}
+        stats = compute_column_outliers(
+            frame_for_checks,
+            str(name),
+            iqr_multiplier=iqr_multiplier,
+            z_threshold=z_threshold,
+        )
+        if stats is None:  # pragma: no cover - select_dtypes already guarantees numeric
             continue
-        q1 = float(values.quantile(0.25))
-        q3 = float(values.quantile(0.75))
-        iqr = q3 - q1
-        lower = q1 - iqr_multiplier * iqr
-        upper = q3 + iqr_multiplier * iqr
-        iqr_mask = (frame_for_checks[name] < lower) | (frame_for_checks[name] > upper)
-        mean = float(values.mean())
-        std = float(values.std(ddof=0))
-        if std > 0:
-            z_mask = (frame_for_checks[name] - mean).abs() > z_threshold * std
-        else:
-            z_mask = pd.Series(False, index=frame_for_checks.index)
-        mask = (iqr_mask | z_mask).fillna(False)
-        indices = [int(index) if isinstance(index, (int, np.integer)) else str(index) for index in frame_for_checks.index[mask]]
-        count = len(indices)
         outliers[str(name)] = {
             "method": "iqr_and_zscore",
-            "count": count,
-            "rate": (count / rows if rows else 0.0),
-            "indices": indices[:100],
-            "bounds": {"iqr_lower": lower, "iqr_upper": upper, "z_threshold": z_threshold},
+            "count": stats.count,
+            "rate": stats.rate,
+            "indices": [item.row_index for item in stats.rows][:100],
+            "bounds": stats.bounds,
         }
-        outlier_fraction += count / max(rows, 1)
+        outlier_fraction += stats.rate
     if numeric_columns.size:
         outlier_fraction /= float(numeric_columns.size)
 
