@@ -146,7 +146,8 @@ async def ai_interpret(body: AIInterpretRequest, user: User = Depends(get_curren
                         "- facts：只写能被数字直接支撑的结论，每条以数字开头；"
                         "- hypotheses：只写数据无法完全证实、值得下一步验证的判断，并写明验证方式；"
                         "- recommendations：可执行的下一步，与前面的发现一一对应；"
-                        "- limitations 必须包含各列的统计口径（上下文中的 stat_note）。条数上限 3/3/3，每条 ≤80 字。Schema: "
+                        "- limitations 必须包含各列的统计口径（上下文中的 stat_note）。条数上限 3/3/3，每条 ≤80 字。"
+                        "面向用户的文本（问题、依据、正文、发现）中禁止出现资源 id 或哈希串，引用一律使用业务名称。Schema: "
                         + json.dumps(AI_OUTPUT_SCHEMA, ensure_ascii=True, separators=(",", ":")),
                     ),
                     ChatMessage("user", json.dumps(context, ensure_ascii=False, separators=(",", ":"), default=str)),

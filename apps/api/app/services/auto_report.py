@@ -16,6 +16,7 @@ from ..ai_context import (
 from ..analytics.dag import build_lineage_map
 from ..analytics.digest import column_display, dataset_display
 from ..analytics.engine import AnalysisEngine, choose_trend_frequency
+from ..analytics.id_hygiene import build_label_map, strip_resource_ids
 from ..analytics.outliers import compute_column_outliers
 from ..analytics.rounding import round_stat
 from ..analytics.text_metrics import extract_text_metrics
@@ -527,6 +528,12 @@ def _auto_report_system_prompt() -> str:
         "5) key_findings ≤8 条（每条含数字）；recommendations ≤6 条且与发现一一对应；"
         "limitations 必含「自动选列」与「聚合统计口径」。"
         "禁止编造任何未提供的数字。"
+        "精准要求："
+        "每章只保留 2-4 个最有信息量的数字结论，禁止罗列全列统计；"
+        "信息优先级：口径异常 > 显著变化 > 结构集中 > 常规分布；"
+        "summary ≤120 字；每章 ≤300 字；AI 解读部分总计 ≤1200 字；"
+        "两个数字说同一件事时，保留更精确的一个。"
+        "面向用户的文本（问题、依据、正文、发现）中禁止出现资源 id 或哈希串，引用一律使用业务名称。"
     )
 
 
@@ -630,7 +637,19 @@ async def _narrate_report(
         report.title = str(output.get("title") or report.title)[:255]
         report.summary = str(output.get("summary") or "")
         report.sections_json = deterministic_sections + list(output.get("sections") or [])
-        report.key_findings = list(output.get("key_findings") or [])
+        # 批 37：key_findings 确定性兜底清洗 —— 用户可见文本不得出现产物 id。
+        narration_label_map = build_label_map(
+            [
+                {
+                    "id": str(item.get("dataset_version_id") or ""),
+                    "artifact_type": "dataset_summary",
+                    "title": str(item.get("name") or ""),
+                    "payload_json": item,
+                }
+                for item in aggregates
+            ]
+        )
+        report.key_findings = [strip_resource_ids(str(item), narration_label_map) for item in output.get("key_findings") or []]
         report.recommendations = list(output.get("recommendations") or [])
         report.limitations = list(output.get("limitations") or [])
         report.content_markdown = _report_markdown(

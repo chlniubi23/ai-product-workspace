@@ -24,6 +24,7 @@ from ..ai_context import (
     validate_interview_summary,
     validate_next_question,
 )
+from ..analytics.id_hygiene import build_label_map, label_for_title, strip_resource_ids
 from ..common import model_dict
 from ..models import (
     AIRun,
@@ -82,7 +83,8 @@ def _latest_report_context(db: Session, project: Project) -> list[dict[str, Any]
         {
             "id": f"{report.id}:{dataset.get('dataset_version_id')}",
             "artifact_type": "dataset_summary",
-            "title": str(dataset.get("name") or "dataset"),
+            # 批 37：业务名标签（数据集名 + 字段语义标签），title 即模型可见名。
+            "title": label_for_title(str(dataset.get("name") or "dataset"), "dataset_summary", dataset),
             "payload_json": dataset,
         }
         for dataset in datasets[:_REPORT_DATASET_LIMIT]
@@ -119,7 +121,9 @@ def _analysis_artifact_items(db: Session, project: Project) -> list[dict[str, An
         {
             "id": artifact.id,
             "artifact_type": artifact.artifact_type,
-            "title": artifact.title,
+            # 批 37：业务名标签 —— 英文产物标题映射为中文业务名，模型引用时
+            # 有可用的业务名称而不是 UUID。
+            "title": label_for_title(artifact.title, artifact.artifact_type, artifact.payload_json),
             "payload_json": artifact.payload_json,
         }
         for artifact in artifacts
@@ -208,9 +212,11 @@ async def generate_next_question(
                 "输入：项目目标、数据发现（含严重度）、已问清单、已回答摘要。"
                 "规则：1) 下一问必须指向「高严重度发现中尚未被任何回答覆盖」的一个具体疑点；"
                 "2) question_text ≤60 字，含一个可回答的落点（数字/原因/场景）；"
-                "3) rationale ≤50 字，指明所依据的发现编号；"
+                "3) rationale ≤50 字，用业务名称指明所依据的材料与指标（如「渗透率与周活跃用户的强相关」）；"
                 "4) 若高严重度发现均已被回答覆盖，返回 interview_complete=true，completion_note ≤80 字说明判定依据；"
-                "5) 不得与已问清单语义重复。" + extra
+                "5) 不得与已问清单语义重复。"
+                "6) question_text 与 rationale 中禁止出现任何 UUID、哈希或资源 id 字符串；"
+                "引用依据一律使用业务名称（列名/数据集名/模块名）。" + extra
             ),
             context=context,
             flag_name="insight_suggestions_enabled",
@@ -232,19 +238,25 @@ async def generate_next_question(
             }
         last_error = result.get("error_code") or last_error
         output = result["output"]
+        # 批 37：确定性兜底 —— 用户可见文本（问题/依据/完成说明）中的
+        # UUID/8位hex 一律替换为业务名；prompt 禁令之外的第二道闸。
+        label_map = build_label_map(_grounding_artifacts(db, project))
         if output.get("interview_complete"):
+            note = strip_resource_ids(str(output.get("completion_note") or ""), label_map)
             audit(db, workspace.id, user.id, "interview.next_question", "project", project.id, {"outcome": "ai_judged_complete"})
             db.commit()
-            return {"status": "complete", "reason": "ai_judged", "note": str(output.get("completion_note") or "")}
-        key = _normalise_question_text(output["question_text"])
+            return {"status": "complete", "reason": "ai_judged", "note": note}
+        question_text = strip_resource_ids(str(output["question_text"]), label_map)
+        rationale = strip_resource_ids(str(output["rationale"]), label_map)
+        key = _normalise_question_text(question_text)
         if key and key not in seen:
             question = InterviewQuestion(
                 workspace_id=project.workspace_id,
                 project_id=project.id,
                 round_number=next_round,
                 topic=output["topic"],
-                question_text=output["question_text"],
-                rationale=output["rationale"],
+                question_text=question_text,
+                rationale=rationale,
                 status="pending",
                 answer_text="",
                 source="ai",
@@ -359,10 +371,11 @@ async def complete_interview(
         }
     import json as _json
 
+    summary_label_map = build_label_map(_grounding_artifacts(db, project))
     summary_payload = {
-        "collected": result["output"].get("collected") or [],
-        "gaps": result["output"].get("gaps") or [],
-        "ready_for": str(result["output"].get("ready_for") or ""),
+        "collected": [strip_resource_ids(str(item), summary_label_map) for item in result["output"].get("collected") or []],
+        "gaps": [strip_resource_ids(str(item), summary_label_map) for item in result["output"].get("gaps") or []],
+        "ready_for": strip_resource_ids(str(result["output"].get("ready_for") or ""), summary_label_map),
     }
     summary_row = db.scalar(select(InterviewSummary).where(InterviewSummary.project_id == project.id))
     if summary_row is None:
@@ -497,10 +510,11 @@ async def distill_interview(
         db.flush()
 
         type_by_section = {"facts": "fact", "hypotheses": "hypothesis", "recommendations": "recommendation"}
+        distill_label_map = build_label_map(_grounding_artifacts(db, project))
         for section, insight_type in type_by_section.items():
             for claim in output.get(section) or []:
                 evidence = claim.get("evidence") or []
-                text = str(claim.get("text") or "").strip()
+                text = strip_resource_ids(str(claim.get("text") or "").strip(), distill_label_map)
                 if not text or not evidence:
                     discarded += 1
                     continue

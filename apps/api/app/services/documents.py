@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..ai_context import assert_safe_ai_context, build_ai_context
+from ..analytics.id_hygiene import build_label_map, strip_resource_ids
 from ..common import error, model_dict, serialize
 from ..models import (
     AnalysisArtifact,
@@ -72,7 +73,7 @@ def _outline_system_prompt(document_type: str, title: str, audience: str) -> str
     return (
         "你是产品文档架构师。基于证据材料（数据发现、决策链、字段口径）为"
         f"《{title}》（类型 {document_type}，读者 {audience}）产出大纲。"
-        "1) findings：≤6 条，每条 id 形如 finding-N，一句话含具体数字，severity ∈ 高/中/低；"
+        "1) findings：≤6 条，每条 id 形如 finding-N，一句话含具体数字，severity ∈ 高/中/低，按信息量降序排列；"
         f"2) sections：按顺序覆盖固定章节计划：{plan}；"
         "每章给 heading（与计划一致）、purpose（≤40 字）、"
         "key_refs（本章依赖的 finding 编号列表，2-4 个，不得为空）；"
@@ -214,7 +215,7 @@ def _harmonize_system_prompt() -> str:
         "铁律：表格、数字、证据引用（证据标题或 id）必须逐字保留，不得改写数值或改述表格内容；"
         "不得新增任何论断、数据、建议或结论；不得合并、拆分、增加或删除章节，"
         "heading 与章节顺序必须与输入完全一致；改写后各节字数不得超过原文的 105%，"
-        "不得新增任何数字或论断；每节只输出该节改写后的正文。"
+        "不得新增任何数字或论断；校对以删除冗余为第一手段，改写为第二手段；每节只输出该节改写后的正文。"
         '只输出 JSON：{"sections": [{"heading", "content"}, ...]}，节数与顺序与输入相同。'
     )
 
@@ -258,7 +259,9 @@ def _section_system_prompt(
             "1 个明确的设计决策、1 个边界情况（badcase）及其兜底；"
             "2) 目标用表格（|目标|指标|目标值|），验收用表格（|编号|验收点|预期|），每格 ≤20 字；"
             "用户流程用「场景一/场景二」编号叙述；"
-            "3) 禁止复述其他章节、禁止编造数字、禁止输出与本章无关的分析。"
+            "3) 禁止复述其他章节、禁止编造数字、禁止输出与本章无关的分析；"
+            "4) 每个论点必须可追溯到本章材料，无法追溯的论断直接删除；"
+            "同一信息不得在两处展开；拿不准时优先删弱论据，而不是稀释强论据。"
         )
     else:
         requirements = "本节正文 400–800 字；涉及数据必须引用具体数字；不要重复其他章节内容。"
@@ -653,13 +656,16 @@ def _render_ai_document_markdown(body: DocumentGenerate, ai_output: dict[str, An
     """Render the validated REPORT_OUTPUT_SCHEMA payload as Chinese Markdown."""
 
     generation_timestamp = serialize(now())
+    # 批 37：正文确定性兜底清洗 —— 用户可见文本不得出现产物 id/hex 串
+    # （label_map 来自文档上下文的产物映射；[finding-N] 非 hex，不受影响）。
+    label_map = build_label_map((context.get("safe_context") or {}).get("artifacts") or [])
     sections: list[str] = [f"# {ai_output.get('title') or body.title}", ""]
-    summary = str(ai_output.get("summary") or "").strip()
+    summary = strip_resource_ids(str(ai_output.get("summary") or "").strip(), label_map)
     if summary:
         sections.extend([f"> {summary}", ""])
     for section in ai_output.get("sections", []):
         heading = str(section.get("heading") or "").strip()
-        content = str(section.get("content") or "").strip()
+        content = strip_resource_ids(str(section.get("content") or "").strip(), label_map)
         if not heading and not content:
             continue
         sections.extend([f"## {heading or '章节'}", "", content, ""])

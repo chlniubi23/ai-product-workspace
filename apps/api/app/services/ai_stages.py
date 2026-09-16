@@ -679,9 +679,9 @@ async def _run_ai_stage(
             # 声明（id 原样取自上下文是幻觉 id 的第一道闸）；应用层的 draft 状态
             # 短语对 LLM 无意义，已从全部提示词中删除。Schema 附加与截断重试句不动。
             json_instruction = (
-                " 用简体中文输出一个严格符合 Schema 的 JSON 对象，包含 facts、hypotheses、recommendations、limitations 四节，每条陈述不超过 80 字、宁少勿凑。规则：1) 只使用上下文中给出的信息，禁止编造数字、结论或 id；2) 每条 evidence 的 id 必须原样取自上下文中出现的资源 id。Schema: "
+                " 用简体中文输出一个严格符合 Schema 的 JSON 对象，包含 facts、hypotheses、recommendations、limitations 四节，每条陈述不超过 80 字、宁少勿凑。规则：1) 只使用上下文中给出的信息，禁止编造数字、结论或 id；2) 每条 evidence 的 id 必须原样取自上下文中出现的资源 id；3) 面向用户的文本（问题、依据、正文、发现）中禁止出现资源 id 或哈希串，引用一律使用业务名称。Schema: "
                 if response_schema is None
-                else " 用简体中文输出一个严格符合 Schema 的 JSON 对象。规则：1) 只使用上下文中给出的信息，禁止编造数字、结论或 id；2) 每条 evidence 的 id 必须原样取自上下文中出现的资源 id。Schema: "
+                else " 用简体中文输出一个严格符合 Schema 的 JSON 对象。规则：1) 只使用上下文中给出的信息，禁止编造数字、结论或 id；2) 每条 evidence 的 id 必须原样取自上下文中出现的资源 id；3) 面向用户的文本（问题、依据、正文、发现）中禁止出现资源 id 或哈希串，引用一律使用业务名称。Schema: "
             )
             system_message = system_prompt + json_instruction + json.dumps(schema, ensure_ascii=True, separators=(",", ":"))
             user_message = json.dumps(context, ensure_ascii=False, separators=(",", ":"), default=str)
