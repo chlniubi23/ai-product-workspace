@@ -105,6 +105,32 @@ def test_auto_report_persists_and_lists(client, owner, project):
     assert fetched["markdown"] == created["content_markdown"]
 
 
+def test_auto_report_payload_carries_trust_card(client, owner, project):
+    """批 39：可信度评分卡 —— 全部来自既有字段，缺失项为 null，不编造默认值。"""
+
+    _batch(client, owner, project["id"], [("events.csv", CSV_EVENTS.encode()), ("metrics.csv", CSV_METRICS.encode())])
+    report = data_of(_generate_report(client, owner, project["id"]))["report"]
+    trust = report["trust_card"]
+    deterministic = report["deterministic_json"]
+    datasets = deterministic["datasets"]
+
+    # 批 32 起新解析的版本都带 manifest 摘要 → 对账通过。
+    assert trust["integrity"] == "对账通过"
+    # 覆盖与 deterministic_json["coverage"] 一致。
+    assert trust["coverage"] == f"{deterministic['coverage']['included']}/{deterministic['coverage']['total']}"
+    # 未做 AI 解读 → 数字可验证率为 null（缺失不编造）。
+    assert trust["fact_check_rate"] is None
+    # 其余维度与聚合一致（镜像聚合逻辑，不预设具体值）。
+    warnings = [item["parse_warnings_count"] for item in datasets if isinstance(item.get("parse_warnings_count"), int)]
+    assert trust["parse_warnings"] == (sum(warnings) if warnings else None)
+    excluded = [item["excluded_correlation_pairs"] for item in datasets if isinstance(item.get("excluded_correlation_pairs"), int)]
+    assert trust["excluded_correlations"] == (sum(excluded) if excluded else None)
+    small = sum(1 for item in datasets if item.get("small_sample") is True)
+    assert trust["small_sample"] == small
+    # 两个数据集都远大于小样本阈值 → 0 是真实计数而非默认值。
+    assert trust["small_sample"] == 0
+
+
 def test_auto_report_confirms_idempotently(client, owner, project):
     _batch(client, owner, project["id"], [("metrics.csv", CSV_METRICS.encode())])
     report_id = data_of(_generate_report(client, owner, project["id"]))["report"]["id"]

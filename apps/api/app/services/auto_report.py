@@ -484,12 +484,58 @@ def _report_markdown(title: str, summary: str, sections: list[dict[str, str]], f
     return "\n".join(parts).strip()
 
 
+def _trust_card(report: AutoAnalysisReport) -> dict[str, Any]:
+    """批 39：报告可信度评分卡 —— 把已存在的可信性信号汇成并列标量。
+
+    全部来自既有字段（聚合的 manifest 标量摘要 / coverage / small_sample /
+    excluded_correlation_pairs / fact_check），缺失项给 ``null``，不编造
+    默认值。刻意**不给总分**：各维度异质，加权合成是伪精确（产品判断）。
+    """
+
+    deterministic = report.deterministic_json if isinstance(report.deterministic_json, dict) else {}
+    datasets = [item for item in deterministic.get("datasets") or [] if isinstance(item, dict)]
+
+    integrity = None
+    parse_warnings: int | None = None
+    if datasets:
+        manifest_count = sum(1 for item in datasets if item.get("parse_encoding"))
+        if manifest_count:
+            integrity = "对账通过"
+        warnings = [item.get("parse_warnings_count") for item in datasets if isinstance(item.get("parse_warnings_count"), int)]
+        parse_warnings = sum(warnings) if warnings else None
+
+    coverage = None
+    coverage_payload = deterministic.get("coverage")
+    if isinstance(coverage_payload, dict) and coverage_payload.get("total") is not None:
+        coverage = f"{coverage_payload.get('included')}/{coverage_payload.get('total')}"
+
+    excluded = [item.get("excluded_correlation_pairs") for item in datasets if isinstance(item.get("excluded_correlation_pairs"), int)]
+    excluded_correlations = sum(excluded) if excluded else None
+
+    small_flags = [1 for item in datasets if item.get("small_sample") is True]
+    small_sample = sum(small_flags) if small_flags or datasets else None
+
+    fact_check = deterministic.get("fact_check")
+    fact_check_rate = fact_check.get("rate") if isinstance(fact_check, dict) else None
+
+    return {
+        "integrity": integrity,
+        "parse_warnings": parse_warnings,
+        "coverage": coverage,
+        "excluded_correlations": excluded_correlations,
+        "small_sample": small_sample,
+        "fact_check_rate": fact_check_rate,
+    }
+
+
 def _auto_report_payload(report: AutoAnalysisReport, db: Session) -> dict[str, Any]:
     from .job_handlers import _active_narration_job  # in-function: job_handlers imports this module
 
     payload = model_dict(report)
     # Convenience alias: the web client renders the markdown directly.
     payload["markdown"] = report.content_markdown
+    # 批 39：可信度评分卡 —— 已有可信性信号的并列呈现（不做加权总分）。
+    payload["trust_card"] = _trust_card(report)
     # Batch 16: the in-flight narration job id (null once terminal) lets the
     # web client resume its poll after a page switch instead of showing a
     # stale "补生成" button.

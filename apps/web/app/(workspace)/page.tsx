@@ -44,6 +44,14 @@ type AutoReport = {
   confirmed_at?: string | null;
   narration_job_id?: string | null;
   narration_progress?: { progress?: number | null; current_step?: string | null } | null;
+  trust_card?: {
+    integrity?: string | null;
+    parse_warnings?: number | null;
+    coverage?: string | null;
+    excluded_correlations?: number | null;
+    small_sample?: number | null;
+    fact_check_rate?: number | null;
+  } | null;
 };
 
 type BatchUploadResult = {
@@ -791,6 +799,24 @@ export default function WorkbenchPage() {
               </button>
             </div>
           </div>
+          {report.trust_card && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+              {report.trust_card.integrity && <span className="tag tag-green">✓ 解析对账通过</span>}
+              {report.trust_card.parse_warnings !== null && report.trust_card.parse_warnings !== undefined && (
+                <span className="tag tag-slate">解析警告 {report.trust_card.parse_warnings} 条</span>
+              )}
+              {report.trust_card.coverage && <span className="tag tag-blue">覆盖 {report.trust_card.coverage} 数据集</span>}
+              {report.trust_card.excluded_correlations !== null && report.trust_card.excluded_correlations !== undefined && (
+                <span className="tag tag-blue">排除伪相关 {report.trust_card.excluded_correlations} 对</span>
+              )}
+              {report.trust_card.small_sample !== null && report.trust_card.small_sample !== undefined && (
+                <span className="tag tag-slate">小样本 {report.trust_card.small_sample} 个</span>
+              )}
+              {report.trust_card.fact_check_rate !== null && report.trust_card.fact_check_rate !== undefined && (
+                <span className="tag tag-green">数字可验证率 {Math.round(report.trust_card.fact_check_rate * 100)}%</span>
+              )}
+            </div>
+          )}
           <div style={{ display: "grid", gap: 4 }}>
             <ReportMarkdown markdown={markdown} />
             {narratingId === report.id && (
