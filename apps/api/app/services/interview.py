@@ -24,6 +24,7 @@ from ..ai_context import (
     validate_interview_summary,
     validate_next_question,
 )
+from ..analytics.fact_check import build_number_index, check_text_numbers
 from ..analytics.id_hygiene import build_label_map, label_for_title, strip_resource_ids
 from ..common import model_dict
 from ..models import (
@@ -485,6 +486,10 @@ async def distill_interview(
     # ---- auto-persist drafts (batch 18) ----
     created: list[Insight] = []
     discarded = 0
+    # 批 38：数字回填校验累加器（非成功路径也要有值，返回结构恒定）。
+    fact_total = 0
+    fact_verified = 0
+    unverified_claims: list[dict[str, Any]] = []
     if result["status"] == "succeeded":
         # Idempotent refresh: drop this project's still-draft insights that
         # earlier distillation runs produced (ai_run_id -> interview_distill
@@ -511,6 +516,9 @@ async def distill_interview(
 
         type_by_section = {"facts": "fact", "hypotheses": "hypothesis", "recommendations": "recommendation"}
         distill_label_map = build_label_map(_grounding_artifacts(db, project))
+        # 批 38：数字回填校验 —— 索引来自 grounding 产物 payload（与提示词
+        # 同源）；结果只进返回值，落库结构不变。
+        fact_index = build_number_index([*report_items, *analysis_items])
         for section, insight_type in type_by_section.items():
             for claim in output.get(section) or []:
                 evidence = claim.get("evidence") or []
@@ -518,6 +526,13 @@ async def distill_interview(
                 if not text or not evidence:
                     discarded += 1
                     continue
+                claim_check = check_text_numbers(text, fact_index)
+                fact_total += claim_check["total"]
+                fact_verified += claim_check["verified"]
+                if claim_check["unverified"] and len(unverified_claims) < 5:
+                    unverified_claims.append(
+                        {"text": text[:120], "unverified": claim_check["unverified"]}
+                    )
                 insight = Insight(
                     workspace_id=project.workspace_id,
                     project_id=project.id,
@@ -550,6 +565,13 @@ async def distill_interview(
         "discarded_claims": discarded,
         "interview_answer_count": len(questions),
         "analysis_artifact_count": len(analysis_items),
+        # 批 38：数字回填校验汇总（rate 为 None 表示蒸馏文本无数值可校验）。
+        "fact_check": {
+            "total": fact_total,
+            "verified": fact_verified,
+            "rate": round(fact_verified / fact_total, 4) if fact_total else None,
+            "unverified_claims": unverified_claims,
+        },
     }
 
 

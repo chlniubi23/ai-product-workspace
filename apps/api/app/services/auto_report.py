@@ -16,6 +16,7 @@ from ..ai_context import (
 from ..analytics.dag import build_lineage_map
 from ..analytics.digest import column_display, dataset_display
 from ..analytics.engine import AnalysisEngine, choose_trend_frequency
+from ..analytics.fact_check import build_number_index, check_text_numbers
 from ..analytics.id_hygiene import build_label_map, strip_resource_ids
 from ..analytics.outliers import compute_column_outliers
 from ..analytics.rounding import round_stat
@@ -650,6 +651,20 @@ async def _narrate_report(
             ]
         )
         report.key_findings = [strip_resource_ids(str(item), narration_label_map) for item in output.get("key_findings") or []]
+        # 批 38：数字回填校验 —— AI 文本中的每个数字回查确定性聚合索引，
+        # 结果只写 deterministic_json["fact_check"]（markdown 与状态机不变）。
+        fact_index = build_number_index({"datasets": deterministic_json.get("datasets") or [], "findings": digest})
+        narration_text = "\n".join(
+            [
+                str(output.get("summary") or ""),
+                *[str(section.get("content") or "") for section in output.get("sections") or [] if isinstance(section, dict)],
+                *[str(item) for item in report.key_findings],
+            ]
+        )
+        report.deterministic_json = {
+            **(report.deterministic_json if isinstance(report.deterministic_json, dict) else {}),
+            "fact_check": check_text_numbers(narration_text, fact_index),
+        }
         report.recommendations = list(output.get("recommendations") or [])
         report.limitations = list(output.get("limitations") or [])
         report.content_markdown = _report_markdown(
