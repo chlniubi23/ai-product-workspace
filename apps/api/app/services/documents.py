@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..ai_context import assert_safe_ai_context, build_ai_context
+from ..ai_context import assert_safe_ai_context, build_ai_context, extract_ai_insights
 from ..analytics.id_hygiene import build_label_map, strip_resource_ids
 from ..common import error, model_dict, serialize
 from ..models import (
@@ -398,13 +398,18 @@ def _collect_source_refs(body: DocumentGenerate, db: Session, project: Project) 
 def _build_document_context(body: DocumentGenerate, db: Session, user: User) -> dict[str, Any]:
     """Assemble the grounded, firewall-safe context for AI document rendering.
 
-    The artifacts channel carries six evidence classes: confirmed insights,
-    answered interview questions, approved decisions, the selected solution
-    (batch 17), the per-dataset aggregates of the latest auto-report and its
-    landed finding artifacts.  Everything passes through ``build_ai_context``;
-    no raw rows or storage paths ever leave.  ``solution``/``decision`` are
-    additionally returned as top-level dicts for the two-pass section prompts
-    (they never pass through the firewall themselves).
+    The artifacts channel carries five evidence classes: answered interview
+    questions, approved decisions, the selected solution (batch 17), the
+    per-dataset aggregates of the latest auto-report and its landed finding
+    artifacts.  Confirmed insights ride the top-level ``insights`` channel
+    instead (batch 40): their artifacts payload keyed the body as ``content``,
+    which the feedback blacklist strips, so the AI never saw the adopted body.
+    ``extract_ai_insights`` is the sanctioned projection for human-adjudicated
+    rows -- the same channel the Copilot route uses.  Everything passes through
+    ``build_ai_context``; no raw rows or storage paths ever leave.
+    ``solution``/``decision`` are additionally returned as top-level dicts for
+    the two-pass section prompts (they never pass through the firewall
+    themselves).
     """
 
     project = project_for(db, user, body.project_id)
@@ -419,15 +424,20 @@ def _build_document_context(body: DocumentGenerate, db: Session, user: User) -> 
         .order_by(Insight.created_at.desc())
         .limit(_DOC_INSIGHT_LIMIT)
     ).all()
-    for item in insights:
-        artifacts.append(
+    # The dicts re-key ``evidence_json`` to ``evidence``: the projection reads
+    # that key, so handing it raw ORM rows would silently drop the evidence.
+    insights_payload = extract_ai_insights(
+        [
             {
                 "id": item.id,
-                "artifact_type": "insight",
                 "title": item.title,
-                "payload_json": {"content": item.content, "confidence": item.confidence, "evidence": item.evidence_json},
+                "content": item.content,
+                "confidence": item.confidence,
+                "evidence": item.evidence_json,
             }
-        )
+            for item in insights
+        ]
+    )
 
     questions = db.scalars(
         select(InterviewQuestion)
@@ -602,6 +612,7 @@ def _build_document_context(body: DocumentGenerate, db: Session, user: User) -> 
     safe_context = build_ai_context(
         goal=project.goal_statement or "",
         artifacts=artifacts,
+        insights=insights_payload,
         question=f"请依据以上证据材料撰写一份{body.title}（文档类型 {body.document_type}）",
     )
     return {

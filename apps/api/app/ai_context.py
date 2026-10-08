@@ -549,10 +549,20 @@ def assert_safe_ai_context(context: Mapping[str, Any]) -> dict[str, Any]:
     unknown = set(context) - ALLOWED_CONTEXT_KEYS
     if unknown:
         raise AIContextError(f"AI context contains non-allowlisted fields: {sorted(unknown)}")
-    forbidden = _contains_forbidden(context)
+    # ``insights`` is the server-side channel for human-adjudicated rows: its
+    # entries carry a sanctioned ``content`` key (see ``_extract_insights``),
+    # so a raw forbidden-key scan would reject the very shape ``build_ai_context``
+    # produces.  Re-project instead -- the projection is that channel's
+    # sanitizer (fixed key set, scalar caps, evidence item keys still checked
+    # against the forbidden lists) -- keeping construct and re-validate
+    # symmetric; smuggled keys are dropped by the projection, never passed.
+    forbidden = _contains_forbidden({key: value for key, value in context.items() if key != "insights"})
     if forbidden:
         raise AIContextError(f"AI context contains forbidden field: {forbidden}")
-    return {key: context.get(key) for key in ALLOWED_CONTEXT_KEY_ORDER}
+    result = {key: context.get(key) for key in ALLOWED_CONTEXT_KEY_ORDER}
+    if result["insights"] is not None:
+        result["insights"] = _extract_insights(result["insights"])
+    return result
 
 
 # JSON schema used in provider prompts and tests.  ``evidence`` is required on

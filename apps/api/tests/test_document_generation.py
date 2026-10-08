@@ -381,13 +381,83 @@ def test_build_document_context_assembles_four_artifact_classes(client, owner, p
     types = {item.get("payload", {}).get("artifact_type") or item.get("artifact_type") for item in artifacts}
     # payload keys are flattened by the sanitizer; inspect raw artifacts instead
     raw_types = {item["artifact_type"] for item in context["safe_context"]["artifacts"]}
-    assert {"insight", "interview_answer", "decision"} <= raw_types
+    # batch 40: confirmed insights ride the top-level insights channel; the
+    # artifacts channel keeps only the remaining evidence classes.
+    assert {"interview_answer", "decision"} <= raw_types
+    assert "insight" not in raw_types
     # batch 17: the decision chain rides as top-level keys for the two-pass prompts
     assert context["decision"]["problem_statement"] == "旧版本滞留"
     assert context["solution"] is None  # no selected solution in this fixture
     # dataset_summary appears once an auto-report exists for the project
     assert types  # sanitizer output remains structured
     assert context["evidence"] == [{"type": "insight", "id": insight["id"]}]
+
+
+def test_build_document_context_routes_insight_bodies_to_insights_channel(client, owner, project):
+    """批 40：已确认洞察正文必须进入 AI 上下文。
+
+    旧装配把洞察塞进 artifacts 且正文键为 ``content``——该键在反馈内容黑名单内，
+    出站时被静默剥离，AI 只能看到标题/置信度。现在走顶层 ``insights`` 通道
+    （``extract_ai_insights`` 投影，与 Copilot 同一通道），artifacts 不再有 insight 条目。
+    """
+
+    from app.services.documents import _build_document_context as build
+
+    ready = make_ready(client, owner, project)
+    insight = confirmed_insight(client, owner, ready)
+
+    with database.SessionLocal() as db:
+        from app.models import User
+        from app.schemas import DocumentGenerate
+
+        user = db.get(User, owner["user"]["id"])
+        body = DocumentGenerate(
+            project_id=ready["project"]["id"],
+            document_type="prd",
+            title="洞察正文通道测试",
+            source_refs=[{"type": "insight", "id": insight["id"]}],
+        )
+        context = build(body, db, user)
+
+    safe = assert_safe_ai_context(dict(context["safe_context"]))
+    assert safe["insights"], "confirmed insight bodies must reach the AI context"
+    assert [item["id"] for item in safe["insights"]] == [insight["id"]]
+    assert safe["insights"][0]["title"] == insight["title"]
+    assert safe["insights"][0]["content"] == insight["content"]
+    assert safe["insights"][0]["confidence"] == insight["confidence"]
+    # 投影输入把 evidence_json 重键为 evidence，证据骨架必须仍在（不得因换通道而丢）。
+    assert safe["insights"][0]["evidence"][0]["id"] == ready["version_id"]
+    assert all(item["artifact_type"] != "insight" for item in safe["artifacts"])
+
+
+def test_section_context_preserves_insights_under_dataset_slicing():
+    """批 40：分节裁剪只切 artifacts；顶层 insights 通道原样穿透防火墙复核。"""
+
+    from app.ai_context import build_ai_context
+    from app.services.documents import _section_context
+
+    insights_payload = [
+        {"id": "ins-1", "title": "已确认事实", "content": "渠道活动期间事件量翻倍。", "confidence": "high"}
+    ]
+    doc_context = {
+        "safe_context": build_ai_context(
+            goal="提升转化",
+            artifacts=[
+                {"id": "finding-1", "artifact_type": "finding", "title": "发现一", "payload": {"kind": "correlation", "dataset": "数据集A", "severity": 2}},
+                {"id": "ds-a", "artifact_type": "dataset_summary", "title": "数据集A", "payload": {"name": "数据集A", "metrics": [{"name": "激活转化率"}]}},
+                {"id": "ds-b", "artifact_type": "dataset_summary", "title": "数据集B", "payload": {"name": "数据集B", "metrics": [{"name": "7日留存率"}]}},
+            ],
+            insights=insights_payload,
+            question="写 PRD",
+        ),
+        "solution": None,
+        "decision": None,
+        "findings_summary": ["发现一"],
+    }
+    context = _section_context(doc_context, ["finding-1"], [], "", "")
+    ids = [item["id"] for item in context["artifacts"]]
+    assert "ds-a" in ids and "ds-b" not in ids  # 数据集聚合确实被裁剪
+    assert context["insights"] == insights_payload  # insights 通道不被分节裁剪触碰
 
 
 # --------------------------------------------------------------------------

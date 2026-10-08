@@ -12,6 +12,9 @@
 **最新增量**：2026-09-13 修复「每跑一次测试回收站堆积约 1 万个文件」（未提交，见 §13.4 / §11.15）——测试运行时迁到 `%TEMP%\apw-test-runtime`、测试库改 `journal_mode=MEMORY` + `synchronous=OFF`，全量耗时 210s → **78.74s**、回收站增量 **0**。
 **第二批增量**：2026-09-13 落地双维度质量 + 可审计排除明细 + 死代码清理（未提交，见 §13.4）——`analysis_quality` 不再恒 0、`excluded_correlation_pairs_detail` 可人工审计（不出站）、抽取列防同名覆盖、删除 `enhanced_engine.py` / `test_enhanced_engine.py` / `detect_outliers_lof`、修 `types.py` 的 0 值 bug；全量 **374 passed, 1 xfailed**（375 收集）。
 
+**2026-10-08 复核（只读核对 + 本文件刷新，未改任何业务代码）**：git HEAD = `20efb11`（**batch 39 信任卡已提交**，feat(api,web)），工作区干净（`git status --porcelain -uall` 为空）；137 路由 / 14 router / 17 迁移从代码实测**未变**；全量 `pytest tests -q` → **454 passed, 1 skipped（eval harness，APW_EVAL 门控）, 1 xfailed（456 收集，85.19s）**，`ruff check app tests` 0 错，前端 `typecheck`/`lint` 0 错；测试文件 29→36。**此前各增量行与 §13 中的「未提交」字样均已随后续提交成为历史（全部入库）**；§3/§3.1/§4/§7 行数快照、§9.1/§10/§11/§13 状态、§13.3 计数已就地更新。
+**2026-10-08 批 40（同日后续）**：修复 §11.18 文档生成丢失洞察正文（insights 通道切换 + `assert_safe_ai_context` 构造/复核对称性修复，见 §13.4 批 40 段），456 passed / 458 收集。
+
 **协作协议（用户强制，2026-09-13 起）**：每次开发任务结束后必须核对本文件，只增量更新真正变化的条目；并向用户回报「改了什么 / 是否影响架构 / 是否需要更新本文件 / 本文件更新了哪些条目」四项——详见 §12.1。
 
 ---
@@ -62,7 +65,7 @@
 AI_Product_Workspace/
 ├── .env / .env.example          # 配置（DEEPSEEK_API_KEY 等已配置）
 ├── docker-compose.yml           # 仅 mysql:8.0 服务
-├── README.md                    # 已扩写（工作区中已暂存未提交，见 §13）
+├── README.md                    # 已扩写并入库（仓库整理批提交 8）
 ├── PROJECT_CONTEXT.md           # 本文件
 ├── output/test-runtime/         # 旧测试运行产物（gitignore；现运行时已迁至 %TEMP%\apw-test-runtime）
 └── apps/
@@ -70,7 +73,7 @@ AI_Product_Workspace/
     │   ├── app/
     │   │   ├── main.py          #   151 行：app 实例 + CORS/legacy 中间件 + 异常处理器 + lifespan + include_router ×14 + health 三端点 + _register_job_handlers()
     │   │   ├── common.py        #   112 行：ok()/error() 信封、_request_id、serialize/model_dict、page_params/paged、_require_pandas 懒加载哨兵、_redact_validation_details
-    │   │   ├── ai_context.py    #   1326 行：AI 出站防火墙 + 全部输出契约（11 个 schema/校验器）
+    │   │   ├── ai_context.py    #   1359 行：AI 出站防火墙 + 全部输出契约（11 个 schema/校验器）
     │   │   ├── models.py        #   708 行：V11 核心 20 表 + legacy 10 表
     │   │   ├── schemas.py       #   461 行
     │   │   ├── auth.py / config.py / db.py
@@ -81,17 +84,17 @@ AI_Product_Workspace/
     │   │   │   ├── evidence.py           #   _check_evidence_scope/证据强制/引用范围校验
     │   │   │   ├── datasets.py           #   读文件/字段 schema/质量摘要/_safe_data_file 越界防护
     │   │   │   ├── analysis_pipeline.py  #   分析产物持久化/配置校验/自动分析计划/_run_auto_analyses
-    │   │   │   ├── ai_stages.py          #   787 行：_run_ai_stage 模板/_deepseek_answer/Copilot 编排胶水/_AI_ARTIFACT_KEY_MAP
-    │   │   │   ├── auto_report.py        #   556 行：报告聚合（pandas）+ 确定性骨架 + _narrate_report
-    │   │   │   ├── documents.py          #   740 行：文档上下文装配 + Markdown 渲染 + 三遍生成提示词
-    │   │   │   ├── interview.py          #   600 行：自适应一问一答 + 收尾小结 + 蒸馏落库
+    │   │   │   ├── ai_stages.py          #   796 行：_run_ai_stage 模板/_deepseek_answer/Copilot 编排胶水/_AI_ARTIFACT_KEY_MAP
+    │   │   │   ├── auto_report.py        #   742 行：报告聚合（pandas）+ 确定性骨架 + _narrate_report + _trust_card
+    │   │   │   ├── documents.py          #   815 行：文档上下文装配（洞察走 insights 通道）+ 分节裁剪 + Markdown 渲染 + 三遍生成提示词
+    │   │   │   ├── interview.py          #   637 行：自适应一问一答 + 收尾小结 + 蒸馏落库
     │   │   │   ├── field_semantics.py    #   142 行：LLM 字段语义字典（仅 _handle_dataset_parse 调用）
-    │   │   │   └── job_handlers.py       #   829 行：job_executor 唯一实例 + 6 个 handler + _register_job_handlers
+    │   │   │   └── job_handlers.py       #   838 行：job_executor 唯一实例 + 6 个 handler + _register_job_handlers
     │   │   ├── routers/         #   14 个文件：auth/workspaces/projects/datasets/analysis/insights/interview/feedback/problems/decisions/documents/jobs/copilot/ai
     │   │   ├── analytics/       #   计算层（见 §3.1）
-    │   │   └── infrastructure/  #   jobs.py（285 行）/ llm/deepseek.py（828 行）
+    │   │   └── infrastructure/  #   jobs.py（285 行）/ llm/deepseek.py（830 行）
     │   ├── alembic/versions/    #   17 个迁移（0001..0017）
-    │   ├── tests/               #   29 个测试文件，386 用例
+    │   ├── tests/               #   36 个测试文件，456 用例（2026-10-08 实测收集）
     │   ├── pyproject.toml / requirements.txt
     │   └── Procfile
     └── web/                     # Next.js 14 前端
@@ -112,15 +115,15 @@ AI_Product_Workspace/
 
 | 文件 | 行数 | 状态 | 说明 |
 |---|---|---|---|
-| `engine.py` | 778 | 已提交 | **生产引擎**：`run_eda` / `run_trend_analysis` / `run_funnel_analysis` / `run_retention_analysis` / `run_anomaly_detection` / `run_group_comparison` + `choose_trend_frequency` + 函数式 facade；EDA 相关性统一接入增强计算，保留 legacy correlations 契约；payload 含 `excluded_correlation_pairs_detail`（≤20 条，人工审计用，不出站） |
+| `engine.py` | 783 | 已提交 | **生产引擎**：`run_eda` / `run_trend_analysis` / `run_funnel_analysis` / `run_retention_analysis` / `run_anomaly_detection` / `run_group_comparison` + `choose_trend_frequency` + 函数式 facade；EDA 相关性统一接入增强计算，保留 legacy correlations 契约；payload 含 `excluded_correlation_pairs_detail`（≤20 条，人工审计用，不出站） |
 | `quality.py` | 501 | 已提交 | `assess_quality`（生产契约：`overall_score`/`status` 仍是唯一门控）+ 双维度质量（`DataQualityMetrics`/`AnalysisQualityMetrics`/`ComprehensiveQualityReport`/`generate_quality_report`）；类型维度未传 `expected_types` 时自动派生（`_derived_expected_type`，仅 numeric/datetime/boolean），outlier 段用 `outliers.compute_column_outliers` |
 | `parsing.py` | 213 | 已提交 | v2 解析（千分位/货币/中文日期/k\|M\|万\|亿）+ `infer_column_type_v2`（返回 `semantic_type`/`parse_rate`/`constant`/`identifier`）；identifier 判据 `_looks_like_identifier`（无空白 + 长度 ≤ 40 + 无句读标点），无空格中文长句回落 `text` |
 | `text_metrics.py` | 217 | 已提交 | 自由文本数值列抽取（`{源列}__{指标}`）；标签末字符必须为字母/汉字且内层数字后不得紧跟单位；派生列撞名追加 `__dupN` 并写 `renamed_from`，report 记录 `display_variants`；**字符串列物化段抽为 `materialize_string_columns`（`UNPARSED_SAMPLE_LIMIT=5` 留痕 parser 拒绝的非空单元格）** |
-| `digest.py` | 355 | 已提交 | 规则化 findings digest（纯函数，阈值模块常量）；outlier 文案为「离群值」（IQR∪Z 并集口径） |
+| `digest.py` | 374 | 已提交 | 规则化 findings digest（纯函数，阈值模块常量）；outlier 文案为「离群值」（IQR∪Z 并集口径） |
 | `dag.py` | 340 | 已提交 | 派生列血缘识别与伪相关排除；`_match_builtin_rules` 只认 `rule.name`，排除理由从派生列一侧陈述 |
 | `corelation.py` | 255 | 已提交 | 显著性检验（p 值）+ 稳健相关 + 多方法（**依赖 scipy**）；血缘排除返回 `[{'var1','var2','reason'}]` 明细，`EXCLUDED_PAIRS_DETAIL_LIMIT=20` |
 | `outliers.py` | 393 | 已提交 | 对象级离群值（IQR/Z-score 并集统一口径 `compute_column_outliers`）；bool 列按 0/1 参与统计（golden 回归暴露的 quantile 崩溃修复） |
-| `types.py` | 306 | 已提交 | 类型感知统计（序数/占比/二元）；0 值用 `is not None` 判定；**序数指标含 nps**（批 33） |
+| `types.py` | 307 | 已提交 | 类型感知统计（序数/占比/二元）；0 值用 `is not None` 判定；**序数指标含 nps**（批 33） |
 | `rounding.py` | 51 | 已提交 | **批 33 新增**：`round_stat(value, digits=4)` 按**有效数字**舍入（`decimal.ROUND_HALF_EVEN`；0.00278→0.00278、45.678→45.68、739451.61→739500）；None/非有限/非数值一律返回 None。只用于报告行文与聚合展示（engine 内部计算不经此） |
 
 ---
@@ -136,7 +139,7 @@ AI_Product_Workspace/
 | LLM | DeepSeek `chat/completions`（OpenAI 兼容），默认模型 `deepseek-chat`；调用走 **httpx fallback**（`openai` SDK 不在依赖中） |
 | 前端 | Next.js 14.2 (App Router), React 18, TailwindCSS 3.4, ECharts 5.6, lucide-react |
 | 存储 | MySQL 8（生产）/ SQLite（dev+test） |
-| 测试 | pytest（实测 `385 passed, 1 xfailed`，386 收集；耗时随机器波动 约 78–117s，对账二次读取略有增加） |
+| 测试 | pytest（2026-10-08 批 40 实测 `456 passed, 1 skipped, 1 xfailed`，458 收集，82.96s；耗时随机器波动 约 78–117s） |
 | Lint | ruff（line-length 120, target py311）；eslint + prettier（前端） |
 
 **可选依赖**：`scikit-learn` 走 `[project.optional-dependencies] ml`（`scikit-learn>=1.4,<2`）。~~仅供 `outliers.py` 的 LOF 使用~~ **2026-09-13：`detect_outliers_lof` 已随死代码清理删除，`scikit-learn` 当前**没有消费方**；`[ml]` extra 暂保留（删除会让 `pip install -e ".[ml]"` 直接报错），pyproject 注释已同步改为"当前无消费方"。`scipy` 为必需依赖（`corelation.py` 顶层导入）。
@@ -198,20 +201,20 @@ AI_Product_Workspace/
 
 ## 7. AI / LLM 逻辑（本项目的核心特色）
 
-### 7.1 出站上下文防火墙（`app/ai_context.py`，1326 行，**【实测】**）
+### 7.1 出站上下文防火墙（`app/ai_context.py`，1359 行，**【实测】**）
 - `build_ai_context()` 是唯一合法出站构造器：白名单键为 `goal / metrics / artifacts / quality / schema / question / insights` 七个；`FORBIDDEN_CONTEXT_KEYS`（raw_rows/file_path/token/database_url…）、`_FEEDBACK_CONTENT_KEYS`（feedback/content/comment/…约 25 个变体键）、行级列表键（`_ROW_LIST_KEYS`：rows/records/samples…）一律剔除；Email/电话正则脱敏（ISO 日期先保护后还原，修正了「`2026-03-30` 被手机号正则误杀」的 P0）。
 - **聚合列表白名单 `_AGGREGATE_LIST_KEYS`**（**实测 17 个键**：`bins/breakdown/categories/cohorts/counts/evidence/ids/labels/means/medians/metrics/pairs/periods/quantiles/rates/series/stages`）：只有这些键下的列表才会保留，其余列表（含嵌套）被丢弃。Phase 1 新增 `pairs` 仅承载变量对标量统计（p 值/稳健系数），不承载行级数据。行级禁止键 `_ROW_LIST_KEYS` **实测 12 个**（`cells/cell_values/data/observations/raw/raw_data/raw_rows/records/rows/sample_rows/samples/user_events`）。生产产物靠 `services/ai_stages.py:_AI_ARTIFACT_KEY_MAP`（`columns→metrics`、`stats→metrics`、`cohort_results→cohorts`、`group_results→categories`、`anomalies→evidence`、`trend_points→series`、`correlation_pairs_detail→pairs`）做适配后穿过。
-- `assert_safe_ai_context()` 复检；`validate_ai_output()` 强制输出含 `facts/hypotheses/recommendations/limitations` 四节、每条 claim 必带 evidence 数组。
+- `assert_safe_ai_context()` 复检；**批 40 起顶层 `insights` 键不再做裸禁键扫描、改为经 `_extract_insights` 再投影**（该通道的 `content` 键是投影明确许可的——人工裁决正文；再投影即该通道的消毒器：固定五键、标量上限、evidence 条目键仍过禁键表；构造与复核回到同一口径，走私键被投影丢弃而非放行。此前二者不对称：`build_ai_context` 产出的 insights 形状过不了 assert——从未暴露只因 Copilot 路径不过 assert、documents 的 insights 恒为空）；`validate_ai_output()` 强制输出含 `facts/hypotheses/recommendations/limitations` 四节、每条 claim 必带 evidence 数组。
 - 同文件定义全部阶段契约：`REPORT_OUTPUT_SCHEMA`/`validate_report_output`、`DOCUMENT_OUTLINE_SCHEMA`、`DOCUMENT_SECTION_SCHEMA`、`DOCUMENT_SECTIONS_SCHEMA`、`PROBLEM_DRAFT_SCHEMA`、`SOLUTION_DRAFTS_SCHEMA`、`DECISION_DRAFT_SCHEMA`、`NEXT_QUESTION_SCHEMA`、`SUMMARY_SCHEMA`、`FIELD_SEMANTICS_SCHEMA`。
 - 反馈键清单单一来源在本文件：`services/ai_stages.py` 的请求侧消毒清单 = `_FEEDBACK_CONTENT_KEYS ∪ {sample, samples}`。
 
-### 7.2 LLM 适配层（`app/infrastructure/llm/deepseek.py`，828 行，**【实测】**）
+### 7.2 LLM 适配层（`app/infrastructure/llm/deepseek.py`，830 行，**【实测】**）
 - `DeepSeekAdapter.complete()`：PII 脱敏所有消息（8000 字符截断）、JSON mode（`response_format: json_object`）、指数退避重试（429/5xx/网络错）、usage 统计。
 - 工具白名单 `ALLOWED_TOOL_NAMES` **12 个**（8 个只读 L1：`get_project_context`/`get_dataset_schema`/`run_eda`/`run_trend_analysis`/`run_funnel_analysis`/`run_retention_analysis`/`run_anomaly_detection`/`get_feedback_summary` + 4 个需审批的占位：`create_insight_draft`/`create_decision_draft`/`create_document_draft`/`request_approval`）；`_DANGEROUS_ARGUMENTS`（sql/python/code/path/url/api_key…）在 plan 校验与执行**双端**拦截。
 - `AnalysisPlan` pydantic 校验：steps ≤8、tool 必须在白名单、plan.project_id/dataset_id 不得越出请求范围、clarifying_question 与 steps 互斥。
 - `CopilotOrchestrator`：两段 provider 调用（plan → execute 只读工具 → answer），返回 `AskClarification` 或 `Completed`。
 
-### 7.3 请求级编排（`services/ai_stages.py`，787 行，**【实测】**）
+### 7.3 请求级编排（`services/ai_stages.py`，796 行，**【实测】**）
 - `_run_ai_stage()` 是**全部 AI 起草端点的共享模板**：feature flag 检查 → 日阀门 → provider 调用（含截断重试）→ 结构化校验 → AIRun 落账 → 审计。**未配 key 或 provider 故障一律降级为空草稿，绝不 500。** 可选参数自定义阶段契约：`response_schema`/`output_validator`/`empty_output`/`min_output_tokens`。
 - **预算体系（spend-then-account）**：唯一 pre-call 检查是工作区**日阀门**（`ai_daily_token_budget`，默认 `100_000_000`，实际等同无上限）；worst_case = est_prompt(≤12000) + max_tokens，超限则调用前拒绝（零消耗，details 含 daily_remaining/needed_tokens/中文 hint）；**调用后只记账、结果绝不因预算丢弃**。输出上限由模块常量 `HARD_OUTPUT_CAP = 16384` 硬顶（普通调用=设置派生 max_output 默认 4096，文档 8192，重试翻倍至多 16384，**不可配置**）。`ai_per_request_token_budget` 已不再拦截任何调用（仅作 worst_case 兜底参数）。
 - **截断感知与单次重试**：检查 `finish_reason == "length"` 或 JSON 解析失败 → 自动重试一次（max_tokens = min(desired×2, 16384)，system 追加「禁止截断」）；仍失败则 `failed` + `LLM_TRUNCATED`/`INVALID_AI_OUTPUT`；AIRun `input_summary_json.provider_meta` 记 `{finish_reason, retried}`。
@@ -232,10 +235,10 @@ AI_Product_Workspace/
 - **跨页可恢复**：`_auto_report_payload` 输出 `narration_job_id`/`narration_progress`，`_document_payload` 同构输出 `generation_job_id`/`generation_progress`；前端据此自动恢复轮询。
 
 ### 7.5 交付文档生成（三遍式，**【实测】**）
-- **上下文装配**（`services/documents.py:_build_document_context`）：四类证据走 artifacts 通道——confirmed 洞察（≤20）、已回答采访问题（≤30）、approved 决策（≤10）、最新报告的每数据集聚合（≤5）；另输出顶层 `solution`（selected 方案）与 `decision`（approved 决策四字段）。`_evidence_manifest` 是不可变溯源块（**AI 输出永不覆盖 manifest**）。
+- **上下文装配**（`services/documents.py:_build_document_context`）：**批 40 起 confirmed 洞察（≤20）改走顶层 `insights` 键**（`extract_ai_insights` 投影，与 Copilot 同一通道；投影输入把 `evidence_json` 重键为 `evidence`，直传 ORM 行会静默丢 evidence）；artifacts 通道保留——已回答采访问题（≤30）、approved 决策（≤10）、selected 方案（批 17）、最新报告的每数据集聚合（≤5）与 landed findings；另输出顶层 `solution` 与 `decision`（approved 决策四字段）。修复缘由：旧装配把洞察塞 artifacts 且正文键为 `content`，该键在 `_FEEDBACK_CONTENT_KEYS` 黑名单内被 `_sanitize_aggregate` 静默剥离，AI 只能看到标题/置信度/证据骨架。`_evidence_manifest` 是不可变溯源块（**AI 输出永不覆盖 manifest**）。
 - **时序**：路由只 find-or-create Document 壳并排队 job，不预写模板版本；job 收尾写入**第一个也是唯一一个**版本（AI 成功=succeeded，AI 失败=fallback+提示条，job 异常=无版本且 status=generation_failed）。
 - **三遍生成**（`job_handlers._handle_document_generation`）：① 大纲瘦身（`_outline_context` 只给 goal/findings 摘要/finding-N→材料序号映射/决策方案轴/字段标签，不含全量聚合；大纲产出每章 `key_refs` 2-4 个 finding 编号）；② 分节两波（prd 前两节顺序保叙事连贯 + 其余 `asyncio.gather` + `Semaphore(3)` 并行，注入 `outline_plan` 防重复；每节独立 `_run_ai_stage`、独立 AIRun、独立阀门、`min_output_tokens=8192` 不变）；③ 连贯校对（拼装正文 >6000 字触发，`_HARMONIZE_BATCH_SIZE=6` 分批，heading 集合与顺序一致才采纳该批，改写后各节字数 ≤原文 105%）。**降级链完整**：任一遍失败 → 单次旧路径 → 模板 fallback（横幅可见）。进度权重：装配 5 + 大纲 10 + 分节 70 + 校对 15 + 收尾 5。
-- **分节上下文裁剪（批 35）**：`documents.py:_section_context(doc_context, key_refs, outline_findings, written_summary, outline_plan)` 用本章 `key_refs` 解析材料切片——ref 直接命中材料 id，或 `finding-N` → 第 N 条 finding 产物（与 findings_summary 同序）→ 其 `payload.dataset` 指向的数据集聚合；`dataset_summary` 只保留命中切片，其余产物（findings/洞察/采访答案）全保留；key_refs 缺失/全部解析不到/命中 finding 但定位不到数据集 → **回退全量**（坏引用不挂整节也不饿死章节）。裁剪后的白名单键再过 `assert_safe_ai_context`；防火墙三键未动。分节 prompt 重写为三要素（≥1 数字锚点标注 `[finding-N]`/设计决策/badcase 兜底），「写深写透」空话删除，篇幅 700-1200 字硬约束保留。
+- **分节上下文裁剪（批 35；批 40 补注）**：`documents.py:_section_context(doc_context, key_refs, outline_findings, written_summary, outline_plan)` 用本章 `key_refs` 解析材料切片——ref 直接命中材料 id，或 `finding-N` → 第 N 条 finding 产物（与 findings_summary 同序）→ 其 `payload.dataset` 指向的数据集聚合；`dataset_summary` 只保留命中切片，其余产物（findings/采访答案等非数据集聚合）全保留，顶层 `insights` 通道不参与裁剪、原样穿透复核（批 40 实测锁定）；key_refs 缺失/全部解析不到/命中 finding 但定位不到数据集 → **回退全量**（坏引用不挂整节也不饿死章节）。裁剪后的白名单键再过 `assert_safe_ai_context`；防火墙三键未动。分节 prompt 重写为三要素（≥1 数字锚点标注 `[finding-N]`/设计决策/badcase 兜底），「写深写透」空话删除，篇幅 700-1200 字硬约束保留。
 - **时序降级契约**：分节裁剪失败等价于旧行为（全量），单次旧路径（`_document_system_prompt`）与共享尾缀去重后保留。
 
 ### 7.6 字段语义标签贯通（第二十一批，**【实测】**）
@@ -275,11 +278,11 @@ AI_Product_Workspace/
 - **导航**：`lib/navigation.ts`（74 行）含 `pipelineNavItems`（`ai` 标记驱动 `isAiStage`）与 `legacyRouteAliases`（middleware 308 重定向，含 `/settings` → `/`）。**【实测】**
 - **侧边栏进展同步（batch 30）**：`AppShell` 的快照重载有三路触发——`[authReady, pathname]`、监听 `apw-project-changed` 与 `apw-workflow-changed`（后者由 `lib/workflow.ts:notifyWorkflowChanged()` 派发，工作台的创建/删除/解析完成/叙述完成都会调用）、外加 10 秒可见性轮询兜底；带 ref 防重入。侧边栏状态为**逐页语义**（done=门控完成 / current=用户所在页 / pending），底部卡片是 SVG 进度圆环（中心百分比 + 「当前页面 · {pageTitle}」），不再有 x/11 与「前沿步骤」叙事。
 
-### 9.1 ⚠️ 未提交的前端视觉大改（**【新发现】**，详见 §13.2）
+### 9.1 前端视觉大改（**已提交入库**；用户决策：保留。详见 §13.1 提交 7）
 
-工作区中 `app/globals.css`（+168 行）、`app/(workspace)/page.tsx`（±48 行）、`lib/chartOption.ts`（±83 行）有未提交改动，是**一次视觉大改**，与文档记录的 batch 22/27 设计体系**冲突**：
+`app/globals.css`（+168 行）、`app/(workspace)/page.tsx`（±48 行）、`lib/chartOption.ts`（±83 行）最初是一批未提交的**视觉大改**，与文档记录的 batch 22/27 设计体系**冲突**（2026-09-13 已决策保留并入库；2026-10-08 复核：工作区无未提交改动）：
 
-| 维度 | 文档记录的 batch 22/27 规范 | 未提交改动实际状态 |
+| 维度 | 文档记录的 batch 22/27 规范 | 视觉大改实际状态（已入库） |
 |---|---|---|
 | 品牌色 | `--brand: #2563eb`（单一品牌蓝） | `--brand: #6366f1`（indigo） |
 | 渐变/光晕 | 「**线优于影**」、精密仪器、无渐变 | 新增 `--brand-gradient: linear-gradient(135deg,#6366f1,#8b5cf6)`、`--brand-glow` + 径向光晕、卡片/侧边栏渐变 |
@@ -290,10 +293,10 @@ AI_Product_Workspace/
 
 ---
 
-## 10. 当前完成度（**【实测】** 2026-09-13）
+## 10. 当前完成度（**【实测】** 2026-09-13；测试计数 2026-10-08 批 40 复核刷新）
 
 **已实现且验证**：
-- 后端测试套件 **378 passed, 1 xfailed**（379 收集，78.67s，实测运行；= 计算层修复批的 375 − 删除的 9 个 `test_enhanced_engine` 用例 + 双维度质量批 6 + 标签边界批 4）。速度从 ~210s 降到 ~78s，来自测试库 `journal_mode=MEMORY` + `synchronous=OFF`。覆盖：RBAC 与 workspace 隔离、数据管线（上传/版本/质量）、分析引擎全类型、增强相关性/类型感知/离群摘要与 AI 防火墙契约、**计算层 5 项正确性缺陷（血缘方向 / 离群单一口径 / 类型合规 / 中文长句 identifier 误判 / 文本指标标签吞数字）**、**双维度质量与排除明细可审计**、**测试运行时位置与日志模式守护**、AI 降级边界（无 key 绝不 500、输出契约、上下文白名单、反馈原文不外泄）、决策链规则、项目级联删除、报告叙述消毒、采访/蒸馏、文档并行生成、字段语义、用户资料。
+- 后端测试套件 **456 passed, 1 skipped（eval harness，需 APW_EVAL=1 才跑）、1 xfailed**（**458 收集，82.96s，2026-10-08 批 40 实测复跑**；历史沿革：计算层修复批 375 → 标签修复批 378 → 其后批 31–40 新增的测试文件与用例未逐批回填 §13.3 历史列，**以本次实测为准**）。速度从 ~210s 降到 ~78–85s，来自测试库 `journal_mode=MEMORY` + `synchronous=OFF`。覆盖：RBAC 与 workspace 隔离、数据管线（上传/版本/质量）、分析引擎全类型、增强相关性/类型感知/离群摘要与 AI 防火墙契约、**计算层 5 项正确性缺陷（血缘方向 / 离群单一口径 / 类型合规 / 中文长句 identifier 误判 / 文本指标标签吞数字）**、**双维度质量与排除明细可审计**、**测试运行时位置与日志模式守护**、AI 降级边界（无 key 绝不 500、输出契约、上下文白名单、反馈原文不外泄）、决策链规则、项目级联删除、报告叙述消毒、采访/蒸馏、文档并行生成、字段语义、用户资料。
 - 17 个 Alembic 迁移可从零建库；`.env` 已配置 DeepSeek；前后端均可本地跑通。
 - 前端 11 阶段页面、工作台、数据管理、历史回看齐全（**设置页已随第二十六批删除**）。
 - **全链路已真实手动冒烟走通**（11 阶段版 2026-09-01）。
@@ -305,7 +308,7 @@ AI_Product_Workspace/
 - Copilot 的 `create_insight_draft` 等 4 个写工具在白名单中但**尚无服务端 handler**（`ReadOnlyToolRegistry.execute` 会拒绝）。
 
 **缺失项**：
-- git 仓库已初始化并按批提交（conventional commits，未配置远端、未 push）；**有未提交工作区改动**（§13）。
+- git 仓库已初始化并按批提交（conventional commits，**仍未配置远端、未 push**——2026-10-08 实测 `git remote -v` 为空）；批 40 提交后工作区干净（见 §13.4）。
 - 前端零测试（无测试框架）；无 CI 流水线；无国际化层（界面中文硬编码）。
 
 ---
@@ -321,9 +324,9 @@ AI_Product_Workspace/
 3. ~~**【新发现】新测试实际不运行**~~ **已修复**：文件移入 `apps/api/tests/test_enhanced_engine.py`，并新增 `tests/test_enhanced_integration.py`。**2026-09-13 该测试文件已随 `enhanced_engine.py` 一并删除**；当前全量 375 收集。
 4. ~~**【新发现】增强分析引擎未集成**：原本与生产 `AnalysisEngine` 并行。~~ **Phase 1 已集成**：生产 `AnalysisEngine.run_eda` 统一走增强相关性实现；三个新类型（`correlation_analysis` / `type_profile` / `outlier_objects`）接入 `_analysis_artifacts` 与配置校验，按决策 3 仅手动可选，不进入 `_auto_analysis_plan`。
 5. ~~**【新发现】新引擎输出契约与防火墙冲突**：相关对/类型统计/离群对象原形状会被静默剥离，且行级离群信息触及安全边界。~~ **Phase 1 已修复**：`pairs` 加入 `_AGGREGATE_LIST_KEYS`（17 键）；相关详情映射为 `correlation_pairs_detail→pairs`；类型/离群产物统一为 `metrics` 列表；离群出站摘要不含 `row_index`/行引用；`_ROW_LIST_KEYS` 与反馈黑名单未放宽。
-6. **【新发现】前端视觉大改与既有设计体系冲突**：用户决定保留；Phase 1 已把 `chartOption.ts` 的硬编码 `#3b82f6` 统一到 `--brand: #6366f1` 的 indigo 体系，并新增 `correlation_heatmap` / `count_bar` 图表分支。
+6. **【新发现】前端视觉大改与既有设计体系冲突**：用户决定保留；Phase 1 已把 `chartOption.ts` 的硬编码 `#3b82f6` 统一到 `--brand: #6366f1` 的 indigo 体系，并新增 `correlation_heatmap` / `count_bar` 图表分支（已随仓库整理批提交，§13.1 提交 7）。
 
-**计算层正确性缺陷（2026-09-13 只读脚本实测复现 → 同批修复，未提交，见 §13.4）**：
+**计算层正确性缺陷（2026-09-13 只读脚本实测复现 → 同批修复，随后已入库，见 §13.4）**：
 
 1. ~~**血缘把源列误判为派生列**：`dag._match_builtin_rules` 的 `target_lower in rule.source_columns` 分支会把规则里的**源列本身**判成派生列 → `should_exclude_from_correlation` 排除错误的列对、方向说反，真正的派生列反而漏判。~~ **已修复**：只认 `rule.name`，并要求源列存在且不等于目标列。实测：`should_exclude(周活跃用户, 总用户数)` 由 `True`（理由反向）变为 `False`；`should_exclude(周活跃用户, 渗透率(% 占周活))` 由 `False`（漏判）变为 `True` 且方向正确。
 2. ~~**离群值三套口径**：`quality.assess_quality`（并集掩码）vs `outliers.build_outlier_aggregates`（IQR 列表 + Z 列表相加 → 重复计数、rate 可 >1、series 出重复值）vs `auto_report`/`digest`（仅 IQR）——同一概念三个数。~~ **已修复**：新增唯一实现 `outliers.compute_column_outliers`（并集掩码按行去重、`rate = count / 非空样本数`、极值样本按值去重有界），quality / raw map / 出站聚合 / auto_report 四处全部改由它驱动；digest 文案同步为「离群值」。实测同一列：旧 count `2` → 新 `1`，`series` 由重复两条变为单条。
@@ -346,7 +349,7 @@ AI_Product_Workspace/
 15. **测试基建小脆弱点**：`tests/conftest.py` 必须在 import app 前设置环境变量（ruff 按文件豁免 E402）。~~测试库文件在 `output/test-runtime`（每次 rebuild）。~~ **2026-09-13 已迁移**：测试运行时（数据库 + 上传产物）改放 `%TEMP%\apw-test-runtime`，并对测试库设 `PRAGMA journal_mode=MEMORY` / `synchronous=OFF` —— 本机上**除 `%TEMP%` 以外的任何目录**删除文件都会被系统级代理转成回收站条目（实测 `AppData\Local`、`AppData\Roaming`、用户主目录、OneDrive 目录均 `+1`，仅 `%TEMP%` 为 `+0`），原先每次跑测试会向回收站写入约 **1 万个** `api-test.db-journal`。两条不变量由 `tests/test_test_environment.py` 锁定；`APW_TEST_ROOT` 可覆盖位置。
 16. **真实 key 下 AI 输出可靠性残余**：`deepseek-v4-flash` 仍偶发返回非 JSON 或 provider 错误（降级路径行为正确）；Copilot 编排 plan 校验（`INVALID_ANALYSIS_PLAN`）真实 key 下偶发失败降级，未修。
 17. **项目删除与解析任务竞态可泄漏上传文件（未修）**：上传后 <1s 删除项目、后台 `dataset_parse` job 未完成时，`_purge_project` 返回 `files: 0` 且上传文件遗留磁盘（版本行被级联删除，泄漏仅限磁盘文件）。
-18. **文档生成上下文丢失洞察正文（未修）**：`_build_document_context` 的洞察 payload 用 `content` 键，而 `content` 在 `_FEEDBACK_CONTENT_KEYS` 黑名单内——装配时洞察正文被静默剥离，文档 AI 实际只能看到标题/置信度/证据骨架。修复方向：改用非保留键（如 `body`）或开专用通道。
+18. ~~**文档生成上下文丢失洞察正文**：`_build_document_context` 的洞察 payload 用 `content` 键，而 `content` 在 `_FEEDBACK_CONTENT_KEYS` 黑名单内——装配时洞察正文被静默剥离，文档 AI 实际只能看到标题/置信度/证据骨架。~~ **批 40 已修复（2026-10-08）**：confirmed 洞察改走顶层 `insights` 通道（`extract_ai_insights` 投影，与 Copilot 同一通道），artifacts 不再有 insight 条目；配套修复 `assert_safe_ai_context` 构造/复核不对称（insights 键改为再投影而非裸禁键扫描，见 §7.1）。测试锁定：正文进入上下文 + artifacts 无 insight 条目 + 分节裁剪后 insights 通道仍在。
 19. **`ai_per_request_token_budget` 已无拦截职责**却仍在设置契约中，易误导。
 20. **并行分节与日预算阀门的交互**：wave2 多个并行节各自 worst_case（≈2 万 tokens/节）叠加可能超出当日剩余预算——被拒节零消耗、降级为大纲要点拼接。默认日预算已上调至 100M，正常用量下不再触发；未做预算感知的波内调度。
 21. **历史事故记录（已修复，留档）**：第三批 AST 切割脚本曾丢弃 `_purge_project` 中的 `_safe_data_file` 调用（提交 42728e5..132a25e 期间删除路径失去越界防护），第四批重新接线并由 `test_guardrails` 锁定；第二十一批 `stage6` 页面曾残留函数外孤儿代码块导致前端三检阻塞（已删）。
@@ -405,7 +408,7 @@ AI_Product_Workspace/
 
 > 2026-09-13 执行仓库整理：原 §13.1 / §13.2 记录的全部内容已按语义分组提交（共 **8 条**，自 `22657c2` 起）；
 > `.workbuddy/`、`.workbuddy-ai/` 已加入 `.gitignore`（目录仍保留在磁盘）。
-> **其后又产生一批未提交改动（计算层修复批，见 §13.4），因此当前工作区**不是**干净的。**
+> **2026-10-08 复核：其后全部批次（计算层修复 → 侧边栏 → 文案 → 解析完整性 → 精度 → 提示词 → 分节裁剪 → id 卫生 → fact_check → 信任卡）均已提交，HEAD = `20efb11`，工作区干净（`git status --porcelain -uall` 为空）。**
 
 ### 13.1 本批提交（8 条）
 
@@ -445,7 +448,23 @@ AI_Product_Workspace/
 | 路由数 | 137（14 router） | 137（未改动） | 137（**未改动**） | 137（**未改动**） | 137（**未改动**） |
 | Alembic 迁移 | 17（0001..0017） | 17（未改动） | 17（**未改动**） | 17（**未改动**） | 17（**未改动**） |
 
-### 13.4 计算层修复批 + 测试环境批（**已修改未提交**，2026-09-13 第二/三批）
+**2026-10-08 复核实测（HEAD `20efb11`，batch 39 已提交，工作区干净）；同日批 40 后复跑刷新测试计数**：
+
+| 指标 | 实测值 |
+|---|---|
+| `ruff check app tests` | **0 错**（All checks passed） |
+| `pytest tests -q` | **456 passed, 1 skipped（eval harness，APW_EVAL 门控）, 1 xfailed**，82.96s（批 40 后：+2 用例） |
+| `pytest --collect-only -q` | **458 collected**（批 40 后） |
+| `git status --porcelain -uall` | 批 40 提交前仅本批四个改动文件（PROJECT_CONTEXT.md / ai_context.py / documents.py / test_document_generation.py） |
+| `git remote -v` | 空（仍未配置远端、未 push） |
+| 路由数 | 137（14 router，从 `app.main:app` 实例复数；批 40 未动路由） |
+| Alembic 迁移 | 17（0001..0017；批 40 零迁移） |
+| 前端门禁 | 批 40 零触碰（未跑；如触碰需 `typecheck`/`lint` 过） |
+| 测试文件 | **36 个**（`tests/test_*.py`；批 40 用例并入既有文件，未新增文件） |
+
+> 测试计数相比「侧边栏批 + 文案批」列（379 收集）的增量来自批 31–39 期间新增/扩充的用例（分节裁剪 13、id 卫生 13、fact_check 10、信任卡断言及其它），历史列不再逐批回填，**以本表为准**。
+
+### 13.4 计算层修复批 + 测试环境批（已于后续提交入库；标题保留历史批注，2026-09-13 第二/三批）
 
 第一批修复 §11「计算层正确性缺陷」的 4 项（血缘方向 / 离群单一口径 / 类型合规 / identifier 误判）并新增 9 个针对性用例；
 第二批解决「每跑一次测试回收站堆积约 1 万个文件」（见 §11.15），并新增 2 个守护用例；
@@ -503,7 +522,9 @@ AI_Product_Workspace/
 
 **数字回填校验 + eval harness（batch 38，2026-09-16，已提交 `e4be734`）**：①新增 `analytics/fact_check.py`（`build_number_index`/`check_text_numbers`，纯读聚合、零依赖零迁移）；②narration 成功后 fact_check 落 `deterministic_json["fact_check"]`；③distill 校验结果进返回值（累加器在 succeeded 分支外初始化——非成功路径返回结构恒定，曾因此 UnboundLocalError）；④eval harness `tests/test_eval_harness.py` 默认跳过。新增 `tests/test_fact_check.py`（10 用例：索引遍历/去重/深度上限、命中、舍入容忍、日期与序号跳过、「31 天」不误跳、total=0 rate=None、narration/distill 集成）。golden 与防火墙零改动。
 
-**报告可信度评分卡（batch 39，2026-09-16，**未提交**）**：①`auto_report.py:_trust_card` 汇总既有信号为并列标量，`_auto_report_payload` 统一注入 `payload["trust_card"]`（详情/列表/confirm/compute/narrate/legacy 全部出站路径自动携带）；②前端 `page.tsx` 报告卡头部渲染 chips（null 的不渲染，fact_check 缺失只显示确定性侧）；③零新接口、零迁移、零依赖、零 CSS 改动（复用 tag 类）。`test_auto_report.py` 新增 trust_card 断言（与 deterministic_json 镜像一致 + fact_check 缺失为 null）。
+**报告可信度评分卡（batch 39，2026-09-16，已提交 `20efb11` feat(api,web)）**：①`auto_report.py:_trust_card` 汇总既有信号为并列标量，`_auto_report_payload` 统一注入 `payload["trust_card"]`（详情/列表/confirm/compute/narrate/legacy 全部出站路径自动携带）；②前端 `page.tsx` 报告卡头部渲染 chips（null 的不渲染，fact_check 缺失只显示确定性侧）；③零新接口、零迁移、零依赖、零 CSS 改动（复用 tag 类）。`test_auto_report.py` 新增 trust_card 断言（与 deterministic_json 镜像一致 + fact_check 缺失为 null）。
+
+**洞察正文进入文档 AI 上下文（batch 40，2026-10-08）**：修 §11.18——①`documents.py:_build_document_context` 删除洞察→artifacts 的装配循环（旧 payload `content` 键撞 `_FEEDBACK_CONTENT_KEYS` 被静默剥离），改为 `extract_ai_insights` 投影（投影输入 `evidence_json`→`evidence` 重键，直传 ORM 行会静默丢 evidence）走 `build_ai_context(insights=...)`，与 Copilot 同一通道；②**配套修复**（批次方案外的必要偏离）：`ai_context.py:assert_safe_ai_context` 构造/复核不对称——`_contains_forbidden` 裸扫描会拒绝 `build_ai_context` 自己产出的 insights 形状（`content` 键），insights 顶层键改为经 `_extract_insights` 再投影（走私键被投影丢弃；黑名单/白名单/阈值零改动；此前从未暴露：Copilot 上下文不过 assert、documents 的 insights 恒空）；③路由/Schema/迁移/job handler 零改动；`tests/test_ai_boundary.py` 原样全绿（零 diff）。`test_document_generation.py` 新增 2 用例（正文进 insights 通道 + artifacts 无 insight 条目；分节裁剪后 insights 通道原样保留）并修正 1 处旧断言（`{"insight","interview_answer","decision"} <= raw_types` → 后两者保留 + `"insight" not in raw_types`——旧断言锁定的正是本批移除的缺陷行为）。实测：`ruff check app tests` 0 错；`pytest tests -q` → **456 passed, 1 skipped, 1 xfailed（458 收集，82.96s）**；路由 137 / 迁移 17 不变；前端零触碰。
 
 **本批实测**（**2026-09-14 复核更正**：原文误写 377 passed/378 收集/76.81s，与 §10、§13.3 及独立复验不符）：`ruff check app tests` 0 错；`pytest tests -q` → **374 passed, 1 xfailed（375 收集）**，耗时随机器波动、以最近一次实跑为准（约 78–105s；基线 366/1 → +9 计算层用例 + 2 环境守护用例，**零回归**）。**回收站增量实测为 0**（改造前每轮约 +1 万条）。
 
