@@ -353,6 +353,7 @@ AI_Product_Workspace/
 19. **`ai_per_request_token_budget` 已无拦截职责**却仍在设置契约中，易误导。
 20. **并行分节与日预算阀门的交互**：wave2 多个并行节各自 worst_case（≈2 万 tokens/节）叠加可能超出当日剩余预算——被拒节零消耗、降级为大纲要点拼接。默认日预算已上调至 100M，正常用量下不再触发；未做预算感知的波内调度。
 21. **历史事故记录（已修复，留档）**：第三批 AST 切割脚本曾丢弃 `_purge_project` 中的 `_safe_data_file` 调用（提交 42728e5..132a25e 期间删除路径失去越界防护），第四批重新接线并由 `test_guardrails` 锁定；第二十一批 `stage6` 页面曾残留函数外孤儿代码块导致前端三检阻塞（已删）。
+22. **Copilot 注入洞察的证据引用被静默丢弃（未修，2026-10-08 批 40 核验时发现）**：`routers/copilot.py` 把 confirmed 洞察的**原始 ORM 行**直接传给 `extract_ai_insights`，而投影读 `evidence` 键、模型字段是 `evidence_json` → `_get` 回落 None → evidence 整体缺席（`ai_context.py:_extract_insights` 的 `isinstance(evidence, (list, tuple))` 不命中）。影响仅限 Copilot 上下文的证据骨架缺失（欠包含，无泄漏面）；批 40 在 documents 侧用重键 `{..., "evidence": item.evidence_json}` 规避了同一陷阱（`services/documents.py` 有注释）。修复方向：Copilot 路由照搬同一重键模式，或给 `_extract_insights` 增加 `evidence_json` 回落读取；修复时补一条锁定测试。
 
 ---
 
