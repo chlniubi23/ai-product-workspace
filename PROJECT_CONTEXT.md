@@ -65,7 +65,7 @@
 AI_Product_Workspace/
 ├── .env / .env.example          # 配置（DEEPSEEK_API_KEY 等已配置）
 ├── docker-compose.yml           # 仅 mysql:8.0 服务
-├── README.md                    # 已扩写并入库（仓库整理批提交 8）
+├── README.md                    # 求职化改写（批 42）：在线演示入口 + 量化成果 + AI 工程亮点 + 修正部署两处错误（release 不自动跑 / CORS 默认 localhost）
 ├── PROJECT_CONTEXT.md           # 本文件
 ├── output/test-runtime/         # 旧测试运行产物（gitignore；现运行时已迁至 %TEMP%\apw-test-runtime）
 └── apps/
