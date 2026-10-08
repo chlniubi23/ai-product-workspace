@@ -9,7 +9,7 @@
 ![MySQL](https://img.shields.io/badge/MySQL-4479A1?style=flat-square&logo=mysql&logoColor=white)
 ![pandas](https://img.shields.io/badge/pandas-150458?style=flat-square&logo=pandas&logoColor=white)
 ![DeepSeek](https://img.shields.io/badge/LLM-DeepSeek-4D6BFE?style=flat-square)
-![tests](https://img.shields.io/badge/tests-456%20passed%20%2B%20golden%20regression-success?style=flat-square)
+![tests](https://img.shields.io/badge/tests-457%20passed%20%2B%20golden%20regression-success?style=flat-square)
 
 ## 🚀 在线体验
 
@@ -59,7 +59,7 @@ spend-then-account 预算模型（调用前只查日阀门、调用后只记账�
 
 | 指标 | 数值 | 说明 |
 |---|---|---|
-| 后端测试 | **456 passed + 1 skipped + 1 xfailed**（36 个测试文件） | 覆盖 RBAC/隔离、AI 降级边界、决策链规则、防火墙契约 |
+| 后端测试 | **457 passed + 1 skipped + 1 xfailed**（36 个测试文件） | 覆盖 RBAC/隔离、AI 降级边界、决策链规则、防火墙契约 |
 | 真实数据回归 | 9 份真实业务 CSV 的 golden profiles | 改计算口径立刻暴露偏差 |
 | **AI 输出质量基线** | **蒸馏结论数字回查 100%（15/15）· 证据命中 100% · 1,464 tokens/结论** | [真实 key 全链路 eval 报告](docs/eval/eval-report-2026-10-08.json) |
 | PRD 生成提速 | 19 min → **470 s（2.4×）** | 三遍式改造 + 分节并行（live 实测） |
@@ -119,7 +119,7 @@ spend-then-account 预算模型（调用前只查日阀门、调用后只记账�
 ## 工程质量细节（测试运维视角）
 
 - **AI 输出质量评估 harness**：golden 数据集 + 全链路产出度量（`fact_check_rate` / `evidence_hit_rate` / `token_per_conclusion`），`APW_EVAL=1` 可复跑；首批真实 key 基线见上表与 `docs/eval/`；
-- **GitHub Actions CI**：push 即跑后端 ruff + 456 项测试 + 前端 typecheck/lint；路由清单测试为版本无关实现，跨 FastAPI 0.115（本地）与 0.142（CI/生产）双重验证；
+- **GitHub Actions CI**：push 即跑后端 ruff + 457 项测试 + 前端 typecheck/lint；路由清单测试为版本无关实现，跨 FastAPI 0.115（本地）与 0.142（CI/生产）双重验证；
 - **解析完整性对账**：上传文件二次独立读取核对行列数，不一致抛 `PARSE_INTEGRITY_FAILED`，绝不带病入库；逐列语义/解析率落 `parse_manifest` 凭证；
 - **冻结式防回归**：137 条路由 (path, methods, name) 全量冻结在 `test_route_manifest.py`；
 - **ruff 零告警基线**，无 `noqa` 豁免；
@@ -134,7 +134,7 @@ spend-then-account 预算模型（调用前只查日阀门、调用后只记账�
 | LLM | DeepSeek（OpenAI 兼容；JSON mode / 指数退避 / httpx 回退） |
 | 数据库 | MySQL 8（生产）/ SQLite（开发测试） |
 | 部署 | Vercel（前端）+ Railway（API + MySQL + 持久卷），GitHub push 双端自动部署 |
-| 质量 | pytest 456+ · ruff · eslint/prettier · golden 回归 · eval harness |
+| 质量 | pytest 457+ · ruff · eslint/prettier · golden 回归 · eval harness |
 
 ## 本地开发
 

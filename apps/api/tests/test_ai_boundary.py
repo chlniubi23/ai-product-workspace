@@ -308,3 +308,30 @@ def test_validate_solution_drafts_truncates_options_and_rejects_bad_effort():
         validate_solution_drafts({"limitations": []})
     with pytest.raises(AIOutputValidationError):
         validate_solution_drafts({"options": [], "limitations": []})
+
+
+def test_phone_masking_never_mangles_resource_uuids():
+    """批 43：电话正则不得误杀资源 UUID（CI 在随机 UUID 上抓到的真实缺陷）。
+
+    UUID 中段 "222-4861-83" 恰好满足电话模式的最小宽度，脱敏后 id 变成
+    "210a0b4c-e[phone]ff-..."——上下文 id 与落库 id 不一致，幻觉 id 校验会
+    丢弃合法引用。防火墙与 adapter 两处 mask 都必须保护 UUID（与 ISO 日期
+    同一 protect-restore 机制）；真实电话/邮箱仍照常脱敏。
+    """
+
+    from app.ai_context import _mask_keeping_dates as context_mask
+    from app.ai_context import extract_ai_insights
+    from app.infrastructure.llm.deepseek import _mask_keeping_dates as adapter_mask
+
+    lucky = "210a0b4c-e222-4861-83ff-6f9c6046f140"
+    assert context_mask(lucky) == lucky
+    assert adapter_mask(lucky) == lucky
+    # 混合文本：UUID 保留、真实联系方式仍脱敏
+    mixed = f"联系 user@example.com 或 13800138000，引用产物 {lucky} 与日期 2026-03-30"
+    for mask in (context_mask, adapter_mask):
+        out = mask(mixed)
+        assert lucky in out and "2026-03-30" in out
+        assert "[email]" in out and "[phone]" in out
+    # 投影链路端到端：insights 通道里的 id 原样往返
+    projected = extract_ai_insights([{"id": lucky, "title": "事实", "content": "正文"}])
+    assert projected[0]["id"] == lucky

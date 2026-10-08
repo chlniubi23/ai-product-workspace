@@ -309,7 +309,8 @@ AI_Product_Workspace/
 
 **缺失项**：
 - git 仓库已初始化并按批提交（conventional commits）；**2026-10-08 已推送 GitHub 公开仓库 `chlniubi23/ai-product-workspace` 并完成线上部署（Vercel + Railway，见 §14）**；批 40 提交后工作区干净（见 §13.4）。
-- ~~无 CI 流水线~~ **2026-10-08 批 43 已加 GitHub Actions**（`.github/workflows/ci.yml`：后端 ruff+pytest / 前端 typecheck+lint，push+PR 触发；首跑暴露 fastapi 0.142 下路由清单测试的 `_IncludedRouter` AttributeError → 已改为版本无关的递归展平 `_iter_routes`，本地 0.115 与 CI 0.142 双验证通过）；前端仍零测试（无测试框架）；无国际化层（界面中文硬编码）。
+- ~~无 CI 流水线~~ **2026-10-08 批 43 已加 GitHub Actions**（`.github/workflows/ci.yml`：后端 ruff+pytest / 前端 typecheck+lint，push+PR 触发；首跑暴露 fastapi 0.142 下路由清单测试的 `_IncludedRouter` AttributeError → 已改为版本无关的递归展平 `_iter_routes`（`original_router` 分支），本地 0.115 与 CI 0.142 双验证通过）；前端仍零测试（无测试框架）；无国际化层（界面中文硬编码）。
+- **批 43 CI 抓到并修复概率性 PII 误杀缺陷**：UUID 中段形如 `222-4861-83` 满足电话正则最小宽度 → 资源 id 在 AI 上下文/消息体里被静默损坏为 `210a0b4c-e[phone]ff-...`（每次随机生成，本地 456 绿全靠运气，CI 第三跑命中）。修复：`ai_context.py` 与 `deepseek.py` 的 `_mask_keeping_dates` 同步加 UUID protect-restore（与 ISO 日期同机制，Plane-15 PUA 占位符与日期的 BMP 占位符不冲突）；`tests/test_ai_boundary.py` 新增固定中奖 UUID 的回归用例（457 收集基线）。**教训：两处同构的 mask 实现必须同步修（批 13 同款纪律）**。
 - **eval 基线已落袋（批 43，2026-10-08 真实 key 实跑）**：报告归档 `docs/eval/eval-report-2026-10-08.json`——蒸馏回查 15/15=100%、证据命中 100%、1464 tokens/结论、叙述回查 46/76=60.5%（5 处未命中均为模型自算派生值，进 manual_review）；README 量化表已引用。
 
 ---

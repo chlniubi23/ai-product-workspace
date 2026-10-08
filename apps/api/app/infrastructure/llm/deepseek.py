@@ -237,25 +237,41 @@ _EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I)
 # The ten-character minimum does NOT save ISO dates: "2026-03-30" is ten chars
 # with separators inside the class, so the pattern ate them whole and planted
 # fake "[phone]" markers in every report. Dates are shielded before masking
-# and restored afterwards (batch 13).
+# and restored afterwards (batch 13).  UUIDs get the same shield (batch 43):
+# a hex middle like "222-4861-83" satisfies the phone pattern's minimum, so
+# resource ids were mangled into "210a0b4c-e[phone]ff-..." in message bodies
+# roughly once per N ids -- the model then cited the broken id and the
+# hallucination check discarded a legitimate reference.  Ids are server
+# identifiers with no PII surface; protecting them is strictly safer.
 _PHONE_RE = re.compile(r"(?<!\d)(?:\+?\d[\d .()\-]{8,}\d)(?!\d)")
 _ISO_DATE_RE = re.compile(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}([ T]\d{1,2}:\d{2}(:\d{2})?)?")
+_UUID_RE = re.compile(r"(?i)(?<![0-9a-f])[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?![0-9a-f])")
 
 
 def _mask_keeping_dates(value: str) -> str:
-    """Protect-then-mask-then-restore emails/phones over ISO dates."""
+    """Protect-then-mask-then-restore emails/phones over ISO dates and UUIDs."""
 
     dates: list[str] = []
+    uuids: list[str] = []
 
-    def _protect(match: re.Match[str]) -> str:
+    def _protect_date(match: re.Match[str]) -> str:
         dates.append(match.group(0))
         # Private-use-area placeholders: unique per date and unmatchable by
         # the phone/email patterns.
         return chr(0xE000 + len(dates) - 1)
 
-    text = _ISO_DATE_RE.sub(_protect, value)
+    def _protect_uuid(match: re.Match[str]) -> str:
+        uuids.append(match.group(0))
+        # Plane-15 PUA (0xF0000+): disjoint from the BMP plane the date
+        # placeholders live in, so the two restore passes never collide.
+        return chr(0xF0000 + len(uuids) - 1)
+
+    text = _ISO_DATE_RE.sub(_protect_date, value)
+    text = _UUID_RE.sub(_protect_uuid, text)
     text = _EMAIL_RE.sub("[email]", text)
     text = _PHONE_RE.sub("[phone]", text)
+    for index, original in enumerate(uuids):
+        text = text.replace(chr(0xF0000 + index), original)
     for index, original in enumerate(dates):
         text = text.replace(chr(0xE000 + index), original)
     return text
