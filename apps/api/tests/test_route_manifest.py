@@ -159,11 +159,12 @@ ROUTE_MANIFEST: list[tuple[str, tuple[str, ...], str]] = [
 def _iter_routes(routes: Any) -> Iterator[Any]:
     """Flatten route containers across Starlette generations.
 
-    Starlette >= 1.x exposes included routers as lazy wrapper objects
-    (``_IncludedRouter``) that carry no ``path`` of their own; older versions
-    copy the APIRoute objects directly into ``app.routes``.  Walk both shapes
-    so the frozen manifest stays version-proof instead of crashing with
-    AttributeError on a newer dependency resolution.
+    Starlette >= 1.x wraps included routers in lazy ``_IncludedRouter``
+    objects that carry no ``path`` and expose the source router only via
+    ``original_router``; older versions copy the APIRoute objects directly
+    into ``app.routes``.  Walk both shapes so the frozen manifest stays
+    version-proof instead of dropping every included route (or crashing
+    with AttributeError) on a newer dependency resolution.
     """
     for route in routes:
         if hasattr(route, "path"):
@@ -173,9 +174,9 @@ def _iter_routes(routes: Any) -> Iterator[Any]:
         if nested is not None:
             yield from _iter_routes(nested)
             continue
-        router = getattr(route, "router", None)
-        if router is not None:
-            yield from _iter_routes(getattr(router, "routes", []))
+        included = getattr(route, "original_router", None)
+        if included is not None:
+            yield from _iter_routes(included.routes)
 
 
 def _live_manifest() -> list[tuple[str, tuple[str, ...], str]]:
