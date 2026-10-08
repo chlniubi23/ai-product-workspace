@@ -44,8 +44,8 @@
       <b>交付文档正文</b>：三遍式生成的复盘文档——目标指标表、验收点表、边界情况，结论逐条引用 finding 编号。
     </td>
     <td width="50%" valign="top">
-      <img src="docs/screenshots/05-document-page.png" alt="交付文档页"><br>
-      <b>交付文档页</b>：可继续生成、导出 Markdown、归档；左侧 11 阶段工作流进度 100%。
+      <img src="docs/screenshots/05-export-vscode.png" alt="导出文档在 VS Code 中打开"><br>
+      <b>导出即交付</b>：生成的 Markdown 一键导出，VS Code 打开即为成品文档——表格、章节、finding 引用无损保留。
     </td>
   </tr>
 </table>
