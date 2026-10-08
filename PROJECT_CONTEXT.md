@@ -565,14 +565,14 @@ AI_Product_Workspace/
 - API（Railway）：https://api-production-f21d.up.railway.app（`/health/ready` = ready，backend=mysql）
 - GitHub：https://github.com/chlniubi23/ai-product-workspace（公开，main 分支全量推送）
 
-**拓扑**：Railway 项目 `ai-product-workspace` 含 `api` 服务（Railpack 构建，`railway up` 本地直传 apps/api 为根；Procfile 的 web 行生效）+ `mysql` 服务（MySQL 9，内网 `mysql.railway.internal`，无公网暴露）+ `api-volume`（挂载 `/data`，`DATA_ROOT=/data`）。Vercel 项目 `ai-product-workspace`（apps/web，`vercel.json` 显式 `framework: nextjs`；env `NEXT_PUBLIC_API_BASE_URL` 指向 Railway API，Production/Preview 均设）。
+**拓扑**：Railway 项目 `ai-product-workspace` 含 `api` 服务（Railpack 构建；**2026-10-08 起已接 GitHub 自动部署**：repo `chlniubi23/ai-product-workspace` 的 main 分支 push 即自动部署，服务 Root Directory=`apps/api`（monorepo 关键配置）；Procfile 的 web 行生效；`railway up` 本地直传仍可用作手动通道）+ `mysql` 服务（MySQL 9，内网 `mysql.railway.internal`，无公网暴露）+ `api-volume`（挂载 `/data`，`DATA_ROOT=/data`）。Vercel 项目 `ai-product-workspace`（apps/web，`vercel.json` 显式 `framework: nextjs`；env `NEXT_PUBLIC_API_BASE_URL` 指向 Railway API，Production/Preview 均设）。
 
 **关键环境变量（api 服务）**：`DATABASE_URL`（**必须 `mysql+pymysql://` 前缀**，由 MySQL 服务 `MYSQL_URL` 手工变换——`config.resolved_database_url` 不做驱动归一）、`APP_SECRET_KEY`（部署时新生成的随机值）、`DEEPSEEK_API_KEY`、`API_CORS_ORIGINS`（**默认值是 `http://localhost:3000` 而非通配**，不设置则预检 400 "Disallowed CORS origin"；当前值为三个前端来源逗号并列：主域名 + 团队别名 + 部署哈希 URL）、`DATA_ROOT=/data`。
 
 **部署批次修复与已知事项**：
 1. `config.py` 容器路径修复（commit `beaa699`）：容器把应用放在顶层目录（`/app`）时 `API_ROOT.parents[1]` 抛 IndexError → 守卫回落 `API_ROOT`（REPO_ROOT 只喂 .env 发现，无行为影响）；全量测试 456+1+1 复跑全绿。
 2. **Railway 不执行 Procfile 的 `release:` 行**（Heroku 概念）——alembic 迁移不会自动跑；当前线上 schema 由启动时 `Base.metadata.create_all` + `_repair_missing_columns` 自举，`alembic_version` 表未 stamp。后续若走迁移需先 `railway ssh` 补 `alembic stamp head`。
-3. 部署走 CLI 直传（`railway up`），**未接 GitHub 自动部署**；GitHub 网络从本机间歇不可达（push 需重试循环）。
+3. ~~部署走 CLI 直传（`railway up`），未接 GitHub 自动部署~~ **2026-10-08 已接 GitHub 自动部署**（服务 Source=GitHub repo，Root Directory=apps/api，main→production，实测 push 后自动构建）；GitHub 网络从本机间歇不可达（push 需重试循环）。
 4. 本机主机名含中文导致 Vercel CLI ≥62 的 login 流程崩溃（ByteString TypeError）→ 改用访问令牌认证（90 天有效期，2027-01-06 过期，存 `%TEMP%\vercel_token.txt`，可随时在 Vercel 账户 Tokens 页吊销）。
 5. Git Bash 会把 `/data` 这类参数转成 Windows 路径——CLI 挂卷等操作需 `MSYS_NO_PATHCONV=1`。
 6. 演示账号已建（凭据不写入本文件，属公开仓库）；预算阀门保持 100M 默认（用户决定，公开环境依赖登录墙兜底）。
