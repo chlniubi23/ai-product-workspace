@@ -6,7 +6,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
 API_ROOT = Path(__file__).resolve().parents[1]
-REPO_ROOT = API_ROOT.parents[1]
+# Container images place the app at a top-level directory (e.g. /app), where a
+# second parent does not exist.  Fall back to API_ROOT there: REPO_ROOT only
+# feeds .env discovery, and containers inject configuration as real env vars.
+REPO_ROOT = API_ROOT.parents[1] if len(API_ROOT.parents) > 1 else API_ROOT
 
 
 class Settings(BaseSettings):
