@@ -309,7 +309,8 @@ AI_Product_Workspace/
 
 **缺失项**：
 - git 仓库已初始化并按批提交（conventional commits）；**2026-10-08 已推送 GitHub 公开仓库 `chlniubi23/ai-product-workspace` 并完成线上部署（Vercel + Railway，见 §14）**；批 40 提交后工作区干净（见 §13.4）。
-- 前端零测试（无测试框架）；无 CI 流水线；无国际化层（界面中文硬编码）。
+- ~~无 CI 流水线~~ **2026-10-08 批 43 已加 GitHub Actions**（`.github/workflows/ci.yml`：后端 ruff+pytest / 前端 typecheck+lint，push+PR 触发；首跑暴露 fastapi 0.142 下路由清单测试的 `_IncludedRouter` AttributeError → 已改为版本无关的递归展平 `_iter_routes`，本地 0.115 与 CI 0.142 双验证通过）；前端仍零测试（无测试框架）；无国际化层（界面中文硬编码）。
+- **eval 基线已落袋（批 43，2026-10-08 真实 key 实跑）**：报告归档 `docs/eval/eval-report-2026-10-08.json`——蒸馏回查 15/15=100%、证据命中 100%、1464 tokens/结论、叙述回查 46/76=60.5%（5 处未命中均为模型自算派生值，进 manual_review）；README 量化表已引用。
 
 ---
 

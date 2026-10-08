@@ -61,10 +61,13 @@ spend-then-account 预算模型（调用前只查日阀门、调用后只记账�
 |---|---|---|
 | 后端测试 | **456 passed + 1 skipped + 1 xfailed**（36 个测试文件） | 覆盖 RBAC/隔离、AI 降级边界、决策链规则、防火墙契约 |
 | 真实数据回归 | 9 份真实业务 CSV 的 golden profiles | 改计算口径立刻暴露偏差 |
+| **AI 输出质量基线** | **蒸馏结论数字回查 100%（15/15）· 证据命中 100% · 1,464 tokens/结论** | [真实 key 全链路 eval 报告](docs/eval/eval-report-2026-10-08.json) |
 | PRD 生成提速 | 19 min → **470 s（2.4×）** | 三遍式改造 + 分节并行（live 实测） |
 | Token 成本 | **−56%**（82,980 tokens/份） | 大纲瘦身 + 上下文裁剪 |
 | 路由面冻结 | 137 条路由由测试清单锁定 | 任何意外增删路由都会挂 CI 级测试 |
 | 迁移纪律 | 17 个 Alembic 迁移从零建库可复现 | + 解析完整性对账（二次读取防「带病入库」） |
+
+> eval 基线的诚实注脚：叙述报告的数字回查率为 60.5%（76 个数字中 46 个直接命中聚合索引）——未命中的 5 处全部是**模型自己算出来的派生值**（如"两数据集共 18 行"、"7/8 显著占比 87.5%"），fact-checker 把它们准确识别出来推入人工复核清单。防线抓的正是"模型偷偷算数"这个类别——这是它该干的活。
 
 ---
 
@@ -115,7 +118,8 @@ spend-then-account 预算模型（调用前只查日阀门、调用后只记账�
 
 ## 工程质量细节（测试运维视角）
 
-- **AI 输出质量评估 harness**：golden 数据集 + 全链路产出度量（`fact_check_rate` / `evidence_hit_rate` / `token_per_conclusion`），`APW_EVAL=1` 可复跑；
+- **AI 输出质量评估 harness**：golden 数据集 + 全链路产出度量（`fact_check_rate` / `evidence_hit_rate` / `token_per_conclusion`），`APW_EVAL=1` 可复跑；首批真实 key 基线见上表与 `docs/eval/`；
+- **GitHub Actions CI**：push 即跑后端 ruff + 456 项测试 + 前端 typecheck/lint；路由清单测试为版本无关实现，跨 FastAPI 0.115（本地）与 0.142（CI/生产）双重验证；
 - **解析完整性对账**：上传文件二次独立读取核对行列数，不一致抛 `PARSE_INTEGRITY_FAILED`，绝不带病入库；逐列语义/解析率落 `parse_manifest` 凭证；
 - **冻结式防回归**：137 条路由 (path, methods, name) 全量冻结在 `test_route_manifest.py`；
 - **ruff 零告警基线**，无 `noqa` 豁免；
