@@ -21,6 +21,35 @@
 
 **三分钟体验路径**：登录 → 新建项目 → 上传任意 CSV → 等待秒级数据概况（确定性统计）→ 点「开始 AI 解读」看叙述报告与信任卡 → 进入「AI 采访」被自适应追问 → 「洞察蒸馏」裁决 AI 草稿 → 一路走到「交付文档」看三遍式生成的 PRD。
 
+## 📸 产品截图（线上真实运行）
+
+![工作台叙述报告与信任卡](docs/screenshots/01-workbench-report.png)
+
+**工作台 · 叙述报告与信任卡**——确定性统计先行，AI 只负责叙述；信任卡实时展示「解析对账通过」「数字可验证率 79%」，AI 写下的每个数字都可回查聚合索引。
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/02-interview.png" alt="AI 采访"><br>
+      <b>AI 采访</b>：基于数据缺口自适应生成追问（最多 10 问），AI 提问、人作答，回答沉淀为下游证据。
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/03-insight-distillation.png" alt="洞察蒸馏"><br>
+      <b>洞察蒸馏</b>：采访记录被蒸馏为带证据标签的草稿，逐条确认 / 编辑 / 弃用——裁决权永远在人。
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/04-document-content.png" alt="交付文档正文"><br>
+      <b>交付文档正文</b>：三遍式生成的复盘文档——目标指标表、验收点表、边界情况，结论逐条引用 finding 编号。
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/05-document-page.png" alt="交付文档页"><br>
+      <b>交付文档页</b>：可继续生成、导出 Markdown、归档；左侧 11 阶段工作流进度 100%。
+    </td>
+  </tr>
+</table>
+
 ---
 
 ## 这个项目不是「又一个 RAG Demo」
@@ -166,6 +195,7 @@ npm run dev        # .env.local 设 NEXT_PUBLIC_API_BASE_URL=http://localhost:80
 ```
 AI_Product_Workspace/
 ├── PROJECT_CONTEXT.md        项目事实基准：架构/模块/API/数据库/技术债，逐批次维护
+├── docs/                     eval 基线报告 + 产品截图（本 README 引用）
 ├── docker-compose.yml        本地 MySQL 8
 └── apps/
     ├── api/                  FastAPI 后端

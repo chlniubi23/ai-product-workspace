@@ -14,6 +14,7 @@
 
 **2026-10-08 复核（只读核对 + 本文件刷新，未改任何业务代码）**：git HEAD = `20efb11`（**batch 39 信任卡已提交**，feat(api,web)），工作区干净（`git status --porcelain -uall` 为空）；137 路由 / 14 router / 17 迁移从代码实测**未变**；全量 `pytest tests -q` → **454 passed, 1 skipped（eval harness，APW_EVAL 门控）, 1 xfailed（456 收集，85.19s）**，`ruff check app tests` 0 错，前端 `typecheck`/`lint` 0 错；测试文件 29→36。**此前各增量行与 §13 中的「未提交」字样均已随后续提交成为历史（全部入库）**；§3/§3.1/§4/§7 行数快照、§9.1/§10/§11/§13 状态、§13.3 计数已就地更新。
 **2026-10-08 批 40（同日后续）**：修复 §11.18 文档生成丢失洞察正文（insights 通道切换 + `assert_safe_ai_context` 构造/复核对称性修复，见 §13.4 批 40 段），456 passed / 458 收集。
+**2026-10-08 批 44（docs-only）**：README 新增「产品截图」区块（在线体验路径之后）——`docs/screenshots/` 入库 6 张线上实跑截图：01 工作台报告+信任卡（全宽主图，含「解析对账通过」「数字可验证率 79%」实拍）、02 AI 采访、03 洞察蒸馏、04 交付文档正文、05 交付文档页（四张两列 HTML table 排布）、06 登录页（备用，README 未引用）；零代码改动，§3 目录树补 `docs/` 条目。
 
 **协作协议（用户强制，2026-09-13 起）**：每次开发任务结束后必须核对本文件，只增量更新真正变化的条目；并向用户回报「改了什么 / 是否影响架构 / 是否需要更新本文件 / 本文件更新了哪些条目」四项——详见 §12.1。
 
@@ -65,7 +66,8 @@
 AI_Product_Workspace/
 ├── .env / .env.example          # 配置（DEEPSEEK_API_KEY 等已配置）
 ├── docker-compose.yml           # 仅 mysql:8.0 服务
-├── README.md                    # 求职化改写（批 42）：在线演示入口 + 量化成果 + AI 工程亮点 + 修正部署两处错误（release 不自动跑 / CORS 默认 localhost）
+├── README.md                    # 求职化改写（批 42）：在线演示入口 + 量化成果 + AI 工程亮点 + 修正部署两处错误（release 不自动跑 / CORS 默认 localhost）；批 44 增「产品截图」区块
+├── docs/                        # eval 基线报告（docs/eval/，批 43）+ 产品截图（docs/screenshots/ 6 张，批 44）
 ├── PROJECT_CONTEXT.md           # 本文件
 ├── output/test-runtime/         # 旧测试运行产物（gitignore；现运行时已迁至 %TEMP%\apw-test-runtime）
 └── apps/
