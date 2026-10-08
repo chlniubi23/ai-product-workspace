@@ -561,13 +561,13 @@ AI_Product_Workspace/
 ## 14. 线上部署（**【实测】** 2026-10-08 上线并端到端验证）
 
 **地址**：
-- 前端（Vercel）：https://ai-product-workspace-ovz5v596i-chenhls-projects.vercel.app
+- 前端（Vercel）：**https://ai-product-workspace.vercel.app**（对外/简历用这个——生产别名域名，匿名可访问；备用别名 `ai-product-workspace-chenhls-projects.vercel.app`；**带部署哈希的 deployment URL（如 `...-ovz5v596i-...vercel.app`）受 Vercel Standard Protection 保护，观看者需登录 Vercel 且为团队成员，不要外发**）
 - API（Railway）：https://api-production-f21d.up.railway.app（`/health/ready` = ready，backend=mysql）
 - GitHub：https://github.com/chlniubi23/ai-product-workspace（公开，main 分支全量推送）
 
 **拓扑**：Railway 项目 `ai-product-workspace` 含 `api` 服务（Railpack 构建，`railway up` 本地直传 apps/api 为根；Procfile 的 web 行生效）+ `mysql` 服务（MySQL 9，内网 `mysql.railway.internal`，无公网暴露）+ `api-volume`（挂载 `/data`，`DATA_ROOT=/data`）。Vercel 项目 `ai-product-workspace`（apps/web，`vercel.json` 显式 `framework: nextjs`；env `NEXT_PUBLIC_API_BASE_URL` 指向 Railway API，Production/Preview 均设）。
 
-**关键环境变量（api 服务）**：`DATABASE_URL`（**必须 `mysql+pymysql://` 前缀**，由 MySQL 服务 `MYSQL_URL` 手工变换——`config.resolved_database_url` 不做驱动归一）、`APP_SECRET_KEY`（部署时新生成的随机值）、`DEEPSEEK_API_KEY`、`API_CORS_ORIGINS=<vercel 域名精确匹配>`（**默认值是 `http://localhost:3000` 而非通配**，不设置则预检 400 "Disallowed CORS origin"）、`DATA_ROOT=/data`。
+**关键环境变量（api 服务）**：`DATABASE_URL`（**必须 `mysql+pymysql://` 前缀**，由 MySQL 服务 `MYSQL_URL` 手工变换——`config.resolved_database_url` 不做驱动归一）、`APP_SECRET_KEY`（部署时新生成的随机值）、`DEEPSEEK_API_KEY`、`API_CORS_ORIGINS`（**默认值是 `http://localhost:3000` 而非通配**，不设置则预检 400 "Disallowed CORS origin"；当前值为三个前端来源逗号并列：主域名 + 团队别名 + 部署哈希 URL）、`DATA_ROOT=/data`。
 
 **部署批次修复与已知事项**：
 1. `config.py` 容器路径修复（commit `beaa699`）：容器把应用放在顶层目录（`/app`）时 `API_ROOT.parents[1]` 抛 IndexError → 守卫回落 `API_ROOT`（REPO_ROOT 只喂 .env 发现，无行为影响）；全量测试 456+1+1 复跑全绿。
