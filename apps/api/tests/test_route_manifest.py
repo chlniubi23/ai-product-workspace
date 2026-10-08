@@ -8,6 +8,9 @@ routers may change, the public surface may not.
 Regenerate the literal below only when a route change is *intentional*.
 """
 
+from collections.abc import Iterator
+from typing import Any
+
 from app.main import app
 
 ROUTE_MANIFEST: list[tuple[str, tuple[str, ...], str]] = [
@@ -153,9 +156,31 @@ ROUTE_MANIFEST: list[tuple[str, tuple[str, ...], str]] = [
 
 
 
+def _iter_routes(routes: Any) -> Iterator[Any]:
+    """Flatten route containers across Starlette generations.
+
+    Starlette >= 1.x exposes included routers as lazy wrapper objects
+    (``_IncludedRouter``) that carry no ``path`` of their own; older versions
+    copy the APIRoute objects directly into ``app.routes``.  Walk both shapes
+    so the frozen manifest stays version-proof instead of crashing with
+    AttributeError on a newer dependency resolution.
+    """
+    for route in routes:
+        if hasattr(route, "path"):
+            yield route
+            continue
+        nested = getattr(route, "routes", None)
+        if nested is not None:
+            yield from _iter_routes(nested)
+            continue
+        router = getattr(route, "router", None)
+        if router is not None:
+            yield from _iter_routes(getattr(router, "routes", []))
+
+
 def _live_manifest() -> list[tuple[str, tuple[str, ...], str]]:
     rows = []
-    for route in app.routes:
+    for route in _iter_routes(app.routes):
         methods = tuple(sorted(route.methods)) if getattr(route, "methods", None) else ()
         rows.append((route.path, methods, route.name))
     return sorted(rows)
@@ -166,7 +191,7 @@ def test_routes_match_the_frozen_manifest():
     assert live == ROUTE_MANIFEST
     # Redundant by construction, but kept explicit: the total route count must
     # match the frozen list, so a route can never quietly appear or disappear.
-    assert len(app.routes) == len(ROUTE_MANIFEST)
+    assert len(list(_iter_routes(app.routes))) == len(ROUTE_MANIFEST)
     paths = {path for path, _methods, _name in ROUTE_MANIFEST}
     for expected in ("/health", "/health/ready", "/health/ai"):
         assert expected in paths
