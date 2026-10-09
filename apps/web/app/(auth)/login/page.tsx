@@ -88,9 +88,32 @@ export default function LoginPage() {
               </div>
             </>
           )}
+          {mode === "login" && (
+            <p
+              style={{
+                margin: "0 0 14px",
+                padding: "8px 10px",
+                background: "var(--brand-soft)",
+                border: "1px solid var(--line)",
+                borderRadius: 8,
+                color: "var(--muted)",
+                fontSize: 12,
+              }}
+            >
+              演示账号已预填（demo@apw.dev），直接点击「进入工作空间」即可体验。
+            </p>
+          )}
           <div className="form-group">
             <label htmlFor="email">邮箱</label>
-            <input id="email" name="email" type="email" placeholder="name@company.com" required />
+            <input
+              id="email"
+              name="email"
+              type="email"
+              placeholder="name@company.com"
+              defaultValue={mode === "login" ? "demo@apw.dev" : ""}
+              key={mode}
+              required
+            />
           </div>
           <div className="form-group">
             <label htmlFor="password">密码</label>
@@ -101,6 +124,8 @@ export default function LoginPage() {
                 type={showPassword ? "text" : "password"}
                 style={{ paddingRight: 37 }}
                 minLength={8}
+                defaultValue={mode === "login" ? "Demo2026!apw" : ""}
+                key={mode}
                 required
               />
               <button
